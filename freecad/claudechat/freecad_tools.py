@@ -118,10 +118,108 @@ def _run_get_objects(args):
     )
 
 
-#: Registry: tool name -> {schema, run}.
+_RUN_PYTHON_SCHEMA = {
+    "name": "run_python",
+    "description": (
+        "Execute FreeCAD Python in the running FreeCAD instance. This is how you "
+        "do Sketcher work (geometry + constraints), PartDesign features "
+        "(Body, Pad, Pocket, Revolution, Loft, Fillet, Chamfer, ...), Part "
+        "booleans, Draft, arrays, and anything else in the API. "
+        "Pre-bound names: FreeCAD, App, FreeCADGui, Gui, Part, Sketcher, "
+        "PartDesign, Draft, and doc (the active document, created if none). "
+        "The code runs on the GUI thread inside ONE undoable transaction. "
+        "Return data by printing or by assigning to a variable named `result` "
+        "(both are returned to you). On error you get the full traceback and the "
+        "transaction is rolled back -- fix it and try again. "
+        "Work in small steps and verify with get_objects. For PartDesign, create "
+        "a PartDesign::Body first and add features inside it. The user is shown "
+        "your code and must approve it before it runs."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "code": {"type": "string", "description": "FreeCAD Python source to execute"},
+            "description": {
+                "type": "string",
+                "description": "One-line summary of what the code does (shown to the user for approval)",
+            },
+        },
+        "required": ["code"],
+    },
+}
+
+
+def _run_python(args):
+    import contextlib
+    import io
+    import traceback
+
+    import FreeCAD
+
+    code = args.get("code", "")
+    doc = FreeCAD.ActiveDocument or FreeCAD.newDocument()
+
+    namespace = {"FreeCAD": FreeCAD, "App": FreeCAD, "doc": doc}
+    try:
+        import FreeCADGui
+
+        namespace["FreeCADGui"] = FreeCADGui
+        namespace["Gui"] = FreeCADGui
+    except Exception:  # noqa: BLE001
+        pass
+    for mod_name in ("Part", "Sketcher", "PartDesign", "Draft"):
+        try:
+            namespace[mod_name] = __import__(mod_name)
+        except Exception:  # noqa: BLE001
+            pass
+
+    existing = {obj.Name for obj in doc.Objects}
+    doc.openTransaction("ClaudeChat: run_python")
+    stdout = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(stdout):
+            exec(code, namespace)  # noqa: S102 - intentional, user-approved
+        doc.recompute()
+        doc.commitTransaction()
+    except Exception:
+        doc.abortTransaction()
+        tb = traceback.format_exc()
+        # Safety net: if undo is disabled (so abort didn't roll back), remove any
+        # objects this failed run added. No-op when abort already removed them.
+        for obj in list(doc.Objects):
+            if obj.Name not in existing:
+                try:
+                    doc.removeObject(obj.Name)
+                except Exception:  # noqa: BLE001
+                    pass
+        captured = stdout.getvalue()
+        msg = "Execution failed (rolled back):\n" + tb
+        if captured:
+            msg += "\n--- stdout before error ---\n" + captured
+        return msg
+
+    try:
+        import FreeCADGui
+
+        FreeCADGui.SendMsgToActiveView("ViewFit")
+    except Exception:  # noqa: BLE001
+        pass
+
+    parts = ["OK (committed)."]
+    captured = stdout.getvalue()
+    if captured:
+        parts.append("stdout:\n" + captured)
+    if namespace.get("result") is not None:
+        parts.append("result: " + repr(namespace["result"]))
+    return "\n".join(parts)
+
+
+#: Registry: tool name -> {schema, run, confirm?}.
+#: ``confirm: True`` means the bridge asks the user to approve before running.
 TOOLS = {
     "create_box": {"schema": _CREATE_BOX_SCHEMA, "run": _run_create_box},
     "get_objects": {"schema": _GET_OBJECTS_SCHEMA, "run": _run_get_objects},
+    "run_python": {"schema": _RUN_PYTHON_SCHEMA, "run": _run_python, "confirm": True},
 }
 
 

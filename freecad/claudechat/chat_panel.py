@@ -166,6 +166,13 @@ class ChatWidget(QtWidgets.QWidget):
         self._worker.status_changed.connect(self._on_status)
         self._worker.failed.connect(self._on_failed)
 
+        # Route plan/task events to the separate Plan & Tasks panel.
+        from . import plan_panel
+
+        plan_widget = plan_panel.get_panel().widget
+        self._worker.task_event.connect(plan_widget.on_task_event)
+        self._worker.plan_received.connect(plan_widget.on_plan)
+
         self._thread.started.connect(self._worker.run)
         self._thread.start()
 

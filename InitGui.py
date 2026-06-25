@@ -56,9 +56,13 @@ class ClaudeChatWorkbench(FreeCADGui.Workbench):
 
     def Activated(self):
         """Run every time the user switches to this workbench."""
-        from freecad.claudechat import chat_panel
+        from freecad.claudechat import chat_panel, plan_panel
 
-        chat_panel.get_panel().show_dock()
+        # Chat first so the Plan dock can tab itself alongside it.
+        chat_panel.get_panel()
+        plan_panel.get_panel()
+        plan_panel.get_panel().show_dock()
+        chat_panel.get_panel().show_dock()  # raise chat to the front tab
 
     def Deactivated(self):
         pass
