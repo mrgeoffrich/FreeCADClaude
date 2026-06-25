@@ -53,6 +53,22 @@ message to start a live Claude session.
 > **Dev loop:** `deploy.ps1` preserves `vendor/`, so re-running it after code
 > changes is fast and doesn't reinstall dependencies.
 
+## Evaluation
+
+`eval/run.ps1` runs an end-to-end test: it launches FreeCAD, opens the chat
+panel, submits a prompt through the real agent (auto-approving `run_python`),
+waits for the turn, snapshots the resulting document to JSON, and quits.
+
+```powershell
+pwsh -File eval/run.ps1                                  # default box prompt
+pwsh -File eval/run.ps1 -Prompt "Create a cylinder r5 h30 named C" `
+     -Expect '"type":\s*"Part::Cylinder"'               # with a PASS/FAIL check
+```
+
+`-Expect` is a regex matched against the result JSON; the script exits 0 (PASS),
+1 (FAIL), or 2 (eval didn't complete). The trigger is the `CLAUDECHAT_EVAL`
+environment variable, handled in `InitGui.py` → `freecad/claudechat/eval_runner.py`.
+
 ## Roadmap
 
 - **M1 (done):** workbench + right-side dock panel + local echo.

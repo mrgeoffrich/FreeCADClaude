@@ -57,7 +57,7 @@ New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 
 # Copy everything except build/VCS cruft, the deploy/install scripts, and the
 # source-side vendor dir (deps live in the deployed copy, installed in place).
-$exclude = @('__pycache__', '.git', '.gitignore', 'deploy.ps1', 'install_deps.ps1', 'vendor')
+$exclude = @('__pycache__', '.git', '.gitignore', '.gitattributes', 'deploy.ps1', 'install_deps.ps1', 'vendor', 'eval')
 Get-ChildItem -Path $Source -Force | Where-Object { $exclude -notcontains $_.Name } | ForEach-Object {
     Copy-Item -Path $_.FullName -Destination $Dest -Recurse -Force
 }

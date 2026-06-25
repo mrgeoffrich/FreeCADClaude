@@ -73,3 +73,18 @@ class ClaudeChatWorkbench(FreeCADGui.Workbench):
 
 
 FreeCADGui.addWorkbench(ClaudeChatWorkbench())
+
+
+# Unattended evaluation hook: when CLAUDECHAT_EVAL is set, run a prompt end to
+# end after the GUI has settled, then quit. Normal startups skip this entirely.
+import os as _os
+
+if _os.environ.get("CLAUDECHAT_EVAL"):
+    from PySide.QtCore import QTimer as _QTimer
+
+    def _claudechat_start_eval():
+        from freecad.claudechat import eval_runner
+
+        eval_runner.run()
+
+    _QTimer.singleShot(4000, _claudechat_start_eval)
