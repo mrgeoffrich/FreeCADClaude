@@ -1,0 +1,4 @@
+# Vendored Python dependencies (installed via install_deps.ps1)
+vendor/
+__pycache__/
+*.pyc
