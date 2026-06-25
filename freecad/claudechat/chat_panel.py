@@ -100,6 +100,12 @@ class ChatWidget(QtWidgets.QWidget):
         self._think_timer = QtCore.QTimer(self)
         self._think_timer.setInterval(450)
         self._think_timer.timeout.connect(self._tick_thinking)
+        # Coalesces rapid streaming deltas into ~12 renders/sec instead of one
+        # full setMarkdown per token.
+        self._render_timer = QtCore.QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.setInterval(80)
+        self._render_timer.timeout.connect(self._do_render)
         self._build_ui()
 
     # -- UI construction -------------------------------------------------
@@ -126,9 +132,14 @@ class ChatWidget(QtWidgets.QWidget):
         self.status_label.setStyleSheet("color:#888888")
         button_row.addWidget(self.status_label)
         button_row.addStretch(1)
-        self.clear_button = QtWidgets.QPushButton("Clear", self)
-        self.clear_button.clicked.connect(self._clear)
-        button_row.addWidget(self.clear_button)
+        self.files_button = QtWidgets.QPushButton("Files", self)
+        self.files_button.setToolTip("Open the ClaudeChat captures/exports folder")
+        self.files_button.clicked.connect(self._open_artifacts)
+        button_row.addWidget(self.files_button)
+        self.new_button = QtWidgets.QPushButton("New", self)
+        self.new_button.setToolTip("Start a new conversation (clears history and the agent's memory)")
+        self.new_button.clicked.connect(self._on_new)
+        button_row.addWidget(self.new_button)
         self.stop_button = QtWidgets.QPushButton("Stop", self)
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self._on_stop)
@@ -223,7 +234,7 @@ class ChatWidget(QtWidgets.QWidget):
         if self._live is None:
             self._live = ""
         self._live += chunk
-        self._render()
+        self._render_soon()
 
     @QtCore.Slot(str)
     def _on_tool(self, tool_name):
@@ -263,6 +274,16 @@ class ChatWidget(QtWidgets.QWidget):
             self._live = None
 
     def _render(self):
+        """Render now (cancels any pending throttled render)."""
+        self._render_timer.stop()
+        self._do_render()
+
+    def _render_soon(self):
+        """Render within ~80ms, coalescing rapid streaming deltas."""
+        if not self._render_timer.isActive():
+            self._render_timer.start()
+
+    def _do_render(self):
         """Render committed transcript + the live streamed block + thinking line."""
         body = self._md
         if self._live is not None:
@@ -292,10 +313,32 @@ class ChatWidget(QtWidgets.QWidget):
         self._think_dots = (self._think_dots + 1) % 4
         self._render()
 
-    def _clear(self):
+    def _on_new(self):
+        """Start a fresh conversation: reset the agent's session and clear panels."""
+        if self._worker is not None:
+            if self._busy:
+                self._worker.cancel()
+            self._worker.reset_session()
         self._md = ""
         self._live = None
+        self._set_busy(False)
         self._set_thinking(False)
+        try:
+            from . import plan_panel
+
+            plan_panel.get_panel().widget.clear()
+        except Exception:  # noqa: BLE001
+            pass
+        self._add_md("*New conversation started.*")
+
+    def _open_artifacts(self):
+        """Open the ClaudeChat captures/exports folder in the file manager."""
+        from . import freecad_tools
+        from PySide import QtGui
+
+        QtGui.QDesktopServices.openUrl(
+            QtCore.QUrl.fromLocalFile(freecad_tools.artifacts_dir())
+        )
 
     def _on_stop(self):
         if self._worker is not None and self._busy:

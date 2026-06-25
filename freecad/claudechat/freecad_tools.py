@@ -11,10 +11,39 @@ import os
 import tempfile
 
 
-def _temp_path(suffix):
-    fd, path = tempfile.mkstemp(prefix="claudechat_", suffix=suffix)
+def artifacts_dir():
+    """The browsable folder where captures/exports are written."""
+    import FreeCAD
+
+    path = os.path.join(FreeCAD.getUserAppDataDir(), "ClaudeChat")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _artifact_path(subdir, base, suffix):
+    """A unique, readably-named file under <ClaudeChat>/<subdir>/."""
+    folder = os.path.join(artifacts_dir(), subdir)
+    os.makedirs(folder, exist_ok=True)
+    _prune_folder(folder, keep=60)
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in base) or "item"
+    fd, path = tempfile.mkstemp(prefix=safe + "_", suffix=suffix, dir=folder)
     os.close(fd)
     return path
+
+
+def _prune_folder(folder, keep):
+    """Keep only the most recent `keep` files in a folder (best effort)."""
+    try:
+        files = [os.path.join(folder, f) for f in os.listdir(folder)]
+        files = [f for f in files if os.path.isfile(f)]
+        files.sort(key=os.path.getmtime, reverse=True)
+        for old in files[keep:]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 def _rasterize_svg(svg_path, png_path, target=768):
@@ -337,7 +366,8 @@ def _run_view_sketch_svg(args):
 
     view = str(args.get("view") or "").lower()
     shape = getattr(obj, "Shape", None)
-    svg_path = _temp_path(".svg")
+    base = obj.Name + (f"_{view}" if view else "_flat")
+    svg_path = _artifact_path("captures", base, ".svg")
 
     if view and shape is not None:
         # Orthographic projection of 3D geometry (hidden-line removed).
@@ -364,7 +394,7 @@ def _run_view_sketch_svg(args):
         header = f"Exported '{obj.Label}' ({obj.TypeId}) to SVG."
 
     parts = [header]
-    png_path = _temp_path(".png")
+    png_path = _artifact_path("captures", base, ".png")
     if _rasterize_svg(svg_path, png_path):
         parts.append(f"Rendered image (open with the Read tool): {png_path}")
     if len(svg_text) <= 8000:
@@ -417,7 +447,7 @@ def _run_capture_view(args):
 
     width = int(args.get("width", 1024))
     height = int(args.get("height", 768))
-    png_path = _temp_path(".png")
+    png_path = _artifact_path("captures", f"view_{args.get('view') or 'current'}", ".png")
     view.saveImage(png_path, width, height, "White")
     return f"Captured the 3D view to: {png_path}\n(Open it with the Read tool to see it.)"
 
@@ -514,7 +544,7 @@ def _run_export(args):
             path = f"{path}.{ext}"
     else:
         ext = fmt or "step"
-        path = _temp_path("." + ext)
+        path = _artifact_path("exports", "export", "." + ext)
 
     try:
         if ext in ("step", "stp", "iges", "igs", "brep", "brp"):

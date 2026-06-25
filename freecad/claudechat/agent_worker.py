@@ -191,8 +191,10 @@ class AgentWorker(QtCore.QObject):
             if block.get("id"):
                 self._plan_ids.add(block["id"])
         elif name.startswith("mcp__freecad__"):
-            # Only surface our FreeCAD actions in the chat; built-ins stay quiet.
-            self.tool_used.emit(name.replace("mcp__freecad__", ""))
+            # Surface meaningful FreeCAD actions in chat; keep quiet inspections quiet.
+            short = name.replace("mcp__freecad__", "")
+            if short not in ("get_objects", "get_selection"):
+                self.tool_used.emit(short)
 
     def _handle_tool_result(self, block):
         import re
@@ -224,6 +226,12 @@ class AgentWorker(QtCore.QObject):
 
     def submit(self, text):
         self._queue.put(text)
+
+    def reset_session(self):
+        """Forget the conversation so the next turn starts a fresh CLI session."""
+        self._session_id = None
+        self._pending_tasks.clear()
+        self._plan_ids.clear()
 
     def cancel(self):
         """Terminate the in-flight CLI turn (safe to call from the GUI thread)."""
