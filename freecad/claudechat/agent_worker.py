@@ -46,6 +46,7 @@ class AgentWorker(QtCore.QObject):
         self._plan_ids = set()    # Agent(Plan) tool_use_ids (awaiting result text)
         self._proc = None         # the live CLI subprocess for the current turn
         self._cancelled = False
+        self._streamed = False    # received partial text deltas this turn
 
     # -- runs on the worker thread ---------------------------------------
 
@@ -66,6 +67,7 @@ class AgentWorker(QtCore.QObject):
             "-p", text,
             "--output-format", "stream-json",
             "--verbose",                 # required for stream-json in -p mode
+            "--include-partial-messages",  # stream text token-by-token
             "--model", cfg["model"],
         ]
         # Built-in tools: a safe allowlist (Skill + read-only) when a skills
@@ -93,6 +95,7 @@ class AgentWorker(QtCore.QObject):
         argv = self._build_argv(text)
         emitted = False
         self._cancelled = False
+        self._streamed = False  # did we get partial text deltas this turn?
         stray = []  # non-JSON lines (e.g. stderr merged in) -> error context
         try:
             proc = subprocess.Popen(
@@ -143,13 +146,24 @@ class AgentWorker(QtCore.QObject):
             if sid:
                 self._session_id = sid
             return False
+        if kind == "stream_event":
+            event = obj.get("event", {})
+            if event.get("type") == "content_block_delta":
+                delta = event.get("delta", {})
+                if delta.get("type") == "text_delta" and delta.get("text"):
+                    self._streamed = True
+                    self.text_received.emit(delta["text"])
+                    return True
+            return False
         if kind == "assistant":
             produced = False
             for block in obj.get("message", {}).get("content", []):
                 btype = block.get("type")
                 if btype == "text" and block.get("text"):
-                    self.text_received.emit(block["text"])
-                    produced = True
+                    # Skip if we already streamed this text via deltas.
+                    if not self._streamed:
+                        self.text_received.emit(block["text"])
+                        produced = True
                 elif btype == "tool_use":
                     self._handle_tool_use(block)
             return produced

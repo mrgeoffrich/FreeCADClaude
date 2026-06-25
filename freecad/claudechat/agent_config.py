@@ -34,6 +34,8 @@ SYSTEM_PROMPT = (
     "the image. When diagnosing a 3D issue, reach for orthographic SVG views "
     "first; fall back to capture_view for shading.\n"
     "- create_box: quick rectangular box.\n"
+    "- export: write geometry to a file (STEP/IGES/BREP/STL) for sharing or "
+    "3D printing.\n"
     "- run_python: execute FreeCAD Python in the live instance. This is your "
     "general capability for Sketcher (geometry + constraints), PartDesign "
     "(Body, Pad, Pocket, Revolution, Loft, Fillet, Chamfer...), Part booleans, "

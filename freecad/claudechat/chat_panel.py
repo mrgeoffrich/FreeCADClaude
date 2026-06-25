@@ -28,6 +28,7 @@ from .agent_worker import AgentWorker
 #: colour just the labels while the Markdown body keeps the theme's text colour.
 _YOU_COLOR = "#3478c6"      # blue
 _CLAUDE_COLOR = "#d97757"   # Claude coral
+_CLAUDE_HEADER = f'<span style="color:{_CLAUDE_COLOR}"><b>Claude:</b></span>'
 
 #: Object name used both to register the dock and to find it again later.
 DOCK_OBJECT_NAME = "ClaudeChatDock"
@@ -91,7 +92,8 @@ class ChatWidget(QtWidgets.QWidget):
         self._thread = None
         self._worker = None
         self._busy = False
-        self._md = ""  # the committed transcript, as Markdown
+        self._md = ""       # the committed transcript, as Markdown
+        self._live = None   # the in-progress Claude block being streamed
         self._thinking = False
         self._think_dots = 0
         self._think_start = 0.0
@@ -218,16 +220,19 @@ class ChatWidget(QtWidgets.QWidget):
 
     @QtCore.Slot(str)
     def _on_text(self, chunk):
-        self._add_md(
-            f'<span style="color:{_CLAUDE_COLOR}"><b>Claude:</b></span>\n\n{chunk}'
-        )
+        if self._live is None:
+            self._live = ""
+        self._live += chunk
+        self._render()
 
     @QtCore.Slot(str)
     def _on_tool(self, tool_name):
+        self._commit_live()
         self._add_md(f"*↪ used tool: {tool_name}*")
 
     @QtCore.Slot()
     def _on_turn_finished(self):
+        self._commit_live()
         self._set_thinking(False)
         self._set_busy(False)
 
@@ -237,6 +242,7 @@ class ChatWidget(QtWidgets.QWidget):
 
     @QtCore.Slot(str)
     def _on_failed(self, message):
+        self._commit_live()
         self._set_thinking(False)
         self._add_md(f"**⚠ {message}**")
         self._set_busy(False)
@@ -248,16 +254,27 @@ class ChatWidget(QtWidgets.QWidget):
         self._md += fragment.rstrip() + "\n\n"
         self._render()
 
+    def _commit_live(self):
+        """Finalize the in-progress streamed Claude block into the transcript."""
+        if self._live is not None:
+            text = self._live.strip()
+            if text:
+                self._md += f"{_CLAUDE_HEADER}\n\n{text}\n\n"
+            self._live = None
+
     def _render(self):
-        """Render the committed transcript plus the transient thinking line."""
-        suffix = ""
-        if self._thinking:
+        """Render committed transcript + the live streamed block + thinking line."""
+        body = self._md
+        if self._live is not None:
+            body += f"{_CLAUDE_HEADER}\n\n{self._live}\n\n"
+        # Show the thinking line only before text starts streaming this turn.
+        if self._thinking and self._live is None:
             elapsed = int(time.monotonic() - self._think_start)
-            suffix = (
+            body += (
                 f'<span style="color:{_CLAUDE_COLOR}"><i>Thinking'
                 f'{"." * self._think_dots} ({elapsed}s)</i></span>'
             )
-        self.transcript.setMarkdown(self._md + suffix)
+        self.transcript.setMarkdown(body)
         bar = self.transcript.verticalScrollBar()
         bar.setValue(bar.maximum())
 
@@ -277,11 +294,13 @@ class ChatWidget(QtWidgets.QWidget):
 
     def _clear(self):
         self._md = ""
+        self._live = None
         self._set_thinking(False)
 
     def _on_stop(self):
         if self._worker is not None and self._busy:
             self._worker.cancel()
+            self._commit_live()
             self._add_md("*(stopped)*")
 
     def _set_busy(self, busy):
