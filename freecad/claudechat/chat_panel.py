@@ -12,6 +12,7 @@ re-shown on demand. The agent thread is started lazily on the first send.
 """
 
 import html
+import time
 
 import FreeCAD
 import FreeCADGui
@@ -93,6 +94,7 @@ class ChatWidget(QtWidgets.QWidget):
         self._md = ""  # the committed transcript, as Markdown
         self._thinking = False
         self._think_dots = 0
+        self._think_start = 0.0
         self._think_timer = QtCore.QTimer(self)
         self._think_timer.setInterval(450)
         self._think_timer.timeout.connect(self._tick_thinking)
@@ -125,6 +127,10 @@ class ChatWidget(QtWidgets.QWidget):
         self.clear_button = QtWidgets.QPushButton("Clear", self)
         self.clear_button.clicked.connect(self._clear)
         button_row.addWidget(self.clear_button)
+        self.stop_button = QtWidgets.QPushButton("Stop", self)
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self._on_stop)
+        button_row.addWidget(self.stop_button)
         self.send_button = QtWidgets.QPushButton("Send", self)
         self.send_button.setDefault(True)
         self.send_button.clicked.connect(self.on_send)
@@ -246,9 +252,10 @@ class ChatWidget(QtWidgets.QWidget):
         """Render the committed transcript plus the transient thinking line."""
         suffix = ""
         if self._thinking:
+            elapsed = int(time.monotonic() - self._think_start)
             suffix = (
                 f'<span style="color:{_CLAUDE_COLOR}"><i>Thinking'
-                f'{"." * self._think_dots}</i></span>'
+                f'{"." * self._think_dots} ({elapsed}s)</i></span>'
             )
         self.transcript.setMarkdown(self._md + suffix)
         bar = self.transcript.verticalScrollBar()
@@ -258,6 +265,7 @@ class ChatWidget(QtWidgets.QWidget):
         self._thinking = on
         self._think_dots = 0
         if on:
+            self._think_start = time.monotonic()
             self._think_timer.start()
         else:
             self._think_timer.stop()
@@ -271,10 +279,16 @@ class ChatWidget(QtWidgets.QWidget):
         self._md = ""
         self._set_thinking(False)
 
+    def _on_stop(self):
+        if self._worker is not None and self._busy:
+            self._worker.cancel()
+            self._add_md("*(stopped)*")
+
     def _set_busy(self, busy):
         self._busy = busy
         self.send_button.setEnabled(not busy)
         self.send_button.setText("…" if busy else "Send")
+        self.stop_button.setEnabled(busy)
 
 
 class _InputBox(QtWidgets.QPlainTextEdit):

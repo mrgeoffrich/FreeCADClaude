@@ -44,6 +44,8 @@ class AgentWorker(QtCore.QObject):
         self._session_id = None  # set from the first turn, reused via --resume
         self._pending_tasks = {}  # TaskCreate tool_use_id -> subject (awaiting its #)
         self._plan_ids = set()    # Agent(Plan) tool_use_ids (awaiting result text)
+        self._proc = None         # the live CLI subprocess for the current turn
+        self._cancelled = False
 
     # -- runs on the worker thread ---------------------------------------
 
@@ -90,6 +92,7 @@ class AgentWorker(QtCore.QObject):
     def _handle_prompt(self, text):
         argv = self._build_argv(text)
         emitted = False
+        self._cancelled = False
         stray = []  # non-JSON lines (e.g. stderr merged in) -> error context
         try:
             proc = subprocess.Popen(
@@ -110,6 +113,7 @@ class AgentWorker(QtCore.QObject):
             self.turn_finished.emit()
             return
 
+        self._proc = proc
         try:
             for line in proc.stdout:
                 line = line.strip()
@@ -125,7 +129,8 @@ class AgentWorker(QtCore.QObject):
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(f"Error reading claude output: {exc!r}")
         finally:
-            if not emitted and proc.returncode not in (0, None):
+            self._proc = None
+            if not self._cancelled and not emitted and proc.returncode not in (0, None):
                 detail = "\n".join(stray[-5:]) or f"claude exited with code {proc.returncode}"
                 self.failed.emit(detail)
             self.turn_finished.emit()
@@ -205,6 +210,16 @@ class AgentWorker(QtCore.QObject):
 
     def submit(self, text):
         self._queue.put(text)
+
+    def cancel(self):
+        """Terminate the in-flight CLI turn (safe to call from the GUI thread)."""
+        self._cancelled = True
+        proc = self._proc
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:  # noqa: BLE001
+                pass
 
     def shutdown(self):
         self._queue.put(None)
