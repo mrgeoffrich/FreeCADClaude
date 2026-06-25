@@ -6,7 +6,7 @@
   <date>2026-06-26</date>
   <maintainer email="geoff.rich@gmail.com">Geoff Rich</maintainer>
   <license file="LICENSE">LGPL-2.1-or-later</license>
-  <url type="repository" branch="main">https://github.com/REPLACE_ME/ClaudeChat</url>
+  <url type="repository" branch="main">https://github.com/mrgeoffrich/ClaudeChat</url>
   <icon>freecad/claudechat/resources/icon.svg</icon>
   <content>
     <workbench>

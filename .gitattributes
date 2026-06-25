@@ -1,0 +1,5 @@
+# Normalize line endings: LF in the repo and working tree across platforms.
+* text=auto eol=lf
+
+# Treat the icon as text (SVG) so it normalizes too.
+*.svg text eol=lf
