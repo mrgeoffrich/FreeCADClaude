@@ -37,6 +37,40 @@ def _rasterize_svg(svg_path, png_path, target=768):
     return bool(image.save(png_path))
 
 
+#: Orthographic projection directions for 3D -> SVG views.
+_PROJECTION_DIRS = {
+    "front": (0, -1, 0), "rear": (0, 1, 0), "back": (0, 1, 0),
+    "top": (0, 0, -1), "bottom": (0, 0, 1),
+    "right": (-1, 0, 0), "left": (1, 0, 0),
+    "iso": (1, -1, 1), "isometric": (1, -1, 1),
+}
+
+
+def _wrap_svg_fragment(fragment):
+    """Wrap a TechDraw projection fragment in a full SVG (viewBox + stroke)."""
+    import re
+
+    coords = []
+    for d in re.findall(r'd="([^"]*)"', fragment):
+        coords += [float(n) for n in re.findall(r"-?\d+\.?\d*(?:[eE][-+]?\d+)?", d)]
+    xs, ys = coords[0::2], coords[1::2]
+    if xs and ys:
+        minx, miny, maxx, maxy = min(xs), min(ys), max(xs), max(ys)
+        pad = max(1.0, (maxx - minx + maxy - miny) * 0.03)
+        minx, miny, maxx, maxy = minx - pad, miny - pad, maxx + pad, maxy + pad
+    else:
+        minx, miny, maxx, maxy = 0, 0, 100, 100
+    w, h = (maxx - minx) or 1, (maxy - miny) or 1
+    stroke = max(0.2, (w + h) / 400.0)
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{minx} {miny} {w} {h}" '
+        f'width="{w}" height="{h}">'
+        f'<rect x="{minx}" y="{miny}" width="{w}" height="{h}" fill="white"/>'
+        f'<style>path{{fill:none;stroke:#000000;stroke-width:{stroke};}}</style>'
+        f"{fragment}</svg>"
+    )
+
+
 #: MCP tool schema for create_box (name/description/inputSchema).
 _CREATE_BOX_SCHEMA = {
     "name": "create_box",
@@ -247,17 +281,24 @@ def _run_python(args):
 _VIEW_SKETCH_SVG_SCHEMA = {
     "name": "view_sketch_svg",
     "description": (
-        "See FLAT / 2D geometry as SVG. Exports a sketch (or planar object) to "
-        "SVG and returns both the exact SVG source (precise coordinates) and a "
-        "path to a rendered PNG you can open with the Read tool. PREFER this "
-        "over capture_view whenever the geometry is flat/2D (sketches, profiles, "
-        "outlines). Optional 'name' = the object's internal Name; defaults to "
-        "the selected sketch, or the first sketch in the document."
+        "See geometry as SVG (exact vector lines). Returns the SVG source plus a "
+        "path to a rendered PNG you can open with the Read tool. PREFER this over "
+        "capture_view whenever crisp line geometry helps:\n"
+        "- Flat/2D (sketches, profiles): exports the geometry directly.\n"
+        "- 3D solids: pass 'view' (front/rear/top/bottom/left/right/iso) to get a "
+        "clean orthographic projection -- ideal for DIAGNOSING 3D parts (checking "
+        "profiles, alignment, holes) from standard views.\n"
+        "Optional 'name' = the object's internal Name; defaults to the selected "
+        "object, or the first sketch in the document."
     ),
     "inputSchema": {
         "type": "object",
         "properties": {
-            "name": {"type": "string", "description": "Internal Name of the sketch/object to view"},
+            "name": {"type": "string", "description": "Internal Name of the object to view"},
+            "view": {
+                "type": "string",
+                "description": "For 3D objects: front/rear/top/bottom/left/right/iso (orthographic projection)",
+            },
         },
         "additionalProperties": False,
     },
@@ -284,28 +325,45 @@ def _run_view_sketch_svg(args):
             selected = [s.Object for s in FreeCADGui.Selection.getSelectionEx()]
         except Exception:  # noqa: BLE001
             selected = []
-        for candidate in selected:
-            if "Sketch" in candidate.TypeId:
-                obj = candidate
-                break
-        if obj is None:
+        if selected:
+            obj = selected[0]
+        else:
             for candidate in doc.Objects:
                 if candidate.TypeId == "Sketcher::SketchObject":
                     obj = candidate
                     break
         if obj is None:
-            return "No sketch found. Pass a 'name', or create/select a sketch first."
+            return "No object found. Pass a 'name', or create/select something first."
 
+    view = str(args.get("view") or "").lower()
+    shape = getattr(obj, "Shape", None)
     svg_path = _temp_path(".svg")
-    try:
-        import importSVG
 
-        importSVG.export([obj], svg_path)
-        svg_text = open(svg_path, encoding="utf-8").read()
-    except Exception as exc:  # noqa: BLE001
-        return f"SVG export failed for '{obj.Label}': {exc!r}"
+    if view and shape is not None:
+        # Orthographic projection of 3D geometry (hidden-line removed).
+        try:
+            import TechDraw
 
-    parts = [f"Exported '{obj.Label}' ({obj.TypeId}) to SVG."]
+            direction = _PROJECTION_DIRS.get(view, _PROJECTION_DIRS["front"])
+            fragment = TechDraw.projectToSVG(shape, FreeCAD.Vector(*direction))
+            svg_text = _wrap_svg_fragment(fragment)
+            with open(svg_path, "w", encoding="utf-8") as fh:
+                fh.write(svg_text)
+        except Exception as exc:  # noqa: BLE001
+            return f"Projection failed for '{obj.Label}': {exc!r}"
+        header = f"Projected '{obj.Label}' ({obj.TypeId}) to a {view} SVG view."
+    else:
+        # Flat/planar export (sketches etc.).
+        try:
+            import importSVG
+
+            importSVG.export([obj], svg_path)
+            svg_text = open(svg_path, encoding="utf-8").read()
+        except Exception as exc:  # noqa: BLE001
+            return f"SVG export failed for '{obj.Label}': {exc!r}"
+        header = f"Exported '{obj.Label}' ({obj.TypeId}) to SVG."
+
+    parts = [header]
     png_path = _temp_path(".png")
     if _rasterize_svg(svg_path, png_path):
         parts.append(f"Rendered image (open with the Read tool): {png_path}")
