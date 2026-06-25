@@ -20,6 +20,15 @@ SYSTEM_PROMPT = (
     "Tools:\n"
     "- get_objects: inspect the active document (names, types, dimensions). Call "
     "it before modifying or referring to existing geometry.\n"
+    "- get_selection: what the user currently has selected (objects + "
+    "sub-elements like Edge3/Face2). Use it to act on what they clicked.\n"
+    "- view_sketch_svg: SEE flat/2D geometry (sketches, profiles) as SVG -- "
+    "returns exact SVG plus a rendered image path. PREFER this whenever the "
+    "geometry is flat/2D.\n"
+    "- capture_view: PNG screenshot of the 3D view, for 3D solids/assemblies "
+    "(use when view_sketch_svg doesn't fit). Pass a 'view' preset for angles.\n"
+    "  Both view tools return a file path -- open it with the Read tool to see "
+    "the image.\n"
     "- create_box: quick rectangular box.\n"
     "- run_python: execute FreeCAD Python in the live instance. This is your "
     "general capability for Sketcher (geometry + constraints), PartDesign "
@@ -56,10 +65,14 @@ DEFAULT_SKILLS_DIR = r"C:\Repos\freecad-advisor"
 #: todo-list family. These have no system side effects.
 _TASK_TOOLS = ["Task", "TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate"]
 
-#: Extra built-in tools enabled when a skills project is configured. Skill loads
-#: skills; Read/Glob/Grep let a skill read its reference files. Bash/Write/Edit
-#: stay OFF -- the only mutation path is the gated run_python tool.
-_SKILL_TOOLS = ["Skill", "Read", "Glob", "Grep"]
+#: Read is always on so the agent can open the PNGs produced by view_sketch_svg
+#: and capture_view (and read skill reference files). Read-only.
+_READ_TOOLS = ["Read"]
+
+#: Extra built-in tools enabled when a skills project is configured: Skill loads
+#: skills; Glob/Grep help a skill find its reference files. Bash/Write/Edit stay
+#: OFF -- the only mutation path is the gated run_python tool.
+_SKILL_TOOLS = ["Skill", "Glob", "Grep"]
 
 
 def get_model():
@@ -105,7 +118,7 @@ def build_config(cli_path, bridge_port, bridge_token):
     allowed_tools = ["mcp__freecad__" + name for name in freecad_tools.TOOLS]
 
     skills_dir = get_skills_dir()
-    builtin_tools = list(_TASK_TOOLS)  # always available
+    builtin_tools = list(_TASK_TOOLS) + list(_READ_TOOLS)  # always available
     if skills_dir:
         builtin_tools += _SKILL_TOOLS
     allowed_tools += builtin_tools

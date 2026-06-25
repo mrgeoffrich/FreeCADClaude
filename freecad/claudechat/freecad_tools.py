@@ -7,6 +7,36 @@ inside the functions so this module stays importable from any thread for its
 schema data alone.
 """
 
+import os
+import tempfile
+
+
+def _temp_path(suffix):
+    fd, path = tempfile.mkstemp(prefix="claudechat_", suffix=suffix)
+    os.close(fd)
+    return path
+
+
+def _rasterize_svg(svg_path, png_path, target=768):
+    """Render an SVG file to a PNG using bundled QtSvg. Returns True on success."""
+    from PySide import QtGui, QtSvg
+
+    renderer = QtSvg.QSvgRenderer(svg_path)
+    if not renderer.isValid():
+        return False
+    box = renderer.viewBoxF()
+    w = box.width() or target
+    h = box.height() or target
+    scale = target / max(w, h)
+    image = QtGui.QImage(max(1, int(w * scale)), max(1, int(h * scale)),
+                         QtGui.QImage.Format_ARGB32)
+    image.fill(QtGui.QColor("white"))
+    painter = QtGui.QPainter(image)
+    renderer.render(painter)
+    painter.end()
+    return bool(image.save(png_path))
+
+
 #: MCP tool schema for create_box (name/description/inputSchema).
 _CREATE_BOX_SCHEMA = {
     "name": "create_box",
@@ -214,11 +244,167 @@ def _run_python(args):
     return "\n".join(parts)
 
 
+_VIEW_SKETCH_SVG_SCHEMA = {
+    "name": "view_sketch_svg",
+    "description": (
+        "See FLAT / 2D geometry as SVG. Exports a sketch (or planar object) to "
+        "SVG and returns both the exact SVG source (precise coordinates) and a "
+        "path to a rendered PNG you can open with the Read tool. PREFER this "
+        "over capture_view whenever the geometry is flat/2D (sketches, profiles, "
+        "outlines). Optional 'name' = the object's internal Name; defaults to "
+        "the selected sketch, or the first sketch in the document."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Internal Name of the sketch/object to view"},
+        },
+        "additionalProperties": False,
+    },
+}
+
+
+def _run_view_sketch_svg(args):
+    import FreeCAD
+
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        return "No active document."
+
+    obj = None
+    name = args.get("name")
+    if name:
+        obj = doc.getObject(name)
+        if obj is None:
+            return f"No object named '{name}' in the document."
+    else:
+        try:
+            import FreeCADGui
+
+            selected = [s.Object for s in FreeCADGui.Selection.getSelectionEx()]
+        except Exception:  # noqa: BLE001
+            selected = []
+        for candidate in selected:
+            if "Sketch" in candidate.TypeId:
+                obj = candidate
+                break
+        if obj is None:
+            for candidate in doc.Objects:
+                if candidate.TypeId == "Sketcher::SketchObject":
+                    obj = candidate
+                    break
+        if obj is None:
+            return "No sketch found. Pass a 'name', or create/select a sketch first."
+
+    svg_path = _temp_path(".svg")
+    try:
+        import importSVG
+
+        importSVG.export([obj], svg_path)
+        svg_text = open(svg_path, encoding="utf-8").read()
+    except Exception as exc:  # noqa: BLE001
+        return f"SVG export failed for '{obj.Label}': {exc!r}"
+
+    parts = [f"Exported '{obj.Label}' ({obj.TypeId}) to SVG."]
+    png_path = _temp_path(".png")
+    if _rasterize_svg(svg_path, png_path):
+        parts.append(f"Rendered image (open with the Read tool): {png_path}")
+    if len(svg_text) <= 8000:
+        parts.append("SVG source:\n" + svg_text)
+    else:
+        parts.append(f"(SVG source is {len(svg_text)} chars — Read the rendered image instead.)")
+    return "\n\n".join(parts)
+
+
+_CAPTURE_VIEW_SCHEMA = {
+    "name": "capture_view",
+    "description": (
+        "Take a PNG screenshot of the active 3D view and return a path to open "
+        "with the Read tool. Use for 3D solids/assemblies (for flat 2D geometry, "
+        "prefer view_sketch_svg). Optional 'view' to set the camera first: "
+        "iso, front, rear, top, bottom, left, right."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "view": {"type": "string", "description": "Camera preset: iso/front/rear/top/bottom/left/right"},
+            "width": {"type": "integer", "description": "Image width px (default 1024)"},
+            "height": {"type": "integer", "description": "Image height px (default 768)"},
+        },
+        "additionalProperties": False,
+    },
+}
+
+_VIEW_PRESETS = {
+    "iso": "viewIsometric", "isometric": "viewIsometric", "axonometric": "viewAxonometric",
+    "front": "viewFront", "rear": "viewRear", "back": "viewRear", "top": "viewTop",
+    "bottom": "viewBottom", "left": "viewLeft", "right": "viewRight",
+}
+
+
+def _run_capture_view(args):
+    import FreeCADGui
+
+    view = FreeCADGui.activeView() if hasattr(FreeCADGui, "activeView") else None
+    if view is None or not hasattr(view, "saveImage"):
+        return "No active 3D view to capture (open a document with geometry first)."
+
+    preset = _VIEW_PRESETS.get(str(args.get("view") or "").lower())
+    if preset and hasattr(view, preset):
+        getattr(view, preset)()
+    try:
+        view.fitAll()
+    except Exception:  # noqa: BLE001
+        pass
+
+    width = int(args.get("width", 1024))
+    height = int(args.get("height", 768))
+    png_path = _temp_path(".png")
+    view.saveImage(png_path, width, height, "White")
+    return f"Captured the 3D view to: {png_path}\n(Open it with the Read tool to see it.)"
+
+
+_GET_SELECTION_SCHEMA = {
+    "name": "get_selection",
+    "description": (
+        "Return what the user currently has selected in FreeCAD (objects and "
+        "sub-elements like Edge3/Face2/Vertex1) as JSON. Use this to act on "
+        "what the user clicked (e.g. 'fillet this edge')."
+    ),
+    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+}
+
+
+def _run_get_selection(args):
+    import json
+
+    try:
+        import FreeCADGui
+
+        selection = FreeCADGui.Selection.getSelectionEx()
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": repr(exc), "selection_count": 0, "selection": []})
+
+    out = []
+    for sel in selection:
+        obj = sel.Object
+        out.append({
+            "name": obj.Name,
+            "label": obj.Label,
+            "type": obj.TypeId,
+            "subelements": list(sel.SubElementNames),
+        })
+    return json.dumps({"selection_count": len(out), "selection": out}, indent=2)
+
+
 #: Registry: tool name -> {schema, run, confirm?}.
 #: ``confirm: True`` means the bridge asks the user to approve before running.
 TOOLS = {
     "create_box": {"schema": _CREATE_BOX_SCHEMA, "run": _run_create_box},
     "get_objects": {"schema": _GET_OBJECTS_SCHEMA, "run": _run_get_objects},
+    "get_selection": {"schema": _GET_SELECTION_SCHEMA, "run": _run_get_selection},
+    "view_sketch_svg": {"schema": _VIEW_SKETCH_SVG_SCHEMA, "run": _run_view_sketch_svg},
+    "capture_view": {"schema": _CAPTURE_VIEW_SCHEMA, "run": _run_capture_view},
     "run_python": {"schema": _RUN_PYTHON_SCHEMA, "run": _run_python, "confirm": True},
 }
 
