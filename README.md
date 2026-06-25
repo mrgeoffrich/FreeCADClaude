@@ -35,23 +35,66 @@ ClaudeChat/
   terms don't permit shipping claude.ai login in a distributed product.
 - No Python packages.
 
-## Install (for testing)
+## Installation
 
-Copy or symlink this `ClaudeChat` folder into your FreeCAD user `Mod` directory.
-Note FreeCAD 1.x uses a **version-namespaced** dir (e.g. `…\FreeCAD\v1-1\Mod\`);
-`deploy.ps1` resolves the correct path automatically.
+### 1. Prerequisites
 
-```powershell
-pwsh -File deploy.ps1        # copy into the versioned user Mod dir
-pwsh -File install_deps.ps1  # verify the claude CLI is present + logged in
+- **FreeCAD 1.1+**.
+- **Node.js** and the **Claude Code CLI**, logged in once with your Claude
+  account:
+  ```bash
+  npm install -g @anthropic-ai/claude-code
+  claude            # run once, complete the login (uses your Pro/Max subscription)
+  ```
+  Make sure `claude` is on your `PATH` (`claude --version` should work). No
+  Anthropic API key is required.
+
+### 2. Find your FreeCAD user `Mod` directory
+
+FreeCAD 1.x uses a **version-namespaced** user directory. The addon must live in
+its `Mod` folder:
+
+| OS      | User `Mod` directory                                         |
+|---------|--------------------------------------------------------------|
+| Windows | `%APPDATA%\FreeCAD\v1-1\Mod\`                                 |
+| Linux   | `~/.local/share/FreeCAD/v1-1/Mod/` (or `~/.FreeCAD/...`)      |
+| macOS   | `~/Library/Application Support/FreeCAD/v1-1/Mod/`             |
+
+The exact path for your build is whatever this prints, with `Mod` appended:
+```bash
+freecadcmd -c "import FreeCAD; print(FreeCAD.getUserAppDataDir())"
 ```
 
-Then in FreeCAD: pick **Claude Chat** from the workbench selector. The panel
-appears on the right; toggle it any time with the toolbar/menu button. Type a
-message to start a live Claude session.
+### 3. Install the addon
 
-> **Dev loop:** `deploy.ps1` preserves `vendor/`, so re-running it after code
-> changes is fast and doesn't reinstall dependencies.
+The result should be `…/Mod/ClaudeChat/` containing `Init.py`, `InitGui.py`,
+`package.xml`, and the `freecad/` package. Any of these works:
+
+- **git clone** straight into the Mod dir:
+  ```bash
+  git clone https://github.com/mrgeoffrich/ClaudeChat "<Mod dir>/ClaudeChat"
+  ```
+- **Copy** the folder into the Mod dir manually.
+- **Windows dev** — from a clone, `pwsh -File deploy.ps1` copies it into the
+  correct versioned Mod dir automatically (re-run after code changes).
+
+There are **no Python dependencies** to install. On Windows you can run
+`pwsh -File install_deps.ps1` to confirm the `claude` CLI is present and
+logged in.
+
+### 4. Run it
+
+Restart FreeCAD, then pick **Claude Chat** from the workbench selector. The chat
+and **Plan & Tasks** panels dock on the right (toggle the chat any time from the
+toolbar/menu). Type a message to start a live session.
+
+### 5. Optional — enable a skills project
+
+To let the agent use FreeCAD skills (e.g. a design-advisor), point it at a
+project whose `.claude/skills` holds them, via the preference
+`User parameter:BaseApp/Preferences/Mod/ClaudeChat` → string `SkillsProjectDir`.
+When set, the agent runs with that as its working dir and enables the
+`Skill`/`Read`/`Glob`/`Grep` tools. Leave it unset to keep things locked down.
 
 ## Evaluation
 
