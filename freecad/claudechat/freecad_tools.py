@@ -434,8 +434,8 @@ _CAPTURE_VIEW_SCHEMA = {
         "type": "object",
         "properties": {
             "view": {"type": "string", "description": "Camera preset: iso/front/rear/top/bottom/left/right"},
-            "width": {"type": "integer", "description": "Image width px (default 1024)"},
-            "height": {"type": "integer", "description": "Image height px (default 768)"},
+            "width": {"type": "integer", "description": "Image width px (default 1280)"},
+            "height": {"type": "integer", "description": "Image height px (default 960)"},
         },
         "additionalProperties": False,
     },
@@ -463,8 +463,10 @@ def _run_capture_view(args):
     except Exception:  # noqa: BLE001
         pass
 
-    width = int(args.get("width", 1024))
-    height = int(args.get("height", 768))
+    # 1280x960 (1.23 MP) sits near Claude's image ceiling (~1.15-1.2 MP / 1568px
+    # long edge); larger just gets downscaled again, so this is the detail sweet spot.
+    width = int(args.get("width", 1280))
+    height = int(args.get("height", 960))
     png_path = _artifact_path("captures", f"view_{args.get('view') or 'current'}", ".png")
     view.saveImage(png_path, width, height, "White")
     return f"Captured the 3D view to: {png_path}\n(Open it with the Read tool to see it.)"
