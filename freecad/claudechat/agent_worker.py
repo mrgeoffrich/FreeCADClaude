@@ -72,6 +72,9 @@ class AgentWorker(QtCore.QObject):
             "--include-partial-messages",  # stream text token-by-token
             "--model", cfg["model"],
         ]
+        # Pin reasoning effort so we don't inherit the user's global effortLevel.
+        if cfg.get("effort"):
+            argv += ["--effort", cfg["effort"]]
         # Built-in tools: a safe allowlist (Skill + read-only) when a skills
         # project is configured, otherwise none. Bash/Write/Edit stay off either
         # way -- the only mutation path is the gated run_python MCP tool.

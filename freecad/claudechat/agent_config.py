@@ -13,6 +13,12 @@ import FreeCAD
 
 DEFAULT_MODEL = "claude-opus-4-8"
 
+#: Reasoning effort passed to the CLI as --effort. Pinning it stops the addon
+#: inheriting your global Claude Code effortLevel (which can be xhigh/max and
+#: makes turns think for a long time). Override via the "Effort" preference.
+DEFAULT_EFFORT = "medium"
+_VALID_EFFORT = ("low", "medium", "high", "xhigh", "max")
+
 SYSTEM_PROMPT = (
     "You are Claude, embedded as an assistant inside FreeCAD, the open-source "
     "parametric CAD program. You speak to the user through a narrow dockable "
@@ -88,6 +94,14 @@ def get_model():
     return params.GetString("Model", DEFAULT_MODEL) or DEFAULT_MODEL
 
 
+def get_effort():
+    """Reasoning effort (low/medium/high/xhigh/max). Pinned so it doesn't
+    inherit the user's global Claude Code effortLevel."""
+    params = FreeCAD.ParamGet(_PARAM_PATH)
+    effort = (params.GetString("Effort", DEFAULT_EFFORT) or DEFAULT_EFFORT).strip().lower()
+    return effort if effort in _VALID_EFFORT else DEFAULT_EFFORT
+
+
 def get_skills_dir():
     """Return the configured skills project dir if it has .claude/skills, else None."""
     params = FreeCAD.ParamGet(_PARAM_PATH)
@@ -138,6 +152,7 @@ def build_config(cli_path, bridge_port, bridge_token):
     return {
         "cli_path": cli_path,
         "model": get_model(),
+        "effort": get_effort(),
         "system": SYSTEM_PROMPT,
         "mcp_config": mcp_config,
         "allowed_tools": allowed_tools,
