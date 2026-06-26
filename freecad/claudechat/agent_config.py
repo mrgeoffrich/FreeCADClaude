@@ -54,11 +54,13 @@ SYSTEM_PROMPT = (
     "run_python returns a traceback, fix the code and retry. Keep chat answers "
     "concise and suited to a narrow panel.\n\n"
     "When the user asks how to model/design/build something, use your "
-    "freecad-design-advisor skill (if available) to plan the workbench and "
-    "feature sequence, then offer to build it with run_python. For any "
-    "multi-step build, track the steps with the task tools (TaskCreate, then "
-    "TaskUpdate to mark each in_progress/completed) so the user can follow "
-    "progress in the Plan & Tasks panel."
+    "freecad-design-advisor skill (if available) and follow its flow: advise the "
+    "approach, then end with the clarifying questions it calls for and wait for "
+    "the user's answers -- do not start building on assumptions. Only once they "
+    "have answered, hand off to a Plan subagent for the concrete build plan, then "
+    "offer to build it with run_python. For any multi-step build, track the steps "
+    "with the task tools (TaskCreate, then TaskUpdate to mark each "
+    "in_progress/completed) so the user can follow progress in the Plan & Tasks panel."
 )
 
 _PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/ClaudeChat"

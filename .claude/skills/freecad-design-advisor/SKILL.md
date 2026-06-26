@@ -38,10 +38,11 @@ code here.
    essentially an extruded outline? Spun about an axis? A hollow housing?
    Several parts that move? Function matters — where loads go, what mates with
    what, how it sits on the print bed.
-2. **Ask only what you must.** If a detail genuinely changes the approach (does
-   the lid come off? printed or machined? any moving parts?), ask one or two
-   sharp questions. Otherwise state your assumptions and proceed — a concrete
-   recommendation beats an interview.
+2. **Surface what's still open, don't guess silently.** If a detail changes the
+   very approach (does the lid come off? any moving parts? printed or machined?),
+   state a working assumption so you can still give a concrete recommendation —
+   then fold that open decision into your closing questions (see *After advising*
+   below) rather than building on an unconfirmed guess.
 3. **Pick the lead workbench, then any supporting ones.** Default to Part Design
    for a single mechanical part; consult `references/workbench-selector.md` when
    the choice isn't obvious.
@@ -99,6 +100,31 @@ Adapt to the question, but a strong recommendation usually has:
 
 Keep it skimmable. The user wants a map they can follow inside FreeCAD, not an
 essay.
+
+## After advising: clarify, then hand off to planning
+
+Your advice is the *map*. Don't jump straight from it into building — close the
+loop in two steps:
+
+1. **End every design response with a short, targeted set of clarifying
+   questions.** These are the specifics the build will need and that you don't
+   yet know. Pull from what matters for *this* design: overall size / key
+   dimensions, which parts come apart or move, wall thickness and the target
+   printer/nozzle, fit clearances for any mating parts, print orientation or
+   strength priorities, and any features (holes, mounts, text/branding). Ask the
+   3–6 that actually shape the model — grouped and sharp, not an exhaustive form.
+   Here the **numbers are welcome**: the advice stays at approach altitude, but
+   the questions are exactly where you gather the measurements the build needs.
+2. **Stop and wait for the answers.** Don't assume them and don't start building
+   — gathering these is the whole point of this step.
+3. **Once the user answers, start the planning agent.** Hand the approach plus
+   their answers to a **Plan subagent** to turn the workflow into a concrete,
+   ordered, build-ready plan — named features in sequence with the now-known
+   dimensions and parameters, ready to execute. Then offer to build it with
+   `run_python`, tracking the steps as tasks so progress is visible.
+
+So the full arc is: **approach → clarifying questions → (user answers) → planning
+agent → build.** Never skip straight from approach to build.
 
 ## Principles that hold across every answer
 
