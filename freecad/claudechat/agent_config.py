@@ -61,10 +61,12 @@ _PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/ClaudeChat"
 _ADDON_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 #: A project directory whose .claude/skills hold FreeCAD skills (e.g. the
-#: freecad-design-advisor planning skill). When set, the CLI runs with this as
-#: its cwd so the project skills are discovered, and the Skill + read tools are
-#: enabled. Override via the "SkillsProjectDir" preference; clear it to disable.
-DEFAULT_SKILLS_DIR = r"C:\Repos\freecad-advisor"
+#: bundled freecad-design-advisor planning skill under this addon's .claude/skills).
+#: When set, the CLI runs with this as its cwd so the project skills are
+#: discovered, and the Skill + read tools are enabled. Defaults to the addon root
+#: so the bundled skills work out of the box; override via the "SkillsProjectDir"
+#: preference (e.g. point at an external project), or clear it to disable.
+DEFAULT_SKILLS_DIR = _ADDON_ROOT
 
 #: Task/todo tracking tools (always enabled) so the agent can plan and track
 #: multi-step modeling work. "Task" is the subagent launcher; the rest are the
