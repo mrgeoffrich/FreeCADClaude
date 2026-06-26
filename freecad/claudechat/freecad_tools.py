@@ -10,12 +10,23 @@ schema data alone.
 import os
 import tempfile
 
+#: Default working-files folder: a "ClaudeChat" subfolder of the user's home
+#: (profile) directory, so captures/exports are easy to find -- not buried in
+#: FreeCAD's hidden app-data dir. Override with the "ArtifactsDir" preference.
+_DEFAULT_ARTIFACTS_DIR = os.path.join(os.path.expanduser("~"), "ClaudeChat")
+_PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/ClaudeChat"
+
 
 def artifacts_dir():
-    """The browsable folder where captures/exports are written."""
+    """The browsable folder where captures/exports are written.
+
+    Defaults to ``~/ClaudeChat`` (captures/ and exports/ live beneath it).
+    Override via the ClaudeChat ``ArtifactsDir`` preference (an absolute path).
+    """
     import FreeCAD
 
-    path = os.path.join(FreeCAD.getUserAppDataDir(), "ClaudeChat")
+    configured = FreeCAD.ParamGet(_PARAM_PATH).GetString("ArtifactsDir", "").strip()
+    path = os.path.expanduser(configured) if configured else _DEFAULT_ARTIFACTS_DIR
     os.makedirs(path, exist_ok=True)
     return path
 
