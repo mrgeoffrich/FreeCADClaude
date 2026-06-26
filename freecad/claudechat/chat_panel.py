@@ -19,7 +19,7 @@ import FreeCADGui
 
 # FreeCAD bundles its own Qt binding under the ``PySide`` name. Always import
 # from ``PySide`` so the addon matches the running FreeCAD.
-from PySide import QtCore, QtWidgets
+from PySide import QtCore, QtGui, QtWidgets
 
 from . import _deps
 from .agent_worker import AgentWorker
@@ -325,9 +325,20 @@ class ChatWidget(QtWidgets.QWidget):
                 f'<span style="color:{_CLAUDE_COLOR}"><i>Thinking'
                 f'{"." * self._think_dots} ({elapsed}s)</i></span>'
             )
-        self.transcript.setMarkdown(body)
         bar = self.transcript.verticalScrollBar()
-        bar.setValue(bar.maximum())
+        # Was the view pinned to (near) the bottom *before* we replace the doc?
+        # Only then do we re-pin -- otherwise leave the user where they scrolled.
+        stick = bar.value() >= bar.maximum() - 8
+        prev = bar.value()
+        self.transcript.setMarkdown(body)
+        if stick:
+            # ensureCursorVisible forces layout to the end and scrolls there,
+            # which is robust to the async relayout of a long document. Reading
+            # bar.maximum() right after setMarkdown can be stale -> the jitter.
+            self.transcript.moveCursor(QtGui.QTextCursor.End)
+            self.transcript.ensureCursorVisible()
+        else:
+            bar.setValue(min(prev, bar.maximum()))
 
     def _set_thinking(self, on):
         self._thinking = on
