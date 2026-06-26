@@ -161,8 +161,17 @@ def _dispatch(req, token):
                 return {"ok": False, "error": f"confirmation failed: {exc!r}"}
             if not approved:
                 return {"ok": False, "error": "The user declined to run this code."}
+        def _call():
+            out = tool["run"](args)
+            # Scan for features that failed to recompute during this call and fold
+            # a one-line summary into the reply (get_diagnostics reports its own).
+            note = "" if name == "get_diagnostics" else freecad_tools.summarize_new_failures()
+            return out, note
+
         try:
-            text = _run_on_gui(lambda: tool["run"](args))
+            text, note = _run_on_gui(_call)
+            if note:
+                text = f"{text}\n\n{note}"
             return {"ok": True, "text": text}
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": repr(exc)}

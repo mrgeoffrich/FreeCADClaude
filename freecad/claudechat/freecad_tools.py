@@ -180,6 +180,10 @@ _GET_OBJECTS_SCHEMA = {
 # Properties worth reporting when present (most are FreeCAD Quantities).
 _REPORTED_PROPS = ("Length", "Width", "Height", "Radius", "Radius1", "Radius2", "Angle")
 
+# A failed recompute flags the object Invalid/Error (the red marks in the tree)
+# WITHOUT raising, so a tool can "succeed" while a feature is broken.
+_ERROR_FLAGS = ("Invalid", "Error")
+
 
 def _run_get_objects(args):
     import json
@@ -213,6 +217,9 @@ def _run_get_objects(args):
                 info["visible"] = bool(view.Visibility)
             except Exception:  # noqa: BLE001
                 pass
+
+        if any(flag in (getattr(obj, "State", None) or []) for flag in _ERROR_FLAGS):
+            info["invalid"] = True  # last recompute failed
 
         objects.append(info)
 
@@ -579,6 +586,78 @@ def _run_export(args):
 
 #: Registry: tool name -> {schema, run, confirm?}.
 #: ``confirm: True`` means the bridge asks the user to approve before running.
+# ---- recompute diagnostics -------------------------------------------------
+# Names already summarised, so a persistently-broken feature isn't re-announced
+# on every subsequent tool call.
+_reported_invalid = set()
+
+
+def _scan_invalid(doc):
+    """Objects whose last recompute failed (Invalid/Error in their State)."""
+    bad = []
+    if doc is not None:
+        for obj in doc.Objects:
+            state = list(getattr(obj, "State", None) or [])
+            if any(flag in state for flag in _ERROR_FLAGS):
+                bad.append({"name": obj.Name, "label": obj.Label,
+                            "type": obj.TypeId, "state": state})
+    return bad
+
+
+def summarize_new_failures():
+    """One-line note about features that NEWLY failed to recompute, or "".
+
+    Called by the bridge on the GUI thread after each tool call. Console warning
+    *text* isn't capturable in FreeCAD 1.1, so this reports failed-recompute
+    state -- the substance of the red errors -- not raw warning messages.
+    """
+    import FreeCAD
+
+    global _reported_invalid
+    bad = _scan_invalid(FreeCAD.ActiveDocument)
+    names = {b["name"] for b in bad}
+    new = [b for b in bad if b["name"] not in _reported_invalid]
+    _reported_invalid = names  # recovered objects drop out; still-broken stay quiet
+    if not new:
+        return ""
+    labels = ", ".join(b["label"] for b in new)
+    return (f"⚠ {len(new)} feature(s) failed to recompute: {labels}. "
+            "Call get_diagnostics for details.")
+
+
+_GET_DIAGNOSTICS_SCHEMA = {
+    "name": "get_diagnostics",
+    "description": (
+        "Details of features that failed their last recompute -- the objects "
+        "flagged Invalid/Error (the red marks in the tree). Other tools only "
+        "note these in a one-line summary; call this for the full list (each "
+        "object's name, label, type and state) so you can fix them. Note: "
+        "FreeCAD console warning text is not capturable, so this reports "
+        "failed-recompute state, not raw warning messages."
+    ),
+    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+}
+
+
+def _run_get_diagnostics(args):
+    import FreeCAD
+
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        return "No active document."
+    bad = _scan_invalid(doc)
+    if not bad:
+        return "No invalid objects -- the document recomputed cleanly."
+    lines = [f"{len(bad)} object(s) currently invalid in '{doc.Label}':"]
+    for b in bad:
+        lines.append(f"- {b['label']} ({b['name']}, {b['type']}) -- state: {', '.join(b['state'])}")
+    lines.append(
+        "These features failed their last recompute. Inspect their inputs "
+        "(profile, constraints, references) and recompute to clear them."
+    )
+    return "\n".join(lines)
+
+
 TOOLS = {
     "create_box": {"schema": _CREATE_BOX_SCHEMA, "run": _run_create_box},
     "get_objects": {"schema": _GET_OBJECTS_SCHEMA, "run": _run_get_objects},
@@ -587,6 +666,7 @@ TOOLS = {
     "capture_view": {"schema": _CAPTURE_VIEW_SCHEMA, "run": _run_capture_view},
     "export": {"schema": _EXPORT_SCHEMA, "run": _run_export},
     "run_python": {"schema": _RUN_PYTHON_SCHEMA, "run": _run_python, "confirm": True},
+    "get_diagnostics": {"schema": _GET_DIAGNOSTICS_SCHEMA, "run": _run_get_diagnostics},
 }
 
 
