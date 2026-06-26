@@ -28,7 +28,12 @@ from .agent_worker import AgentWorker
 #: colour just the labels while the Markdown body keeps the theme's text colour.
 _YOU_COLOR = "#3478c6"      # blue
 _CLAUDE_COLOR = "#d97757"   # Claude coral
+_MUTED_COLOR = "#888888"    # de-emphasised grey (status text, reasoning)
 _CLAUDE_HEADER = f'<span style="color:{_CLAUDE_COLOR}"><b>Claude:</b></span>'
+
+#: Show Claude's streamed reasoning as a muted blockquote. Flip to False to hide
+#: it (the agent still thinks; you just won't see it).
+SHOW_THINKING = True
 
 #: Object name used both to register the dock and to find it again later.
 DOCK_OBJECT_NAME = "ClaudeChatDock"
@@ -92,8 +97,9 @@ class ChatWidget(QtWidgets.QWidget):
         self._thread = None
         self._worker = None
         self._busy = False
-        self._md = ""       # the committed transcript, as Markdown
-        self._live = None   # the in-progress Claude block being streamed
+        self._md = ""         # the committed transcript, as Markdown
+        self._live = None     # the in-progress Claude block being streamed
+        self._live_think = None  # the in-progress reasoning block being streamed
         self._thinking = False
         self._think_dots = 0
         self._think_start = 0.0
@@ -180,6 +186,8 @@ class ChatWidget(QtWidgets.QWidget):
 
         # Worker -> GUI (queued automatically across threads).
         self._worker.text_received.connect(self._on_text)
+        if SHOW_THINKING:
+            self._worker.thinking_received.connect(self._on_thinking)
         self._worker.tool_used.connect(self._on_tool)
         self._worker.turn_finished.connect(self._on_turn_finished)
         self._worker.status_changed.connect(self._on_status)
@@ -237,6 +245,13 @@ class ChatWidget(QtWidgets.QWidget):
         self._render_soon()
 
     @QtCore.Slot(str)
+    def _on_thinking(self, chunk):
+        if self._live_think is None:
+            self._live_think = ""
+        self._live_think += chunk
+        self._render_soon()
+
+    @QtCore.Slot(str)
     def _on_tool(self, tool_name):
         self._commit_live()
         self._add_md(f"*↪ used tool: {tool_name}*")
@@ -266,12 +281,25 @@ class ChatWidget(QtWidgets.QWidget):
         self._render()
 
     def _commit_live(self):
-        """Finalize the in-progress streamed Claude block into the transcript."""
+        """Finalize the streamed reasoning + Claude block into the transcript."""
+        if self._live_think is not None:
+            think = self._live_think.strip()
+            if think:
+                self._md += self._format_thinking(think) + "\n\n"
+            self._live_think = None
         if self._live is not None:
             text = self._live.strip()
             if text:
                 self._md += f"{_CLAUDE_HEADER}\n\n{text}\n\n"
             self._live = None
+
+    @staticmethod
+    def _format_thinking(text, live=False):
+        """Render reasoning as a muted, de-emphasised blockquote."""
+        label = "💭 <i>thinking…</i>" if live else "💭 <i>thought</i>"
+        header = f'<span style="color:{_MUTED_COLOR}">{label}</span>'
+        quoted = "\n".join("> " + line for line in text.splitlines())
+        return f"{header}\n\n{quoted}"
 
     def _render(self):
         """Render now (cancels any pending throttled render)."""
@@ -286,10 +314,12 @@ class ChatWidget(QtWidgets.QWidget):
     def _do_render(self):
         """Render committed transcript + the live streamed block + thinking line."""
         body = self._md
+        if self._live_think is not None:
+            body += self._format_thinking(self._live_think, live=True) + "\n\n"
         if self._live is not None:
             body += f"{_CLAUDE_HEADER}\n\n{self._live}\n\n"
-        # Show the thinking line only before text starts streaming this turn.
-        if self._thinking and self._live is None:
+        # Animated placeholder only until reasoning or text starts streaming.
+        if self._thinking and self._live is None and self._live_think is None:
             elapsed = int(time.monotonic() - self._think_start)
             body += (
                 f'<span style="color:{_CLAUDE_COLOR}"><i>Thinking'
@@ -321,6 +351,7 @@ class ChatWidget(QtWidgets.QWidget):
             self._worker.reset_session()
         self._md = ""
         self._live = None
+        self._live_think = None
         self._set_busy(False)
         self._set_thinking(False)
         try:

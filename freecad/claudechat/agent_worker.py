@@ -29,6 +29,7 @@ class AgentWorker(QtCore.QObject):
     """Runs the claude CLI per turn, streaming replies out as signals."""
 
     text_received = QtCore.Signal(str)      # assistant text
+    thinking_received = QtCore.Signal(str)  # streamed extended-thinking text
     tool_used = QtCore.Signal(str)          # name of a FreeCAD tool the agent invoked
     task_event = QtCore.Signal(dict)        # {op:create,num,subject} | {op:update,num,status}
     plan_received = QtCore.Signal(str)      # full text of a Plan subagent's output
@@ -47,6 +48,7 @@ class AgentWorker(QtCore.QObject):
         self._proc = None         # the live CLI subprocess for the current turn
         self._cancelled = False
         self._streamed = False    # received partial text deltas this turn
+        self._thought = False     # received partial thinking deltas this turn
 
     # -- runs on the worker thread ---------------------------------------
 
@@ -96,6 +98,7 @@ class AgentWorker(QtCore.QObject):
         emitted = False
         self._cancelled = False
         self._streamed = False  # did we get partial text deltas this turn?
+        self._thought = False   # did we get partial thinking deltas this turn?
         stray = []  # non-JSON lines (e.g. stderr merged in) -> error context
         try:
             proc = subprocess.Popen(
@@ -150,10 +153,16 @@ class AgentWorker(QtCore.QObject):
             event = obj.get("event", {})
             if event.get("type") == "content_block_delta":
                 delta = event.get("delta", {})
-                if delta.get("type") == "text_delta" and delta.get("text"):
+                dtype = delta.get("type")
+                if dtype == "text_delta" and delta.get("text"):
                     self._streamed = True
                     self.text_received.emit(delta["text"])
                     return True
+                if dtype == "thinking_delta" and delta.get("thinking"):
+                    # Reasoning is only available live -- it's redacted in the
+                    # saved transcript -- so surfacing it here is the only chance.
+                    self._thought = True
+                    self.thinking_received.emit(delta["thinking"])
             return False
         if kind == "assistant":
             produced = False
@@ -164,6 +173,10 @@ class AgentWorker(QtCore.QObject):
                     if not self._streamed:
                         self.text_received.emit(block["text"])
                         produced = True
+                elif btype == "thinking" and block.get("thinking"):
+                    # Fallback for the same reason -- only if deltas were absent.
+                    if not self._thought:
+                        self.thinking_received.emit(block["thinking"])
                 elif btype == "tool_use":
                     self._handle_tool_use(block)
             return produced
@@ -190,11 +203,18 @@ class AgentWorker(QtCore.QObject):
         elif name == "Agent" and inp.get("subagent_type") == "Plan":
             if block.get("id"):
                 self._plan_ids.add(block["id"])
+        elif name == "Skill":
+            # Built-in, otherwise invisible -- show which skill is loading so a
+            # long skill+reference read doesn't look like the turn is stuck.
+            skill = inp.get("command") or inp.get("name") or inp.get("skill")
+            self.tool_used.emit(f"skill: {skill}" if skill else "skill")
+        elif name == "Read":
+            # Built-in reference/image reads -- show just the file name.
+            path = inp.get("file_path") or ""
+            self.tool_used.emit("read: " + path.rsplit("/", 1)[-1] if path else "read")
         elif name.startswith("mcp__freecad__"):
-            # Surface meaningful FreeCAD actions in chat; keep quiet inspections quiet.
-            short = name.replace("mcp__freecad__", "")
-            if short not in ("get_objects", "get_selection"):
-                self.tool_used.emit(short)
+            # Surface every FreeCAD action in chat, including get_objects/get_selection.
+            self.tool_used.emit(name.replace("mcp__freecad__", ""))
 
     def _handle_tool_result(self, block):
         import re
