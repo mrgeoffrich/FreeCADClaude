@@ -154,6 +154,18 @@ def _dispatch(req, token):
         tool = freecad_tools.TOOLS.get(name)
         if tool is None:
             return {"ok": False, "error": f"unknown tool: {name}"}
+        # Pre-flight check (e.g. a syntax compile for run_python) BEFORE the confirm
+        # dialog -- no point asking the user to approve code that can't run. Pure
+        # Python, no FreeCAD access, so it's fine off the GUI thread. A non-empty
+        # result is relayed to Claude as the tool's output so it fixes and retries.
+        precheck = tool.get("precheck")
+        if precheck is not None:
+            try:
+                problem = precheck(args)
+            except Exception as exc:  # noqa: BLE001
+                problem = f"precheck error: {exc!r}"
+            if problem:
+                return {"ok": True, "text": problem}
         if tool.get("confirm"):
             try:
                 approved = _run_on_gui(lambda: _confirm_dialog(name, args))

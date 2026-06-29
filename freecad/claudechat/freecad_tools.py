@@ -241,7 +241,8 @@ _RUN_PYTHON_SCHEMA = {
         "The code runs on the GUI thread inside ONE undoable transaction. "
         "Return data by printing or by assigning to a variable named `result` "
         "(both are returned to you). On error you get the full traceback and the "
-        "transaction is rolled back -- fix it and try again. "
+        "transaction is rolled back -- fix it and try again. If you're unsure of "
+        "a method's parameters, call inspect_api first rather than guessing. "
         "Work in small steps and verify with get_objects. For PartDesign, create "
         "a PartDesign::Body first and add features inside it. The user is shown "
         "your code and must approve it before it runs."
@@ -258,6 +259,32 @@ _RUN_PYTHON_SCHEMA = {
         "required": ["code"],
     },
 }
+
+
+def _precheck_python(args):
+    """Reject code that won't even compile, BEFORE the user is asked to approve it.
+
+    Run by the bridge ahead of the confirmation dialog: there's no point making
+    the user approve code that can't run, and Claude gets the error a turn
+    sooner. Returns an error string to relay to Claude, or "" when the code is
+    syntactically fine. NB this only catches Python-level syntax errors -- a
+    linter can't validate FreeCAD's C++ call signatures, so for *parameter*
+    mistakes the agent should reach for inspect_api instead.
+    """
+    code = args.get("code", "")
+    if not code.strip():
+        return "No code provided."
+    try:
+        compile(code, "<run_python>", "exec")
+    except SyntaxError as exc:
+        where = f"line {exc.lineno}" + (f", col {exc.offset}" if exc.offset else "")
+        lines = [f"SyntaxError at {where}: {exc.msg}. Nothing ran -- fix and resend."]
+        detail = (exc.text or "").rstrip("\n")
+        if detail:
+            lines.append(detail)
+            lines.append(" " * (max(1, exc.offset or 1) - 1) + "^")
+        return "\n".join(lines)
+    return ""
 
 
 def _run_python(args):
@@ -323,6 +350,129 @@ def _run_python(args):
     if namespace.get("result") is not None:
         parts.append("result: " + repr(namespace["result"]))
     return "\n".join(parts)
+
+
+_INSPECT_API_SCHEMA = {
+    "name": "inspect_api",
+    "description": (
+        "Look up the real signatures and docstrings of FreeCAD API names BEFORE "
+        "writing run_python, so you don't guess parameters. Pass 'names': a LIST "
+        "of dotted names to resolve in the run_python namespace (FreeCAD, App, "
+        "Part, Sketcher, PartDesign, Draft, Gui, doc, and the active document's "
+        "objects). For each it returns the type, a Python signature when one is "
+        "available, the docstring (which for FreeCAD's C++ methods usually spells "
+        "out the accepted argument forms), and -- for modules/classes -- the list "
+        "of public members. Examples: ['Sketcher.Constraint', 'Part.makeBox', "
+        "'PartDesign.Body', 'doc.Sketch.addGeometry']. Read-only and needs no "
+        "approval: it only walks attribute chains, never calls or subscripts. "
+        "Look up everything you're unsure of in ONE call, then write the code."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "names": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Dotted API names to inspect, e.g. 'Sketcher.Constraint'",
+            },
+        },
+        "required": ["names"],
+    },
+}
+
+
+def _inspect_namespace():
+    """The names run_python binds, for read-only API lookups (doc may be absent)."""
+    import FreeCAD
+
+    ns = {"FreeCAD": FreeCAD, "App": FreeCAD}
+    if FreeCAD.ActiveDocument is not None:
+        ns["doc"] = FreeCAD.ActiveDocument
+    try:
+        import FreeCADGui
+
+        ns["FreeCADGui"] = FreeCADGui
+        ns["Gui"] = FreeCADGui
+    except Exception:  # noqa: BLE001
+        pass
+    for mod_name in ("Part", "Sketcher", "PartDesign", "Draft"):
+        try:
+            ns[mod_name] = __import__(mod_name)
+        except Exception:  # noqa: BLE001
+            pass
+    return ns
+
+
+def _is_dotted_name(expr):
+    """True iff `expr` is only attribute access on a name -- no calls/subscripts.
+
+    Guarantees eval()-ing it can't execute a function or run arbitrary code, so
+    inspect_api stays a read-only path (the one mutation path is run_python).
+    """
+    import ast
+
+    try:
+        node = ast.parse(expr.strip(), mode="eval").body
+    except SyntaxError:
+        return False
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return isinstance(node, ast.Name)
+
+
+def _describe_api(obj, name):
+    """A compact signature/doc/members block for one resolved API object."""
+    import inspect
+
+    lines = [f"## {name}"]
+    try:
+        sig = str(inspect.signature(obj))
+    except (TypeError, ValueError):
+        sig = None
+    if sig:
+        lines.append(f"signature: {name.split('.')[-1]}{sig}")
+    else:
+        lines.append(f"type: {type(obj).__name__}")
+
+    doc = inspect.getdoc(obj)
+    if doc:
+        doc = doc.strip()
+        if len(doc) > 2000:
+            doc = doc[:2000] + " […]"
+        lines.append(doc)
+
+    if inspect.ismodule(obj) or inspect.isclass(obj):
+        members = [m for m in dir(obj) if not m.startswith("_")]
+        if members:
+            shown = ", ".join(members[:60])
+            lines.append("members: " + shown + (" …" if len(members) > 60 else ""))
+    return "\n".join(lines)
+
+
+def _run_inspect_api(args):
+    names = args.get("names")
+    if isinstance(names, str):
+        names = [names]
+    if not names:
+        return "Pass 'names': a list of dotted API names to look up (e.g. ['Sketcher.Constraint'])."
+
+    ns = _inspect_namespace()
+    blocks = []
+    for raw in names:
+        name = str(raw).strip()
+        if not _is_dotted_name(name):
+            blocks.append(
+                f"## {name}\n(skipped: inspect_api only resolves dotted names like "
+                "'Sketcher.Constraint' -- it never calls functions or subscripts.)"
+            )
+            continue
+        try:
+            obj = eval(name, dict(ns))  # noqa: S307 - validated as a dotted name only
+        except Exception as exc:  # noqa: BLE001
+            blocks.append(f"## {name}\n(could not resolve: {exc!r})")
+            continue
+        blocks.append(_describe_api(obj, name))
+    return "\n\n".join(blocks)
 
 
 _VIEW_SKETCH_SVG_SCHEMA = {
@@ -667,7 +817,13 @@ TOOLS = {
     "view_sketch_svg": {"schema": _VIEW_SKETCH_SVG_SCHEMA, "run": _run_view_sketch_svg},
     "capture_view": {"schema": _CAPTURE_VIEW_SCHEMA, "run": _run_capture_view},
     "export": {"schema": _EXPORT_SCHEMA, "run": _run_export},
-    "run_python": {"schema": _RUN_PYTHON_SCHEMA, "run": _run_python, "confirm": True},
+    "inspect_api": {"schema": _INSPECT_API_SCHEMA, "run": _run_inspect_api},
+    "run_python": {
+        "schema": _RUN_PYTHON_SCHEMA,
+        "run": _run_python,
+        "confirm": True,
+        "precheck": _precheck_python,
+    },
     "get_diagnostics": {"schema": _GET_DIAGNOSTICS_SCHEMA, "run": _run_get_diagnostics},
 }
 
