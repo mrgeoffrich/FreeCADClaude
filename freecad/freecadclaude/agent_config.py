@@ -73,9 +73,9 @@ SYSTEM_PROMPT = (
     "in_progress/completed) so the user can follow progress in the Plan & Tasks panel."
 )
 
-_PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/ClaudeChat"
+_PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/FreeCADClaude"
 
-#: Addon root = three levels up from this file (.../ClaudeChat/freecad/claudechat).
+#: Addon root = three levels up from this file (.../FreeCADClaude/freecad/freecadclaude).
 _ADDON_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 #: A project directory whose .claude/skills hold FreeCAD skills (e.g. the

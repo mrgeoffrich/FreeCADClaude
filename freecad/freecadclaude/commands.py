@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""GUI commands for the ClaudeChat workbench."""
+"""GUI commands for the FreeCADClaude workbench."""
 
 import os
 
@@ -17,14 +17,14 @@ class TogglePanelCommand:
     def GetResources(self):
         return {
             "Pixmap": _ICON,
-            "MenuText": QT_TRANSLATE_NOOP("ClaudeChat_TogglePanel", "Claude Chat panel"),
+            "MenuText": QT_TRANSLATE_NOOP("FreeCADClaude_TogglePanel", "Claude Chat panel"),
             "ToolTip": QT_TRANSLATE_NOOP(
-                "ClaudeChat_TogglePanel", "Show or hide the Claude chat panel"
+                "FreeCADClaude_TogglePanel", "Show or hide the Claude chat panel"
             ),
         }
 
     def Activated(self):
-        from freecad.claudechat import chat_panel
+        from freecad.freecadclaude import chat_panel
 
         chat_panel.get_panel().toggle_dock()
 
@@ -33,4 +33,4 @@ class TogglePanelCommand:
         return FreeCADGui.getMainWindow() is not None
 
 
-FreeCADGui.addCommand("ClaudeChat_TogglePanel", TogglePanelCommand())
+FreeCADGui.addCommand("FreeCADClaude_TogglePanel", TogglePanelCommand())

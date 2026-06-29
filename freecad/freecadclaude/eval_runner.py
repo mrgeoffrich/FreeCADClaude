@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Unattended end-to-end evaluation of the ClaudeChat agent.
+"""Unattended end-to-end evaluation of the FreeCADClaude agent.
 
-Triggered from InitGui.py when the CLAUDECHAT_EVAL env var is set. It opens the
-chat panel, submits a prompt (CLAUDECHAT_EVAL_PROMPT), auto-approves run_python,
+Triggered from InitGui.py when the FREECADCLAUDE_EVAL env var is set. It opens the
+chat panel, submits a prompt (FREECADCLAUDE_EVAL_PROMPT), auto-approves run_python,
 waits for the turn to finish via a nested Qt event loop (so the GUI thread stays
-free to marshal tool calls), writes a JSON report (CLAUDECHAT_EVAL_RESULT), and
+free to marshal tool calls), writes a JSON report (FREECADCLAUDE_EVAL_RESULT), and
 quits FreeCAD. Launch it with eval/run.ps1.
 """
 
@@ -21,8 +21,8 @@ _DEFAULT_PROMPT = "Create a box exactly 20 x 20 x 20 mm. Do not ask questions."
 
 
 def _result_path():
-    return os.environ.get("CLAUDECHAT_EVAL_RESULT") or os.path.join(
-        os.path.expanduser("~"), "claudechat_eval_result.json"
+    return os.environ.get("FREECADCLAUDE_EVAL_RESULT") or os.path.join(
+        os.path.expanduser("~"), "freecadclaude_eval_result.json"
     )
 
 
@@ -45,8 +45,8 @@ def _snapshot_document():
 
 
 def run():
-    prompt = os.environ.get("CLAUDECHAT_EVAL_PROMPT", _DEFAULT_PROMPT)
-    timeout_ms = int(os.environ.get("CLAUDECHAT_EVAL_TIMEOUT", "240")) * 1000
+    prompt = os.environ.get("FREECADCLAUDE_EVAL_PROMPT", _DEFAULT_PROMPT)
+    timeout_ms = int(os.environ.get("FREECADCLAUDE_EVAL_TIMEOUT", "240")) * 1000
     report = {"prompt": prompt, "completed": False, "error": None,
               "transcript": "", "result": {}}
 

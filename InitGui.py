@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
-# ClaudeChat workbench - GUI init.
+# FreeCADClaude workbench - GUI init.
 #
 # Registers a workbench whose only job (for now) is to show a dockable
 # chat panel on the right-hand side of the FreeCAD main window. No AI is
@@ -10,7 +10,7 @@ import FreeCAD
 import FreeCADGui
 
 
-class ClaudeChatWorkbench(FreeCADGui.Workbench):
+class FreeCADClaudeWorkbench(FreeCADGui.Workbench):
     """A minimal workbench that exposes the Claude chat dock panel."""
 
     MenuText = "Claude Chat"
@@ -23,17 +23,17 @@ class ClaudeChatWorkbench(FreeCADGui.Workbench):
         try:
             import os
 
-            from freecad import claudechat
+            from freecad import freecadclaude
 
             self.__class__.Icon = os.path.join(
-                os.path.dirname(claudechat.__file__),
+                os.path.dirname(freecadclaude.__file__),
                 "resources",
                 "icon.svg",
             )
         except Exception as exc:
             # Never let icon resolution stop the workbench from registering.
             FreeCAD.Console.PrintWarning(
-                f"ClaudeChat: could not resolve workbench icon ({exc})\n"
+                f"FreeCADClaude: could not resolve workbench icon ({exc})\n"
             )
 
     def Initialize(self):
@@ -42,21 +42,21 @@ class ClaudeChatWorkbench(FreeCADGui.Workbench):
         # exec(), so module-level names are NOT visible to methods called later
         # (they resolve against FreeCAD's loader globals). Importing here makes
         # these reliable locals. It also keeps GUI imports out of startup.
-        from freecad.claudechat import commands  # noqa: F401
+        from freecad.freecadclaude import commands  # noqa: F401
         from PySide.QtCore import QT_TRANSLATE_NOOP
 
         self.appendToolbar(
             QT_TRANSLATE_NOOP("Workbench", "Claude Chat"),
-            ["ClaudeChat_TogglePanel"],
+            ["FreeCADClaude_TogglePanel"],
         )
         self.appendMenu(
             QT_TRANSLATE_NOOP("Workbench", "Claude"),
-            ["ClaudeChat_TogglePanel"],
+            ["FreeCADClaude_TogglePanel"],
         )
 
     def Activated(self):
         """Run every time the user switches to this workbench."""
-        from freecad.claudechat import chat_panel, plan_panel
+        from freecad.freecadclaude import chat_panel, plan_panel
 
         # Chat first so the Plan dock can tab itself alongside it.
         chat_panel.get_panel()
@@ -72,19 +72,19 @@ class ClaudeChatWorkbench(FreeCADGui.Workbench):
         return "Gui::PythonWorkbench"
 
 
-FreeCADGui.addWorkbench(ClaudeChatWorkbench())
+FreeCADGui.addWorkbench(FreeCADClaudeWorkbench())
 
 
-# Unattended evaluation hook: when CLAUDECHAT_EVAL is set, run a prompt end to
+# Unattended evaluation hook: when FREECADCLAUDE_EVAL is set, run a prompt end to
 # end after the GUI has settled, then quit. Normal startups skip this entirely.
 import os as _os
 
-if _os.environ.get("CLAUDECHAT_EVAL"):
+if _os.environ.get("FREECADCLAUDE_EVAL"):
     from PySide.QtCore import QTimer as _QTimer
 
-    def _claudechat_start_eval():
-        from freecad.claudechat import eval_runner
+    def _freecadclaude_start_eval():
+        from freecad.freecadclaude import eval_runner
 
         eval_runner.run()
 
-    _QTimer.singleShot(4000, _claudechat_start_eval)
+    _QTimer.singleShot(4000, _freecadclaude_start_eval)

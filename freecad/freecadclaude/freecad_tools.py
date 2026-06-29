@@ -10,18 +10,18 @@ schema data alone.
 import os
 import tempfile
 
-#: Default working-files folder: a "ClaudeChat" subfolder of the user's home
+#: Default working-files folder: a "FreeCADClaude" subfolder of the user's home
 #: (profile) directory, so captures/exports are easy to find -- not buried in
 #: FreeCAD's hidden app-data dir. Override with the "ArtifactsDir" preference.
-_DEFAULT_ARTIFACTS_DIR = os.path.join(os.path.expanduser("~"), "ClaudeChat")
-_PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/ClaudeChat"
+_DEFAULT_ARTIFACTS_DIR = os.path.join(os.path.expanduser("~"), "FreeCADClaude")
+_PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/FreeCADClaude"
 
 
 def artifacts_dir():
     """The browsable folder where captures/exports are written.
 
-    Defaults to ``~/ClaudeChat`` (captures/ and exports/ live beneath it).
-    Override via the ClaudeChat ``ArtifactsDir`` preference (an absolute path).
+    Defaults to ``~/FreeCADClaude`` (captures/ and exports/ live beneath it).
+    Override via the FreeCADClaude ``ArtifactsDir`` preference (an absolute path).
     """
     import FreeCAD
 
@@ -32,7 +32,7 @@ def artifacts_dir():
 
 
 def _artifact_path(subdir, base, suffix):
-    """A unique, readably-named file under <ClaudeChat>/<subdir>/."""
+    """A unique, readably-named file under <FreeCADClaude>/<subdir>/."""
     folder = os.path.join(artifacts_dir(), subdir)
     os.makedirs(folder, exist_ok=True)
     _prune_folder(folder, keep=60)
@@ -139,7 +139,7 @@ def _run_create_box(args):
     height = float(args["height"])
 
     doc = FreeCAD.ActiveDocument or FreeCAD.newDocument()
-    doc.openTransaction("ClaudeChat: create box")
+    doc.openTransaction("FreeCADClaude: create box")
     try:
         box = doc.addObject("Part::Box", "Box")
         box.Length = length
@@ -312,7 +312,7 @@ def _run_python(args):
             pass
 
     existing = {obj.Name for obj in doc.Objects}
-    doc.openTransaction("ClaudeChat: run_python")
+    doc.openTransaction("FreeCADClaude: run_python")
     stdout = io.StringIO()
     try:
         with contextlib.redirect_stdout(stdout):

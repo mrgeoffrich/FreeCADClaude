@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# ClaudeChat has NO Python dependencies — it drives the `claude` CLI directly,
+# FreeCADClaude has NO Python dependencies — it drives the `claude` CLI directly,
 # using your own Claude account. This script just verifies the CLI is present
 # and logged in, and removes the now-unused vendor/ dir from older versions.
 
@@ -13,7 +13,7 @@ $cmdExe = Get-ChildItem -ErrorAction SilentlyContinue @(
 if ($cmdExe) {
     $userDir = (& $cmdExe.FullName -c "import FreeCAD; print(FreeCAD.getUserAppDataDir())" 2>$null |
                 Select-String -Pattern '.+FreeCAD.+' | Select-Object -Last 1).ToString().Trim()
-    $vendor = Join-Path (Join-Path $userDir 'Mod\ClaudeChat') 'vendor'
+    $vendor = Join-Path (Join-Path $userDir 'Mod\FreeCADClaude') 'vendor'
     if ($userDir -and (Test-Path $vendor)) {
         Write-Host "Removing unused vendor dir: $vendor" -ForegroundColor Yellow
         Remove-Item -Recurse -Force $vendor

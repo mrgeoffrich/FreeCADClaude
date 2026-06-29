@@ -36,7 +36,7 @@ _CLAUDE_HEADER = f'<span style="color:{_CLAUDE_COLOR}"><b>Claude:</b></span>'
 SHOW_THINKING = True
 
 #: Object name used both to register the dock and to find it again later.
-DOCK_OBJECT_NAME = "ClaudeChatDock"
+DOCK_OBJECT_NAME = "FreeCADClaudeDock"
 
 _panel_instance = None
 
@@ -139,7 +139,7 @@ class ChatWidget(QtWidgets.QWidget):
         button_row.addWidget(self.status_label)
         button_row.addStretch(1)
         self.files_button = QtWidgets.QPushButton("Files", self)
-        self.files_button.setToolTip("Open the ClaudeChat captures/exports folder")
+        self.files_button.setToolTip("Open the FreeCADClaude captures/exports folder")
         self.files_button.clicked.connect(self._open_artifacts)
         button_row.addWidget(self.files_button)
         self.new_button = QtWidgets.QPushButton("New", self)
@@ -374,7 +374,7 @@ class ChatWidget(QtWidgets.QWidget):
         self._add_md("*New conversation started.*")
 
     def _open_artifacts(self):
-        """Open the ClaudeChat captures/exports folder in the file manager."""
+        """Open the FreeCADClaude captures/exports folder in the file manager."""
         from . import freecad_tools
         from PySide import QtGui
 

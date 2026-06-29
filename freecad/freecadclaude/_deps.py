@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Locates the Claude Code CLI.
 
-ClaudeChat drives the ``claude`` command-line tool directly (as a subprocess),
+FreeCADClaude drives the ``claude`` command-line tool directly (as a subprocess),
 which authenticates with the user's own Claude account (Pro/Max subscription
 or whatever the CLI is logged in with). No Python package and no API key are
 needed -- the only dependency is the ``claude`` binary, installed and logged

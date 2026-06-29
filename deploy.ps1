@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# Deploys the ClaudeChat addon into the FreeCAD user Mod directory by copying.
+# Deploys the FreeCADClaude addon into the FreeCAD user Mod directory by copying.
 # Run from anywhere:  pwsh -File deploy.ps1   (or right-click > Run with PowerShell)
 
 $ErrorActionPreference = 'Stop'
@@ -33,16 +33,16 @@ if (-not $ModDir) {
     Write-Host "  (could not query FreeCAD; falling back to $ModDir)" -ForegroundColor Yellow
 }
 
-$Dest = Join-Path $ModDir 'ClaudeChat'
+$Dest = Join-Path $ModDir 'FreeCADClaude'
 
 # Remove any stale copy left in the unversioned location by earlier deploys.
-$staleDest = Join-Path $env:APPDATA 'FreeCAD\Mod\ClaudeChat'
+$staleDest = Join-Path $env:APPDATA 'FreeCAD\Mod\FreeCADClaude'
 if (($staleDest -ne $Dest) -and (Test-Path $staleDest)) {
     Write-Host "  removing stale copy: $staleDest" -ForegroundColor Yellow
     Remove-Item -Recurse -Force $staleDest
 }
 
-Write-Host "Deploying ClaudeChat" -ForegroundColor Cyan
+Write-Host "Deploying FreeCADClaude" -ForegroundColor Cyan
 Write-Host "  from: $Source"
 Write-Host "  to:   $Dest"
 

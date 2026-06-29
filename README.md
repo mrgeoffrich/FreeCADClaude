@@ -1,4 +1,4 @@
-# ClaudeChat (FreeCAD addon)
+# FreeCADClaude (FreeCAD addon)
 
 A FreeCAD workbench that docks a **Claude chat panel** on the right-hand side
 of the main window. The long-term goal is to let Claude act on the active
@@ -12,17 +12,17 @@ document through curated FreeCAD tools.
 ## What's here
 
 ```
-ClaudeChat/
+FreeCADClaude/
 ├── Init.py                 # App-side init (no-op; no GUI imports)
 ├── InitGui.py              # Registers the workbench + toolbar/menu command
 ├── package.xml             # Addon Manager metadata
-└── freecad/claudechat/
+└── freecad/freecadclaude/
     ├── __init__.py
     ├── chat_panel.py       # The QDockWidget + chat widget (singleton)
     ├── agent_worker.py     # Drives the claude CLI subprocess; parses stream-json
     ├── agent_config.py     # Model + system prompt
     ├── _deps.py            # Locates the claude CLI
-    ├── commands.py         # ClaudeChat_TogglePanel command
+    ├── commands.py         # FreeCADClaude_TogglePanel command
     └── resources/icon.svg
 ```
 
@@ -67,12 +67,12 @@ freecadcmd -c "import FreeCAD; print(FreeCAD.getUserAppDataDir())"
 
 ### 3. Install the addon
 
-The result should be `…/Mod/ClaudeChat/` containing `Init.py`, `InitGui.py`,
+The result should be `…/Mod/FreeCADClaude/` containing `Init.py`, `InitGui.py`,
 `package.xml`, and the `freecad/` package. Any of these works:
 
 - **git clone** straight into the Mod dir:
   ```bash
-  git clone https://github.com/mrgeoffrich/ClaudeChat "<Mod dir>/ClaudeChat"
+  git clone https://github.com/mrgeoffrich/FreeCADClaude "<Mod dir>/FreeCADClaude"
   ```
 - **Copy** the folder into the Mod dir manually.
 - **Windows dev** — from a clone, `pwsh -File deploy.ps1` copies it into the
@@ -92,7 +92,7 @@ toolbar/menu). Type a message to start a live session.
 
 To let the agent use FreeCAD skills (e.g. a design-advisor), point it at a
 project whose `.claude/skills` holds them, via the preference
-`User parameter:BaseApp/Preferences/Mod/ClaudeChat` → string `SkillsProjectDir`.
+`User parameter:BaseApp/Preferences/Mod/FreeCADClaude` → string `SkillsProjectDir`.
 When set, the agent runs with that as its working dir and enables the
 `Skill`/`Read`/`Glob`/`Grep` tools. Leave it unset to keep things locked down.
 
@@ -109,8 +109,8 @@ pwsh -File eval/run.ps1 -Prompt "Create a cylinder r5 h30 named C" `
 ```
 
 `-Expect` is a regex matched against the result JSON; the script exits 0 (PASS),
-1 (FAIL), or 2 (eval didn't complete). The trigger is the `CLAUDECHAT_EVAL`
-environment variable, handled in `InitGui.py` → `freecad/claudechat/eval_runner.py`.
+1 (FAIL), or 2 (eval didn't complete). The trigger is the `FREECADCLAUDE_EVAL`
+environment variable, handled in `InitGui.py` → `freecad/freecadclaude/eval_runner.py`.
 
 ## Roadmap
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# Deploys the ClaudeChat addon into the FreeCAD user Mod directory (macOS/Linux).
+# Deploys the FreeCADClaude addon into the FreeCAD user Mod directory (macOS/Linux).
 # The macOS/Linux counterpart of deploy.ps1.
 #
 # Usage:
@@ -45,10 +45,10 @@ fi
 
 USERDIR="${USERDIR%/}"   # strip getUserAppDataDir()'s trailing slash
 MODDIR="$USERDIR/Mod"
-DEST="$MODDIR/ClaudeChat"
+DEST="$MODDIR/FreeCADClaude"
 mkdir -p "$MODDIR"
 
-echo "Deploying ClaudeChat ($MODE)"
+echo "Deploying FreeCADClaude ($MODE)"
 echo "  from: $SOURCE"
 echo "  to:   $DEST"
 

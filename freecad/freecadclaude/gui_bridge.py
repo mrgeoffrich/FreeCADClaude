@@ -94,7 +94,7 @@ def _confirm_dialog(tool_name, args):
     desc = args.get("description") or ""
 
     box = QtWidgets.QMessageBox()
-    box.setWindowTitle("ClaudeChat — approve action?")
+    box.setWindowTitle("FreeCADClaude — approve action?")
     box.setIcon(QtWidgets.QMessageBox.Question)
     box.setText(f"Claude wants to run <b>{tool_name}</b>" + (f": {desc}" if desc else "."))
     if code:

@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Guidance for Claude Code working on **ClaudeChat**, a FreeCAD addon.
+Guidance for Claude Code working on **FreeCADClaude**, a FreeCAD addon.
 
 ## What this is
 
@@ -34,14 +34,14 @@ chat panel (GUI thread)
 | File | Role |
 |---|---|
 | `Init.py` / `InitGui.py` | Workbench registration (App/GUI). InitGui also has the eval hook. |
-| `freecad/claudechat/chat_panel.py` | The dock, Markdown transcript (streamed), buttons, worker wiring. |
-| `freecad/claudechat/plan_panel.py` | Second dock: Plan (subagent output) + live task checklist. |
-| `freecad/claudechat/agent_worker.py` | Drives the `claude` CLI per turn; parses stream-json → Qt signals. |
-| `freecad/claudechat/agent_config.py` | Model, system prompt, CLI flags (tools/mcp/cwd/skills). |
-| `freecad/claudechat/gui_bridge.py` | In-FreeCAD socket server; runs tools on the GUI thread; run_python confirm dialog. |
-| `freecad/claudechat/freecad_tools.py` | The tool registry (`TOOLS`) + implementations + SVG/raster/export helpers. |
-| `freecad/claudechat/_deps.py` | Locates the `claude` CLI. |
-| `freecad/claudechat/eval_runner.py` | Unattended end-to-end eval (triggered by env var). |
+| `freecad/freecadclaude/chat_panel.py` | The dock, Markdown transcript (streamed), buttons, worker wiring. |
+| `freecad/freecadclaude/plan_panel.py` | Second dock: Plan (subagent output) + live task checklist. |
+| `freecad/freecadclaude/agent_worker.py` | Drives the `claude` CLI per turn; parses stream-json → Qt signals. |
+| `freecad/freecadclaude/agent_config.py` | Model, system prompt, CLI flags (tools/mcp/cwd/skills). |
+| `freecad/freecadclaude/gui_bridge.py` | In-FreeCAD socket server; runs tools on the GUI thread; run_python confirm dialog. |
+| `freecad/freecadclaude/freecad_tools.py` | The tool registry (`TOOLS`) + implementations + SVG/raster/export helpers. |
+| `freecad/freecadclaude/_deps.py` | Locates the `claude` CLI. |
+| `freecad/freecadclaude/eval_runner.py` | Unattended end-to-end eval (triggered by env var). |
 | `mcp_server.py` | Stdlib-only MCP stdio server the CLI spawns; relays to the bridge. |
 | `deploy.ps1` / `install_deps.ps1` / `eval/run.ps1` | Dev tooling (not deployed). |
 
@@ -59,7 +59,7 @@ Claude opens it with the built-in `Read` tool (verified to render images).
 
 Visual perception: prefer `view_sketch_svg` (exact SVG; for 3D pass
 `view=front/top/...` → `TechDraw.projectToSVG` orthographic) over `capture_view`
-(raster screenshot). Artifacts go to `<UserAppData>/ClaudeChat/{captures,exports}`.
+(raster screenshot). Artifacts go to `<UserAppData>/FreeCADClaude/{captures,exports}`.
 
 ## CLI invocation (built in `agent_config`/`agent_worker`)
 
@@ -79,7 +79,7 @@ Visual perception: prefer `view_sketch_svg` (exact SVG; for 3D pass
 ## Dev workflow
 
 - **Deploy:** `pwsh -File deploy.ps1` copies into the **version-namespaced** user
-  Mod dir (`%APPDATA%\FreeCAD\v1-1\Mod\ClaudeChat`), resolved via
+  Mod dir (`%APPDATA%\FreeCAD\v1-1\Mod\FreeCADClaude`), resolved via
   `freecadcmd -c "import FreeCAD; print(FreeCAD.getUserAppDataDir())"`. Restart
   FreeCAD after deploying.
 - **No Python deps** to install (we drive the CLI). `install_deps.ps1` just
@@ -109,7 +109,7 @@ Visual perception: prefer `view_sketch_svg` (exact SVG; for 3D pass
 - `InitGui.py` is run via `exec()` **without `__file__`**, and module-level names
   in it are **not visible to methods called later** (they resolve against
   FreeCAD's loader globals). Reference resources via the importable package
-  (`from freecad import claudechat; …__file__`), and import names **inside**
+  (`from freecad import freecadclaude; …__file__`), and import names **inside**
   workbench methods.
 - `package.xml` workbench needs `<subdirectory>.</subdirectory>` or FreeCAD looks
   for `InitGui.py` in a phantom subfolder named after the workbench.

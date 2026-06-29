@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# End-to-end eval: launch FreeCAD, run a prompt through the ClaudeChat agent,
+# End-to-end eval: launch FreeCAD, run a prompt through the FreeCADClaude agent,
 # and print the resulting document snapshot.
 #
 #   pwsh -File eval/run.ps1                       # default prompt
@@ -21,13 +21,13 @@ $fc = Get-ChildItem -ErrorAction SilentlyContinue @(
 ) | Select-Object -First 1
 if (-not $fc) { throw "Could not find freecad.exe." }
 
-$result = Join-Path $env:TEMP "claudechat_eval_result.json"
+$result = Join-Path $env:TEMP "freecadclaude_eval_result.json"
 Remove-Item $result -ErrorAction SilentlyContinue
 
-$env:CLAUDECHAT_EVAL = "1"
-$env:CLAUDECHAT_EVAL_PROMPT = $Prompt
-$env:CLAUDECHAT_EVAL_RESULT = $result
-$env:CLAUDECHAT_EVAL_TIMEOUT = "$TimeoutSec"
+$env:FREECADCLAUDE_EVAL = "1"
+$env:FREECADCLAUDE_EVAL_PROMPT = $Prompt
+$env:FREECADCLAUDE_EVAL_RESULT = $result
+$env:FREECADCLAUDE_EVAL_TIMEOUT = "$TimeoutSec"
 
 Write-Host "Launching FreeCAD eval..." -ForegroundColor Cyan
 Write-Host "  prompt: $Prompt"

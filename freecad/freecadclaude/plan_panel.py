@@ -15,8 +15,8 @@ import FreeCADGui
 
 from PySide import QtCore, QtGui, QtWidgets
 
-DOCK_OBJECT_NAME = "ClaudeChatPlanDock"
-CHAT_DOCK_OBJECT_NAME = "ClaudeChatDock"
+DOCK_OBJECT_NAME = "FreeCADClaudePlanDock"
+CHAT_DOCK_OBJECT_NAME = "FreeCADClaudeDock"
 
 #: status -> (glyph, color)
 _STATUS = {
