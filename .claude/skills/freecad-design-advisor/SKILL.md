@@ -11,7 +11,7 @@ description: >-
   Z", or when they're unsure how to start or are stuck on a FreeCAD modeling
   approach. Trigger even when they don't say the word "workflow" but are clearly
   seeking a modeling strategy. Do NOT use for FreeCAD Python scripting or macros
-  (use the freecad-scripts skill instead); this skill advises the
+  (use the freecad-run-python skill instead); this skill advises the
   approach/feature-sequence, not specific dimensions or numeric values.
 ---
 
@@ -29,7 +29,7 @@ counts, or exact shapes. The user owns the measurements; you own the method.
 
 Scope: mechanical parts and assemblies, tuned for 3D printing. **GUI / workbench
 workflows only** — if the best answer is genuinely a Python script or macro, say
-so in a sentence and point to the `freecad-scripts` skill rather than writing
+so in a sentence and point to the `freecad-run-python` skill rather than writing
 code here.
 
 ## How to advise
@@ -121,7 +121,8 @@ loop in two steps:
    their answers to a **Plan subagent** to turn the workflow into a concrete,
    ordered, build-ready plan — named features in sequence with the now-known
    dimensions and parameters, ready to execute. Then offer to build it with
-   `run_python`, tracking the steps as tasks so progress is visible.
+   `run_python` (the `freecad-run-python` skill covers the actual scripting
+   patterns), tracking the steps as tasks so progress is visible.
 
 So the full arc is: **approach → clarifying questions → (user answers) → planning
 agent → build.** Never skip straight from approach to build.
@@ -142,4 +143,4 @@ agent → build.** Never skip straight from approach to build.
   thickness from one parameter sized to your nozzle") and let them set the
   number.
 - **GUI only.** When scripting is genuinely the better path, name that and hand
-  off to `freecad-scripts` — don't write Python here.
+  off to `freecad-run-python` — don't write Python here.
