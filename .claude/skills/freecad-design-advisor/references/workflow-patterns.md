@@ -1,6 +1,6 @@
 # Design Archetypes: Idea-to-Recipe Catalog (FreeCAD 1.1)
 
-Pattern-match a user's design idea against these mechanical / 3D-print archetypes; each gives the lead workbench and an ordered, feature-named recipe to build it. GUI workflows only — no scripting.
+Pattern-match a user's design idea against these mechanical / 3D-print archetypes; each gives the lead workbench and an ordered, feature-named recipe to build it.
 
 ## How to use this catalog
 

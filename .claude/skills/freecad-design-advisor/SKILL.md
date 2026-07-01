@@ -3,16 +3,16 @@ name: freecad-design-advisor
 description: >-
   Advises how to approach building a design in FreeCAD 1.1 — which workbench(es)
   to use and the ordered sequence of features/operations — for mechanical parts
-  and 3D-printing projects, using GUI workflows (not scripting). Use this skill
-  whenever the user describes an object, part, enclosure, bracket, mechanism, or
-  product they want to model, design, build, or 3D-print in FreeCAD and needs an
-  approach or workflow — including phrasings like "how would I model X in
-  FreeCAD", "what's the best way to make Y", "which workbench should I use for
-  Z", or when they're unsure how to start or are stuck on a FreeCAD modeling
-  approach. Trigger even when they don't say the word "workflow" but are clearly
-  seeking a modeling strategy. Do NOT use for FreeCAD Python scripting or macros
-  (use the freecad-run-python skill instead); this skill advises the
-  approach/feature-sequence, not specific dimensions or numeric values.
+  and 3D-printing projects, independent of implementation (GUI clicks vs.
+  scripted code). EXPLICIT INVOCATION ONLY: invoke this skill only when the
+  user (or a direct instruction earlier in the prompt) explicitly asks for it
+  by name — e.g. via the /design-advisor slash command in the FreeCAD chat
+  panel, or an explicit "use the design advisor skill" request. Do NOT trigger
+  this on topic-matching alone (an object/part/enclosure/bracket the user wants
+  to model is not, by itself, a reason to invoke it) — wait for the explicit
+  ask. Covers approach/workflow, not specific dimensions or numeric values, and
+  not the actual code; for writing the run_python implementation see
+  freecad-run-python (also explicit-invocation only).
 ---
 
 # FreeCAD Design Advisor
@@ -27,10 +27,12 @@ You advise on **approach, not numbers.** Name features and relationships ("a
 master sketch, padded, then a mirrored pocket"), never specific dimensions,
 counts, or exact shapes. The user owns the measurements; you own the method.
 
-Scope: mechanical parts and assemblies, tuned for 3D printing. **GUI / workbench
-workflows only** — if the best answer is genuinely a Python script or macro, say
-so in a sentence and point to the `freecad-run-python` skill rather than writing
-code here.
+Scope: mechanical parts and assemblies, tuned for 3D printing. **Workbench and
+feature-level workflow, independent of implementation** — name the
+workbench(es) and the ordered FreeCAD constructs (Sketch, Pad, Pocket, Loft,
+Boolean, …); whether the user builds it by hand in the GUI or has it scripted
+is out of scope here. If they want the actual code, point to the
+`freecad-run-python` skill rather than writing it here.
 
 ## How to advise
 
@@ -51,7 +53,7 @@ code here.
    build the bulk with one archetype, then layer features from others.
 5. **Explain the model intent.** Why this order, what to drive from a master
    sketch or datum, what keeps later edits from breaking. This is the difference
-   between advice and a click-list.
+   between advice and a step-list.
 6. **If it's headed for a printer,** fold in the print-aware choices and the
    export path from `references/printing-workflow.md`.
 
@@ -120,9 +122,10 @@ loop in two steps:
 3. **Once the user answers, start the planning agent.** Hand the approach plus
    their answers to a **Plan subagent** to turn the workflow into a concrete,
    ordered, build-ready plan — named features in sequence with the now-known
-   dimensions and parameters, ready to execute. Then offer to build it with
-   `run_python` (the `freecad-run-python` skill covers the actual scripting
-   patterns), tracking the steps as tasks so progress is visible.
+   dimensions and parameters, ready to execute by hand in the GUI or scripted.
+   If they want it scripted, point them to `freecad-run-python` (it covers the
+   actual code) and offer to build it with `run_python`, tracking the steps as
+   tasks so progress is visible.
 
 So the full arc is: **approach → clarifying questions → (user answers) → planning
 agent → build.** Never skip straight from approach to build.
@@ -142,5 +145,7 @@ agent → build.** Never skip straight from approach to build.
   specific values, give them the *strategy* for choosing (e.g. "drive wall
   thickness from one parameter sized to your nozzle") and let them set the
   number.
-- **GUI only.** When scripting is genuinely the better path, name that and hand
-  off to `freecad-run-python` — don't write Python here.
+- **Construct-level, not implementation.** Name workbenches and features
+  (Sketch, Pad, Loft, Boolean…), not GUI clicks or Python — whether the user
+  builds it by hand or has it scripted is their choice. Point to
+  `freecad-run-python` for the actual code; don't write it here.

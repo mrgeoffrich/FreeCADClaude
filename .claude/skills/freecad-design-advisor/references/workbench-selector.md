@@ -1,6 +1,6 @@
 # Workbench Selector: Routing a Design Idea to the Right FreeCAD Workbench
 
-Decision guide for choosing which FreeCAD 1.1 workbench leads a mechanical / 3D-printing design, what supports it, and the ordered feature sequence to build it — GUI workflows only.
+Decision guide for choosing which FreeCAD 1.1 workbench leads a mechanical / 3D-printing design, what supports it, and the ordered feature sequence to build it.
 
 ## TL;DR routing
 

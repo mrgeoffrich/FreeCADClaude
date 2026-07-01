@@ -1,6 +1,6 @@
 # Workbench Reference Card
 
-Capability reference for the seven workbenches a FreeCAD 1.1 design advisor routes between. One block per workbench: purpose, the named tools a workflow actually uses, strengths, and explicit use-when / avoid-when. This card describes what each workbench **is**; routing logic (matching a design idea to a workbench) lives in the selector doc — cross-reference it rather than re-deciding here. GUI workflows only.
+Capability reference for the seven workbenches a FreeCAD 1.1 design advisor routes between. One block per workbench: purpose, the named tools a workflow actually uses, strengths, and explicit use-when / avoid-when. This card describes what each workbench **is**; routing logic (matching a design idea to a workbench) lives in the selector doc — cross-reference it rather than re-deciding here.
 
 Quick map:
 - **PartDesign + Sketcher** — the default for a single 3D-printable mechanical part (parametric, feature-history).

@@ -38,6 +38,22 @@ SHOW_THINKING = True
 #: Object name used both to register the dock and to find it again later.
 DOCK_OBJECT_NAME = "FreeCADClaudeDock"
 
+#: Slash commands that explicitly invoke a bundled skill, mapped to the
+#: skill's name (its SKILL.md frontmatter `name`) and a one-line blurb for the
+#: /help listing. Skills are explicit-invocation only (see agent_config's
+#: SYSTEM_PROMPT and the skills' own descriptions) -- this is the only way a
+#: user fires one.
+_SKILL_COMMANDS = {
+    "design-advisor": (
+        "freecad-design-advisor",
+        "Plan the workbench(es) and feature sequence for a design idea",
+    ),
+    "run-python": (
+        "freecad-run-python",
+        "Write/debug the run_python code to build or fix the live document",
+    ),
+}
+
 _panel_instance = None
 
 
@@ -127,7 +143,7 @@ class ChatWidget(QtWidgets.QWidget):
 
         self.input = _InputBox(self)
         self.input.setPlaceholderText(
-            "Ask Claude…  (Enter to send, Shift+Enter for newline)"
+            "Ask Claude…  (Enter to send, Shift+Enter for newline; /help for skills)"
         )
         self.input.setFixedHeight(64)
         self.input.submitted.connect(self.on_send)
@@ -157,7 +173,7 @@ class ChatWidget(QtWidgets.QWidget):
         layout.addLayout(button_row)
 
         self._add_md('*Type a message to start a Claude session. '
-                     'Try: "create a 20×40×10 box".*')
+                     'Try: "create a 20×40×10 box", or `/help` to see the available skills.*')
 
     # -- worker lifecycle ------------------------------------------------
 
@@ -221,6 +237,15 @@ class ChatWidget(QtWidgets.QWidget):
         text = self.input.toPlainText().strip()
         if not text:
             return
+
+        cli_text = text
+        if text.startswith("/"):
+            expanded = self._expand_slash_command(text)
+            if expanded is None:
+                self.input.clear()
+                return  # handled locally (help, or an unknown command)
+            text, cli_text = expanded
+
         if self._busy:
             self._add_md("*Still working on the previous message…*")
             return
@@ -233,7 +258,35 @@ class ChatWidget(QtWidgets.QWidget):
         )
         self._set_busy(True)
         self._set_thinking(True)
-        self._worker.submit(text)
+        self._worker.submit(cli_text)
+
+    def _expand_slash_command(self, text):
+        """Parse a leading "/command rest..." input.
+
+        Returns ``(display_text, cli_text)`` to send onward for a recognized
+        skill command, or ``None`` if the command was handled locally (help,
+        or an unknown command) and nothing should go to the CLI.
+        """
+        cmd, _, rest = text[1:].partition(" ")
+        cmd = cmd.strip().lower()
+        rest = rest.strip()
+
+        if cmd in ("", "help", "skills"):
+            lines = ["**Available skills** (explicit-invocation only):"]
+            for name, (_, blurb) in _SKILL_COMMANDS.items():
+                lines.append(f"- `/{name}` — {blurb}")
+            self._add_md("\n".join(lines))
+            return None
+
+        if cmd not in _SKILL_COMMANDS:
+            known = ", ".join(f"`/{name}`" for name in _SKILL_COMMANDS)
+            self._add_md(f"*Unknown command `/{cmd}`. Available: {known}, `/help`.*")
+            return None
+
+        skill_name, _ = _SKILL_COMMANDS[cmd]
+        instruction = f"Use the Skill tool to invoke the '{skill_name}' skill now"
+        instruction += f", then use it to address this: {rest}" if rest else "."
+        return text, instruction
 
     # -- worker signal handlers (run on the GUI thread) ------------------
 

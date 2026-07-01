@@ -5,17 +5,17 @@ description: >-
   -- Sketcher geometry/constraints, PartDesign features (Body, Pad, Pocket,
   Revolution, Loft, Hole, patterns, Fillet/Chamfer, Thickness), Part workbench
   booleans, and Draft -- to build or modify the live document in this addon.
-  Use whenever
-  the user wants something actually built/implemented/scripted in FreeCAD
-  (not just planned), wants a run_python call written or fixed, is debugging
-  a run_python traceback or an Invalid/Error feature, is continuing from a
-  freecad-design-advisor plan into execution, or asks a "how do I script X /
-  what's the Python API for Y" question about Sketcher/PartDesign/Part/Draft.
-  Do NOT use for approach/workflow advice with no code involved (use
-  freecad-design-advisor instead) or for generic FreeCAD addon/macro
-  authoring unrelated to this addon's run_python tool (custom workbenches,
-  GuiCommands, Coin3D, persisted macro files) -- this skill is scoped to
-  scripting the live document through run_python specifically.
+  EXPLICIT INVOCATION ONLY: invoke this skill only when the user (or a direct
+  instruction earlier in the prompt) explicitly asks for it by name -- e.g. via
+  the /run-python slash command in the FreeCAD chat panel, or an explicit "use
+  the run-python skill" request. Do NOT trigger this on topic-matching alone (a
+  build/script/run_python-shaped request is not, by itself, a reason to invoke
+  it) -- wait for the explicit ask. Not for approach/workflow advice with no
+  code involved (see freecad-design-advisor, also explicit-invocation only) or
+  for generic FreeCAD addon/macro authoring unrelated to this addon's
+  run_python tool (custom workbenches, GuiCommands, Coin3D, persisted macro
+  files) -- this skill is scoped to scripting the live document through
+  run_python specifically.
 ---
 
 # FreeCAD run_python Scripting
@@ -31,7 +31,7 @@ Scope: scripting through this addon's `run_python` tool against an
 already-open document. **Not** general FreeCAD macro/addon authoring —
 custom workbenches, `GuiCommand` registration, Coin3D scenegraph work, and
 persisted macro files don't apply here (`references/execution-model.md`
-explains why). Not GUI-workflow advice — if the user just wants to know
+explains why). Not approach/workflow advice — if the user just wants to know
 *how to approach* a design with no code yet, that's
 `freecad-design-advisor`.
 
