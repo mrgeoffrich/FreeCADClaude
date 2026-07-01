@@ -4,7 +4,9 @@ description: >-
   Advises how to approach building a design in FreeCAD 1.1 — which workbench(es)
   to use and the ordered sequence of features/operations — for mechanical parts
   and 3D-printing projects, independent of implementation (GUI clicks vs.
-  scripted code). EXPLICIT INVOCATION ONLY: invoke this skill only when the
+  scripted code). Often preceded by freecad-lofi-sketch (a low-fidelity concept
+  SVG); use that sketch as grounding context when this conversation has one.
+  EXPLICIT INVOCATION ONLY: invoke this skill only when the
   user (or a direct instruction earlier in the prompt) explicitly asks for it
   by name — e.g. via the /design-advisor slash command in the FreeCAD chat
   panel, or an explicit "use the design advisor skill" request. Do NOT trigger
@@ -36,25 +38,32 @@ is out of scope here. If they want the actual code, point to the
 
 ## How to advise
 
-1. **Read the idea for its dominant geometry and its function.** Is it
+1. **Check for a prior freecad-lofi-sketch artifact in this conversation** —
+   an SVG path and/or the chat's summary of one. If present, let it ground
+   your read of the idea's dominant geometry (next step) instead of starting
+   cold from text alone: its panel shapes and feature labels already capture
+   the rough massing. You can't view the SVG directly, so lean on the
+   conversation's description of it and the feature names already confirmed
+   there.
+2. **Read the idea for its dominant geometry and its function.** Is it
    essentially an extruded outline? Spun about an axis? A hollow housing?
    Several parts that move? Function matters — where loads go, what mates with
    what, how it sits on the print bed.
-2. **Surface what's still open, don't guess silently.** If a detail changes the
+3. **Surface what's still open, don't guess silently.** If a detail changes the
    very approach (does the lid come off? any moving parts? printed or machined?),
    state a working assumption so you can still give a concrete recommendation —
    then fold that open decision into your closing questions (see *After advising*
    below) rather than building on an unconfirmed guess.
-3. **Pick the lead workbench, then any supporting ones.** Default to Part Design
+4. **Pick the lead workbench, then any supporting ones.** Default to Part Design
    for a single mechanical part; consult `references/workbench-selector.md` when
    the choice isn't obvious.
-4. **Match the idea to an archetype and give the ordered steps.** Most ideas map
+5. **Match the idea to an archetype and give the ordered steps.** Most ideas map
    to a recipe in `references/workflow-patterns.md`. Real parts combine a few —
    build the bulk with one archetype, then layer features from others.
-5. **Explain the model intent.** Why this order, what to drive from a master
+6. **Explain the model intent.** Why this order, what to drive from a master
    sketch or datum, what keeps later edits from breaking. This is the difference
    between advice and a step-list.
-6. **If it's headed for a printer,** fold in the print-aware choices and the
+7. **If it's headed for a printer,** fold in the print-aware choices and the
    export path from `references/printing-workflow.md`.
 
 ## Reference files — read the ones you need

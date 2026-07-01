@@ -31,6 +31,15 @@ def artifacts_dir():
     return path
 
 
+def ensure_sketches_dir():
+    """Absolute path to the lo-fi sketch folder (freecad-lofi-sketch), created
+    up front so Write -- used directly by Claude, outside the MCP bridge --
+    always has somewhere to write."""
+    path = os.path.join(artifacts_dir(), "sketches")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def _artifact_path(subdir, base, suffix):
     """A unique, readably-named file under <FreeCADClaude>/<subdir>/."""
     folder = os.path.join(artifacts_dir(), subdir)

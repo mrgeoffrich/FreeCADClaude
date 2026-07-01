@@ -57,9 +57,20 @@ bridge wiring derive automatically. Set `"confirm": True` to require user
 approval. Image tools write a PNG under the artifacts dir and return the path;
 Claude opens it with the built-in `Read` tool (verified to render images).
 
+Besides this MCP registry, a couple of the CLI's own built-in tools are always
+enabled (`agent_config.build_config`'s `builtin_tools`): `Read` (view PNGs
+from the tools above) and `Write` (author plain-text files, e.g.
+`freecad-lofi-sketch`'s SVGs). Both run inside the `claude` CLI process
+itself, not the MCP bridge, and `Write` never touches the live document.
+
 Visual perception: prefer `view_sketch_svg` (exact SVG; for 3D pass
 `view=front/top/...` → `TechDraw.projectToSVG` orthographic) over `capture_view`
-(raster screenshot). Artifacts go to `<UserAppData>/FreeCADClaude/{captures,exports}`.
+(raster screenshot). Artifacts go to `~/FreeCADClaude/{captures,exports,sketches}`
+(the user's home directory, **not** FreeCAD's `UserAppData`) — `captures`/
+`exports` are written by FreeCAD tools via `_artifact_path` (auto-pruned, kept
+≤60 files); `sketches` holds `freecad-lofi-sketch`'s concept SVGs, written
+directly by Claude via `Write` (not auto-pruned, since they bypass
+`_artifact_path`).
 
 ## CLI invocation (built in `agent_config`/`agent_worker`)
 
@@ -70,9 +81,12 @@ Visual perception: prefer `view_sketch_svg` (exact SVG; for 3D pass
 `.claude/skills` load) else a temp dir.
 
 - `--tools ""` disables ALL built-ins (incl. `Skill`). We enable a safe set:
-  `Read` (always, for image viewing), the `Task*` family (todo + Plan subagent),
-  and `Skill/Glob/Grep` when a skills project is configured. Bash/Write/Edit stay
-  OFF — the only mutation path is the confirm-gated `run_python`.
+  `Read` and `Write` (always — image viewing and plain-text file authoring),
+  the `Task*` family (todo + Plan subagent), and `Skill/Glob/Grep` when a
+  skills project is configured. `Bash`/`Edit` stay OFF — the only path that
+  mutates the *live FreeCAD document* is the confirm-gated `run_python`;
+  `Write` can create/overwrite arbitrary files on disk but never touches the
+  document.
 - The subagent launcher is reported as `Agent` in tool_use even though enabled via
   `Task`; `Agent` is in the allow-list so subagents (e.g. `Plan`) don't prompt.
 

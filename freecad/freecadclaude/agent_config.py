@@ -54,7 +54,10 @@ SYSTEM_PROMPT = (
     "general capability for Sketcher (geometry + constraints), PartDesign "
     "(Body, Pad, Pocket, Revolution, Loft, Fillet, Chamfer...), Part booleans, "
     "Draft, arrays, and modifying or deleting existing objects. The user must "
-    "approve each run_python call, so make each step purposeful.\n\n"
+    "approve each run_python call, so make each step purposeful.\n"
+    "- Write: create/overwrite a plain-text file at an absolute path (e.g. "
+    ".svg) -- used to author concept sketches (see freecad-lofi-sketch); it "
+    "never touches the FreeCAD document itself.\n\n"
     "Working style: prefer small, verifiable steps; after a change, use "
     "get_objects (or print from run_python) to confirm the result before "
     "continuing. For PartDesign, create a PartDesign::Body and add features "
@@ -68,15 +71,16 @@ SYSTEM_PROMPT = (
     "it with run_python; for any multi-step build, track the steps with the task "
     "tools (TaskCreate, then TaskUpdate to mark each in_progress/completed) so the "
     "user can follow progress in the Plan & Tasks panel.\n\n"
-    "Skills: freecad-design-advisor (design approach/workflow) and "
+    "Skills: freecad-lofi-sketch (a low-fidelity concept SVG sketch before any "
+    "dimensions), freecad-design-advisor (design approach/workflow), and "
     "freecad-run-python (writing the run_python code itself) are available, but "
     "are EXPLICIT-INVOCATION ONLY. Call the Skill tool for one of them only when "
     "a message directly instructs you to run that specific skill -- this happens "
     "when the user types a slash command in the chat panel (e.g. "
-    "'/design-advisor ...' or '/run-python ...'), which is translated into a "
-    "direct instruction here. Never invoke a skill on your own judgement just "
-    "because the topic matches its description; absent that explicit "
-    "instruction, just help directly with the tools above."
+    "'/lofi-sketch ...', '/design-advisor ...', or '/run-python ...'), which is "
+    "translated into a direct instruction here. Never invoke a skill on your own "
+    "judgement just because the topic matches its description; absent that "
+    "explicit instruction, just help directly with the tools above."
 )
 
 _PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/FreeCADClaude"
@@ -101,9 +105,17 @@ _TASK_TOOLS = ["Task", "TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskS
 #: and capture_view (and read skill reference files). Read-only.
 _READ_TOOLS = ["Read"]
 
+#: Write is always on (like Read) so Claude can author plain-text files
+#: directly -- currently used by freecad-lofi-sketch's concept SVGs. Runs
+#: inside the claude CLI process itself (not the MCP bridge/GUI thread) and
+#: never touches the live FreeCAD document -- Bash and Edit stay OFF; the
+#: confirm-gated run_python remains the only path that mutates the document.
+_WRITE_TOOLS = ["Write"]
+
 #: Extra built-in tools enabled when a skills project is configured: Skill loads
-#: skills; Glob/Grep help a skill find its reference files. Bash/Write/Edit stay
-#: OFF -- the only mutation path is the gated run_python tool.
+#: skills; Glob/Grep help a skill find its reference files. Bash/Edit stay
+#: OFF -- the only mutation path to the live document is the gated run_python
+#: tool.
 _SKILL_TOOLS = ["Skill", "Glob", "Grep"]
 
 
@@ -158,7 +170,7 @@ def build_config(cli_path, bridge_port, bridge_token):
     allowed_tools = ["mcp__freecad__" + name for name in freecad_tools.TOOLS]
 
     skills_dir = get_skills_dir()
-    builtin_tools = list(_TASK_TOOLS) + list(_READ_TOOLS)  # always available
+    builtin_tools = list(_TASK_TOOLS) + list(_READ_TOOLS) + list(_WRITE_TOOLS)  # always available
     if skills_dir:
         builtin_tools += _SKILL_TOOLS
     allowed_tools += builtin_tools

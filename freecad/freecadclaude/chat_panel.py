@@ -44,6 +44,10 @@ DOCK_OBJECT_NAME = "FreeCADClaudeDock"
 #: SYSTEM_PROMPT and the skills' own descriptions) -- this is the only way a
 #: user fires one.
 _SKILL_COMMANDS = {
+    "lofi-sketch": (
+        "freecad-lofi-sketch",
+        "Sketch a rough concept SVG (no dimensions) before planning the build",
+    ),
     "design-advisor": (
         "freecad-design-advisor",
         "Plan the workbench(es) and feature sequence for a design idea",
@@ -285,6 +289,14 @@ class ChatWidget(QtWidgets.QWidget):
 
         skill_name, _ = _SKILL_COMMANDS[cmd]
         instruction = f"Use the Skill tool to invoke the '{skill_name}' skill now"
+        if cmd == "lofi-sketch":
+            # freecad-lofi-sketch writes plain files with the Write tool, outside
+            # the MCP bridge -- it has no way to resolve the (possibly
+            # user-overridden) artifacts dir itself, so hand it the resolved path.
+            from . import freecad_tools
+
+            sketches_dir = freecad_tools.ensure_sketches_dir()
+            instruction += f" (write concept SVGs under this exact absolute folder: {sketches_dir})"
         instruction += f", then use it to address this: {rest}" if rest else "."
         return text, instruction
 
