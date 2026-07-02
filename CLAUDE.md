@@ -55,18 +55,30 @@ Registry: `freecad_tools.TOOLS` = name → `{schema, run, confirm?}`. Current se
 **Adding a tool** is purely additive: add a `{schema, run}` entry. `run(args)`
 executes on the GUI thread and returns a string; the MCP allow-list and the
 bridge wiring derive automatically. Set `"confirm": True` to require user
-approval. Image tools write a PNG under the artifacts dir and return the path;
-Claude opens it with the built-in `Read` tool (verified to render images).
+approval. `capture_view` returns a `(text, png_path)` tuple instead of a plain
+string; `gui_bridge` reads and base64-encodes `png_path` and `mcp_server.py`
+ships it back as an inline MCP `image` content block in the same tool result —
+Claude sees the picture directly, no separate file-open step. (The Claude API's
+image content blocks only accept raster media types — png/jpeg/gif/webp, not
+svg+xml — so this only applies to `capture_view`'s screenshot.) `view_sketch_svg`
+writes an SVG file and returns just its path as plain text; Claude opens it with
+the built-in `Read` tool to read the raw vector source, since it's text Claude
+reasons about, not something it can visually see.
 
 Besides this MCP registry, a couple of the CLI's own built-in tools are always
-enabled (`agent_config.build_config`'s `builtin_tools`): `Read` (view PNGs
-from the tools above) and `Write` (author plain-text files, e.g.
-`freecad-lofi-sketch`'s SVGs). Both run inside the `claude` CLI process
-itself, not the MCP bridge, and `Write` never touches the live document.
+enabled (`agent_config.build_config`'s `builtin_tools`): `Read` (the SVG file
+from `view_sketch_svg`, and skill reference files) and `Write` (author
+plain-text files, e.g. `freecad-lofi-sketch`'s SVGs). Both run inside the
+`claude` CLI process itself, not the MCP bridge, and `Write` never touches the
+live document.
 
-Visual perception: prefer `view_sketch_svg` (exact SVG; for 3D pass
-`view=front/top/...` → `TechDraw.projectToSVG` orthographic) over `capture_view`
-(raster screenshot). Artifacts go to `~/FreeCADClaude/<session-id>/{captures,exports,scripts}`
+Visual perception: `capture_view` (raster screenshot, returned inline as an
+image) is the only way Claude actually *sees* geometry — reach for it whenever
+shape needs visual inspection, especially 3D. `view_sketch_svg` (exact SVG; for
+3D pass `view=front/top/...` → `TechDraw.projectToSVG` orthographic) is for
+reasoning about exact coordinates as text, not for looking at the shape — its
+3D-projection path data is tessellated into many small segments and isn't
+meant to be read directly either. Artifacts go to `~/FreeCADClaude/<session-id>/{captures,exports,scripts}`
 (the user's home directory, **not** FreeCAD's `UserAppData`) — `<session-id>` is a
 readable id (`YYYYMMDD-HHMMSS-<6 hex>`) minted by `freecad_tools.new_session_id()`
 when a chat starts and again on "New" (`chat_panel._ensure_worker`/`_on_new`), so
@@ -97,8 +109,8 @@ project dir (so its `.claude/skills` load) else a temp dir.
   own `~/.claude/settings.json` — scoped to this addon's turns only.
 
 - `--tools ""` disables ALL built-ins (incl. `Skill`). We enable a safe set:
-  `Read` and `Write` (always — image viewing and plain-text file authoring),
-  the `Task*` family (todo + Plan subagent), and `Skill/Glob/Grep` when a
+  `Read` and `Write` (always — skill reference files and plain-text file
+  authoring), the `Task*` family (todo + Plan subagent), and `Skill/Glob/Grep` when a
   skills project is configured. `Bash`/`Edit` stay OFF — the only path that
   mutates the *live FreeCAD document* is the confirm-gated `run_python`;
   `Write` can create/overwrite arbitrary files on disk but never touches the

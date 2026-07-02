@@ -45,7 +45,15 @@ def _list_tools():
 def _call_tool(name, arguments):
     resp = _bridge({"token": _TOKEN, "op": "call", "tool": name, "arguments": arguments})
     if resp.get("ok"):
-        return {"content": [{"type": "text", "text": resp.get("text", "Done.")}]}
+        content = [{"type": "text", "text": resp.get("text", "Done.")}]
+        image = resp.get("image")
+        if image:
+            content.append({
+                "type": "image",
+                "data": image["data"],
+                "mimeType": image.get("mimeType", "image/png"),
+            })
+        return {"content": content}
     return {
         "content": [{"type": "text", "text": "Error: " + str(resp.get("error", "unknown"))}],
         "isError": True,

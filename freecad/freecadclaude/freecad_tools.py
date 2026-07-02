@@ -2,9 +2,16 @@
 """FreeCAD tools exposed to Claude, plus their execution functions.
 
 Each ``run`` function executes ON THE GUI MAIN THREAD (the bridge marshals it
-there) and returns a human-readable result string. FreeCAD imports happen
-inside the functions so this module stays importable from any thread for its
-schema data alone.
+there) and returns either a human-readable result string, or -- for
+``capture_view``, the one tool that renders a raster image -- a
+``(text, png_path)`` tuple; the bridge reads and base64-encodes ``png_path``
+and ships it back as an inline MCP image content block, so Claude sees the
+picture directly in the tool result instead of needing a separate Read call.
+(``view_sketch_svg`` writes an SVG file too, but returns only its path as
+plain text -- SVG isn't a raster format the Claude API can render as an
+image, so Claude reads it as text via the Read tool instead.) FreeCAD imports
+happen inside the functions so this module stays importable from any thread
+for its schema data alone.
 """
 
 import os
@@ -151,35 +158,6 @@ def _save_run_python_script(code, description):
             f.write(code)
     except OSError:
         pass
-
-
-#: Claude's own image ceiling (see capture_view's 1280x960 comment below) --
-#: applied as a dual constraint so elongated viewBoxes (e.g. a long thin pin
-#: viewed from the front) don't get starved on their short axis: scaling
-#: only by the long edge (the old behaviour, fixed at 768) let width collapse
-#: to ~100px for a 6:1 aspect ratio, too compressed to read fine features.
-_SVG_LONG_EDGE_MAX = 1568
-_SVG_AREA_MAX = 1_200_000
-
-
-def _rasterize_svg(svg_path, png_path):
-    """Render an SVG file to a PNG using bundled QtSvg. Returns True on success."""
-    from PySide import QtGui, QtSvg
-
-    renderer = QtSvg.QSvgRenderer(svg_path)
-    if not renderer.isValid():
-        return False
-    box = renderer.viewBoxF()
-    w = box.width() or _SVG_LONG_EDGE_MAX
-    h = box.height() or _SVG_LONG_EDGE_MAX
-    scale = min(_SVG_LONG_EDGE_MAX / max(w, h), (_SVG_AREA_MAX / (w * h)) ** 0.5)
-    image = QtGui.QImage(max(1, int(w * scale)), max(1, int(h * scale)),
-                         QtGui.QImage.Format_ARGB32)
-    image.fill(QtGui.QColor("white"))
-    painter = QtGui.QPainter(image)
-    renderer.render(painter)
-    painter.end()
-    return bool(image.save(png_path))
 
 
 #: Orthographic projection directions for 3D -> SVG views.
@@ -836,18 +814,18 @@ def _run_inspect_api(args):
 _VIEW_SKETCH_SVG_SCHEMA = {
     "name": "view_sketch_svg",
     "description": (
-        "See geometry as SVG (exact vector lines). Always returns a rendered PNG "
-        "path -- open it with the Read tool to actually SEE the shape. PREFER "
-        "this over capture_view whenever crisp line geometry helps:\n"
-        "- Flat/2D (sketches, profiles): exports the geometry directly, and also "
-        "includes the raw SVG source text (clean parametric M/L/A commands -- "
-        "useful to read directly for exact coordinates).\n"
+        "See geometry as SVG (exact vector lines). Writes an SVG file and returns "
+        "its path -- open it with the Read tool to read the raw vector source "
+        "(clean parametric M/L/A commands, exact coordinates). This is text, not "
+        "an image -- Claude cannot visually see the shape from it, only reason "
+        "about the path data. PREFER this over capture_view whenever exact "
+        "coordinates matter more than a visual look:\n"
+        "- Flat/2D (sketches, profiles): exports the geometry directly -- the "
+        "path data reads cleanly.\n"
         "- 3D solids: pass 'view' (front/rear/top/bottom/left/right/iso) to get a "
-        "clean orthographic projection -- ideal for DIAGNOSING 3D parts (checking "
-        "profiles, alignment, holes) from standard views. This path is "
-        "hidden-line-removed and tessellated into many small segments, so the "
-        "raw source is NOT included -- always open the rendered image instead "
-        "of trying to infer shape from path data.\n"
+        "hidden-line-removed orthographic projection. This path is tessellated "
+        "into many small segments and is hard to reason about directly -- prefer "
+        "capture_view if you need to visually inspect a 3D shape.\n"
         "Optional 'name' = the object's internal Name; defaults to the selected "
         "object, or the first sketch in the document. Optionally crop to a region "
         "by giving one or more of x_min/x_max/y_min/y_max/z_min/z_max (world mm) "
@@ -946,32 +924,25 @@ def _run_view_sketch_svg(args):
     parts = [header]
     if warning:
         parts.append(warning)
-    png_path = _artifact_path("captures", base, ".png")
-    if _rasterize_svg(svg_path, png_path):
-        parts.append(f"Rendered image (open with the Read tool): {png_path}")
     if is_projection:
         # Hidden-line-removed projections tessellate curves/fillets into dozens
         # of near-duplicate micro-segments (and reuse path ids across groups) --
-        # noise to read as text even though the render is clean. Dumping it
-        # unprompted invited reasoning from the raw numbers instead of the
-        # image, which is how "I can't see X" complaints happened in practice.
+        # noise to reason about even though it's exact. Flagging this steers
+        # Claude toward capture_view for 3D shapes instead of guessing from it.
         parts.append(
             "(This projection's raw path data is tessellated into many tiny "
-            "segments and isn't meant to be read as text -- open the rendered "
-            "image above to see the shape.)"
+            "segments -- hard to reason about directly. For a visual look at "
+            "a 3D shape, use capture_view instead.)"
         )
-    elif len(svg_text) <= 8000:
-        parts.append("SVG source:\n" + svg_text)
-    else:
-        parts.append(f"(SVG source is {len(svg_text)} chars — Read the rendered image instead.)")
+    parts.append(f"SVG saved to: {svg_path}\n(Open it with the Read tool to read the source.)")
     return "\n\n".join(parts)
 
 
 _CAPTURE_VIEW_SCHEMA = {
     "name": "capture_view",
     "description": (
-        "Take a PNG screenshot of the active document's 3D geometry and return a "
-        "path to open with the Read tool. Renders through a separate offscreen "
+        "Take a PNG screenshot of the active document's 3D geometry and return "
+        "it inline. Renders through a separate offscreen "
         "camera, so it never disturbs whatever view/tab the user has open. Use "
         "for 3D solids/assemblies (for flat 2D geometry, prefer view_sketch_svg). "
         "'view' sets the camera angle: iso, front, rear, top, bottom, left, right. "
@@ -1182,7 +1153,7 @@ def _run_capture_view(args):
     finally:
         _close_offscreen_view(subwindow, prev_view)
 
-    return f"Captured the 3D view to: {png_path}\n(Open it with the Read tool to see it.)"
+    return f"Captured the 3D view (saved to {png_path}).", png_path
 
 
 _GET_SELECTION_SCHEMA = {

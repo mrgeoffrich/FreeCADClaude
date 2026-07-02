@@ -14,6 +14,7 @@ completes.
 affinity). It is idempotent and returns (port, token).
 """
 
+import base64
 import json
 import secrets
 import socket
@@ -175,16 +176,29 @@ def _dispatch(req, token):
                 return {"ok": False, "error": "The user declined to run this code."}
         def _call():
             out = tool["run"](args)
+            # Image tools (view_sketch_svg, capture_view) return (text, png_path);
+            # everything else returns a plain string.
+            text, png_path = out if isinstance(out, tuple) else (out, None)
             # Scan for features that failed to recompute during this call and fold
             # a one-line summary into the reply (get_diagnostics reports its own).
             note = "" if name == "get_diagnostics" else freecad_tools.summarize_new_failures()
-            return out, note
+            return text, png_path, note
 
         try:
-            text, note = _run_on_gui(_call)
+            text, png_path, note = _run_on_gui(_call)
             if note:
                 text = f"{text}\n\n{note}"
-            return {"ok": True, "text": text}
+            reply = {"ok": True, "text": text}
+            if png_path:
+                try:
+                    with open(png_path, "rb") as fh:
+                        reply["image"] = {
+                            "mimeType": "image/png",
+                            "data": base64.b64encode(fh.read()).decode("ascii"),
+                        }
+                except OSError as exc:
+                    reply["text"] += f"\n\n(failed to read rendered image: {exc!r})"
+            return reply
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": repr(exc)}
     return {"ok": False, "error": f"unknown op: {op}"}

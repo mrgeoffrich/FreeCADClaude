@@ -53,8 +53,10 @@ _TASK_TOOLS = [
     "TaskUpdate",
 ]
 
-#: Read is always on so the agent can open the PNGs produced by view_sketch_svg
-#: and capture_view (and read skill reference files). Read-only.
+#: Read is always on so the agent can open the SVG file produced by
+#: view_sketch_svg (returned as a path, not inline -- it's text, not an
+#: image) and skill reference files. capture_view returns its PNG inline, so
+#: it doesn't need Read. Read-only.
 _READ_TOOLS = ["Read"]
 
 #: Write is always on (like Read) so Claude can author plain-text files
