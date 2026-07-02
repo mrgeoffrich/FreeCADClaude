@@ -76,6 +76,10 @@ class AgentWorker(QtCore.QObject):
             "--verbose",                 # required for stream-json in -p mode
             "--include-partial-messages",  # stream text token-by-token
             "--model", cfg["model"],
+            # Newer models (e.g. Sonnet 5) default thinking blocks to redacted;
+            # this asks for the full summary instead. Scoped to this subprocess
+            # only -- does not touch the user's own ~/.claude/settings.json.
+            "--settings", '{"showThinkingSummaries": true}',
         ]
         # Pin reasoning effort so we don't inherit the user's global effortLevel.
         if cfg.get("effort"):

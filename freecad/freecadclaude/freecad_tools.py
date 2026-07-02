@@ -625,10 +625,21 @@ _INSPECT_API_SCHEMA = {
         "objects). For each it returns the type, a Python signature when one is "
         "available, the docstring (which for FreeCAD's C++ methods usually spells "
         "out the accepted argument forms), and -- for modules/classes -- the list "
-        "of public members. Examples: ['Sketcher.Constraint', 'Part.makeBox', "
-        "'PartDesign.Body', 'doc.Sketch.addGeometry']. Read-only and needs no "
-        "approval: it only walks attribute chains, never calls or subscripts. "
-        "Look up everything you're unsure of in ONE call, then write the code."
+        "of public members, or -- for a list/tuple value -- its items (e.g. "
+        "'doc.ExampleBoxInstance.PropertiesList' lists every property name on "
+        "that object). Examples: ['Sketcher.Constraint', 'Part.makeBox', "
+        "'doc.ExampleBodyInstance', 'doc.ExampleSketchInstance.addGeometry'] "
+        "-- the last two are illustrative; substitute the real internal Name "
+        "of a body/sketch already in the document (check get_objects if "
+        "unsure -- it's rarely literally 'Body'/'Sketch'). Only resolves "
+        "things already reachable by attribute access -- NOT 'Type::String' "
+        "names like 'PartDesign::AdditiveBox' (those are passed as strings to "
+        "addObject/newObject, not imported; once you've created one, inspect "
+        "the resulting object instead, e.g. 'doc.ExampleBoxInstance."
+        "PropertiesList' then 'doc.ExampleBoxInstance.Length' for a "
+        "specific property). Read-only and needs no approval: it only walks "
+        "attribute chains, never calls or subscripts. Look up everything "
+        "you're unsure of in ONE call, then write the code."
     ),
     "inputSchema": {
         "type": "object",
@@ -709,6 +720,10 @@ def _describe_api(obj, name):
         if members:
             shown = ", ".join(members[:60])
             lines.append("members: " + shown + (" …" if len(members) > 60 else ""))
+    elif isinstance(obj, (list, tuple)):
+        items = [repr(x) for x in obj[:60]]
+        if items:
+            lines.append("items: " + ", ".join(items) + (" …" if len(obj) > 60 else ""))
     return "\n".join(lines)
 
 

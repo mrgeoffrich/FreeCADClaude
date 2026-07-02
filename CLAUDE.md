@@ -85,10 +85,15 @@ turn that would mint one).
 ## CLI invocation (built in `agent_config`/`agent_worker`)
 
 `claude -p <text> --output-format stream-json --verbose --include-partial-messages
---model claude-sonnet-5 --tools <builtins...> --strict-mcp-config
---mcp-config <json> --allowed-tools "<list>"` plus `--append-system-prompt`
-(turn 1) or `--resume <id>` (later). cwd = the skills project dir (so its
-`.claude/skills` load) else a temp dir.
+--model claude-sonnet-5 --settings '{"showThinkingSummaries": true}' --tools <builtins...>
+--strict-mcp-config --mcp-config <json> --allowed-tools "<list>"` plus
+`--append-system-prompt` (turn 1) or `--resume <id>` (later). cwd = the skills
+project dir (so its `.claude/skills` load) else a temp dir.
+
+- `--settings '{"showThinkingSummaries": true}'` asks the CLI for full thinking
+  summaries instead of redacted blocks (newer models like Sonnet 5 default to
+  redacted). Passed per-subprocess via `--settings`, not written to the user's
+  own `~/.claude/settings.json` — scoped to this addon's turns only.
 
 - `--tools ""` disables ALL built-ins (incl. `Skill`). We enable a safe set:
   `Read` and `Write` (always — image viewing and plain-text file authoring),
