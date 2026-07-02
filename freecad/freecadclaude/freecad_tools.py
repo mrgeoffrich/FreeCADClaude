@@ -1023,6 +1023,24 @@ def _mdi_subwindows():
     return set(mdi_area.subWindowList()) if mdi_area else set()
 
 
+def _force_flat_lines(view):
+    """Force `view` to render every object shaded-with-edges ("Flat Lines"),
+    regardless of each object's own DisplayMode or whatever draw style the
+    user's real view currently happens to be set to -- so a capture always
+    reads clearly instead of silently inheriting e.g. Wireframe/Points if
+    that's what a particular object (or the user) is using elsewhere.
+
+    setOverrideMode is per-viewer state on the throwaway Coin viewer this
+    view owns; it never touches the user's real view or any ViewObject
+    property. No-op on FreeCAD builds that predate the Python binding for
+    View3DInventorViewer.setOverrideMode (FreeCAD/FreeCAD#19044, Jan 2025).
+    """
+    try:
+        view.getViewer().setOverrideMode("Flat Lines")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _offscreen_view(doc):
     """A throwaway, hidden 3D view of `doc`, for capture_view to render
     through instead of whatever view/tab the user actually has open --
@@ -1062,6 +1080,7 @@ def _offscreen_view(doc):
     # and saveImage() would capture the pre-transition (default) orientation.
     # Disabling animation makes those calls apply immediately/synchronously.
     view.setAnimationEnabled(False)
+    _force_flat_lines(view)
 
     subwindow = next(iter(_mdi_subwindows() - before), None)
     if subwindow is not None:
