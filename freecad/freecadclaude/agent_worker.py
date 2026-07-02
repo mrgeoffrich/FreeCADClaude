@@ -15,6 +15,7 @@ here -- that comes in milestone 3.
 """
 
 import json
+import os
 import queue
 import subprocess
 import tempfile
@@ -30,7 +31,8 @@ class AgentWorker(QtCore.QObject):
 
     text_received = QtCore.Signal(str)      # assistant text
     thinking_received = QtCore.Signal(str)  # streamed extended-thinking text
-    tool_used = QtCore.Signal(str)          # name of a FreeCAD tool the agent invoked
+    tool_used = QtCore.Signal(str, str, dict)  # tool_use_id, display label, input args
+    tool_result = QtCore.Signal(str, str)   # tool_use_id, result text
     task_event = QtCore.Signal(dict)        # {op:create,num,subject} | {op:update,num,status}
     plan_received = QtCore.Signal(str)      # full text of a Plan subagent's output
     turn_finished = QtCore.Signal()         # current response complete
@@ -42,13 +44,15 @@ class AgentWorker(QtCore.QObject):
         # config: {cli_path, model, system, ...} built on the GUI thread.
         self._config = config
         self._queue = queue.Queue()
+        self._log_dir = config.get("log_dir")  # session folder for the raw JSON transcript
         self._session_id = None  # set from the first turn, reused via --resume
         self._pending_tasks = {}  # TaskCreate tool_use_id -> subject (awaiting its #)
         self._plan_ids = set()    # Agent(Plan) tool_use_ids (awaiting result text)
+        self._chat_tool_ids = set()  # tool_use_ids surfaced via tool_used (awaiting a result)
         self._proc = None         # the live CLI subprocess for the current turn
         self._cancelled = False
-        self._streamed = False    # received partial text deltas this turn
-        self._thought = False     # received partial thinking deltas this turn
+        self._streamed = False    # received partial text deltas this round
+        self._thought = False     # received partial thinking deltas this round
 
     # -- runs on the worker thread ---------------------------------------
 
@@ -96,13 +100,27 @@ class AgentWorker(QtCore.QObject):
             argv += ["--append-system-prompt", cfg["system"]]
         return argv
 
+    def _open_log(self):
+        """Open this turn's raw-JSON transcript log for appending, or None.
+
+        One file per chat conversation (session_dir set by chat_panel via
+        set_log_dir), shared across every turn/resume in that conversation.
+        """
+        if not self._log_dir:
+            return None
+        try:
+            return open(os.path.join(self._log_dir, "stream.jsonl"), "a", encoding="utf-8")
+        except OSError:
+            return None
+
     def _handle_prompt(self, text):
         argv = self._build_argv(text)
         emitted = False
         self._cancelled = False
-        self._streamed = False  # did we get partial text deltas this turn?
-        self._thought = False   # did we get partial thinking deltas this turn?
+        self._streamed = False  # did we get partial text deltas this round?
+        self._thought = False   # did we get partial thinking deltas this round?
         stray = []  # non-JSON lines (e.g. stderr merged in) -> error context
+        log_fh = self._open_log()
         try:
             proc = subprocess.Popen(
                 argv,
@@ -120,6 +138,8 @@ class AgentWorker(QtCore.QObject):
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(f"Could not launch claude CLI: {exc!r}")
             self.turn_finished.emit()
+            if log_fh is not None:
+                log_fh.close()
             return
 
         self._proc = proc
@@ -128,6 +148,11 @@ class AgentWorker(QtCore.QObject):
                 line = line.strip()
                 if not line:
                     continue
+                if log_fh is not None:
+                    try:
+                        log_fh.write(line + "\n")
+                    except OSError:
+                        pass
                 try:
                     obj = json.loads(line)
                 except ValueError:
@@ -139,6 +164,8 @@ class AgentWorker(QtCore.QObject):
             self.failed.emit(f"Error reading claude output: {exc!r}")
         finally:
             self._proc = None
+            if log_fh is not None:
+                log_fh.close()
             if not self._cancelled and not emitted and proc.returncode not in (0, None):
                 detail = "\n".join(stray[-5:]) or f"claude exited with code {proc.returncode}"
                 self.failed.emit(detail)
@@ -182,6 +209,13 @@ class AgentWorker(QtCore.QObject):
                         self.thinking_received.emit(block["thinking"])
                 elif btype == "tool_use":
                     self._handle_tool_use(block)
+            # A turn can involve several internal assistant/tool round-trips
+            # (thinking -> tool_use -> tool_result -> thinking -> text, ...),
+            # each its own "assistant" event preceded by its own stream_event
+            # deltas. Reset here so the next round's fallback check reflects
+            # whether *that* round streamed, not a prior round in this turn.
+            self._streamed = False
+            self._thought = False
             return produced
         if kind == "user":
             for block in obj.get("message", {}).get("content", []):
@@ -210,14 +244,19 @@ class AgentWorker(QtCore.QObject):
             # Built-in, otherwise invisible -- show which skill is loading so a
             # long skill+reference read doesn't look like the turn is stuck.
             skill = inp.get("command") or inp.get("name") or inp.get("skill")
-            self.tool_used.emit(f"skill: {skill}" if skill else "skill")
+            self._emit_tool_used(block.get("id"), f"skill: {skill}" if skill else "skill", inp)
         elif name == "Read":
             # Built-in reference/image reads -- show just the file name.
             path = inp.get("file_path") or ""
-            self.tool_used.emit("read: " + path.rsplit("/", 1)[-1] if path else "read")
+            self._emit_tool_used(block.get("id"), "read: " + path.rsplit("/", 1)[-1] if path else "read", inp)
         elif name.startswith("mcp__freecad__"):
             # Surface every FreeCAD action in chat, including get_objects/get_selection.
-            self.tool_used.emit(name.replace("mcp__freecad__", ""))
+            self._emit_tool_used(block.get("id"), name.replace("mcp__freecad__", ""), inp)
+
+    def _emit_tool_used(self, tool_id, label, inp):
+        if tool_id:
+            self._chat_tool_ids.add(tool_id)
+        self.tool_used.emit(tool_id or "", label, inp)
 
     def _handle_tool_result(self, block):
         import re
@@ -234,6 +273,11 @@ class AgentWorker(QtCore.QObject):
             match = re.search(r"#(\d+)", content or "")
             num = match.group(1) if match else str(len(self._pending_tasks) + 1)
             self.task_event.emit({"op": "create", "num": num, "subject": subject})
+        elif tid in self._chat_tool_ids:
+            self._chat_tool_ids.discard(tid)
+            text = self._extract_text(block.get("content"))
+            if text:
+                self.tool_result.emit(tid, text)
 
     @staticmethod
     def _extract_text(content):
@@ -255,6 +299,12 @@ class AgentWorker(QtCore.QObject):
         self._session_id = None
         self._pending_tasks.clear()
         self._plan_ids.clear()
+        self._chat_tool_ids.clear()
+
+    def set_log_dir(self, path):
+        """Point subsequent turns' raw-JSON transcript log at a new folder
+        (called from the GUI thread alongside reset_session on "New")."""
+        self._log_dir = path
 
     def cancel(self):
         """Terminate the in-flight CLI turn (safe to call from the GUI thread)."""

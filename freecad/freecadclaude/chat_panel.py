@@ -2,34 +2,28 @@
 """The dockable Claude chat panel.
 
 The panel drives the ``claude`` CLI (via :class:`AgentWorker` on a worker
-thread) and renders the conversation. The transcript is kept as a Markdown
-string and rendered with ``QTextBrowser.setMarkdown`` so Claude's Markdown
-replies (headings, lists, **bold**, ``code``, fenced blocks) format properly
-and inherit FreeCAD's theme colours.
+thread) and renders the conversation as a stack of collapsible entry widgets
+(see :mod:`transcript_widgets`) -- one per user message, streamed Claude
+reply, thinking block, tool-use note, etc. -- each rendered with
+``QTextBrowser.setMarkdown`` so Claude's Markdown replies (headings, lists,
+**bold**, ``code``, fenced blocks) format properly and inherit FreeCAD's
+theme colours.
 
 The panel is a singleton: one dock per FreeCAD session, created lazily and
 re-shown on demand. The agent thread is started lazily on the first send.
 """
 
 import html
-import time
 
 import FreeCAD
 import FreeCADGui
 
 # FreeCAD bundles its own Qt binding under the ``PySide`` name. Always import
 # from ``PySide`` so the addon matches the running FreeCAD.
-from PySide import QtCore, QtGui, QtWidgets
+from PySide import QtCore, QtWidgets
 
-from . import _deps
+from . import _deps, transcript_widgets
 from .agent_worker import AgentWorker
-
-#: Role label colours. setMarkdown passes inline HTML spans through, so we
-#: colour just the labels while the Markdown body keeps the theme's text colour.
-_YOU_COLOR = "#3478c6"      # blue
-_CLAUDE_COLOR = "#d97757"   # Claude coral
-_MUTED_COLOR = "#888888"    # de-emphasised grey (status text, reasoning)
-_CLAUDE_HEADER = f'<span style="color:{_CLAUDE_COLOR}"><b>Claude:</b></span>'
 
 #: Show Claude's streamed reasoning as a muted blockquote. Flip to False to hide
 #: it (the agent still thinks; you just won't see it).
@@ -57,6 +51,32 @@ _SKILL_COMMANDS = {
         "Write/debug the run_python code to build or fix the live document",
     ),
 }
+
+#: Cap how much of a tool's result text gets shown in its (collapsed-by-default)
+#: transcript entry -- Claude still sees the full result either way, this is
+#: purely a UI-rendering limit.
+_MAX_TOOL_RESULT_CHARS = 4000
+
+
+def _format_tool_input(inp):
+    """Render a tool's input args as a Markdown fragment for its detail entry."""
+    if not inp:
+        return ""
+    if "code" in inp:  # run_python -- show the actual code that ran
+        parts = []
+        if inp.get("description"):
+            parts.append(inp["description"])
+        parts.append("```python\n" + inp["code"] + "\n```")
+        return "\n\n".join(parts)
+    lines = [f"- **{k}**: {v}" for k, v in inp.items() if v not in (None, "")]
+    return "\n".join(lines)
+
+
+def _format_tool_result(text):
+    if len(text) > _MAX_TOOL_RESULT_CHARS:
+        text = text[:_MAX_TOOL_RESULT_CHARS] + "\n… (truncated)"
+    return f"**Result:**\n\n```\n{text}\n```"
+
 
 _panel_instance = None
 
@@ -117,15 +137,10 @@ class ChatWidget(QtWidgets.QWidget):
         self._thread = None
         self._worker = None
         self._busy = False
-        self._md = ""         # the committed transcript, as Markdown
-        self._live = None     # the in-progress Claude block being streamed
-        self._live_think = None  # the in-progress reasoning block being streamed
-        self._thinking = False
-        self._think_dots = 0
-        self._think_start = 0.0
-        self._think_timer = QtCore.QTimer(self)
-        self._think_timer.setInterval(450)
-        self._think_timer.timeout.connect(self._tick_thinking)
+        self._live_entry = None       # the in-progress Claude entry being streamed
+        self._live_think_entry = None  # the in-progress reasoning entry being streamed
+        self._tool_entries = {}       # tool_use_id -> CollapsibleSection, awaiting its result
+        self._status_text = ""        # last worker status ("ready"/"closed"), shown when idle
         # Coalesces rapid streaming deltas into ~12 renders/sec instead of one
         # full setMarkdown per token.
         self._render_timer = QtCore.QTimer(self)
@@ -141,9 +156,8 @@ class ChatWidget(QtWidgets.QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
-        self.transcript = QtWidgets.QTextBrowser(self)
-        self.transcript.setOpenExternalLinks(True)
-        layout.addWidget(self.transcript, stretch=1)
+        self.transcript_view = transcript_widgets.TranscriptView(self)
+        layout.addWidget(self.transcript_view, stretch=1)
 
         self.input = _InputBox(self)
         self.input.setPlaceholderText(
@@ -176,8 +190,8 @@ class ChatWidget(QtWidgets.QWidget):
         button_row.addWidget(self.send_button)
         layout.addLayout(button_row)
 
-        self._add_md('*Type a message to start a Claude session. '
-                     'Try: "create a 20×40×10 box", or `/help` to see the available skills.*')
+        self._note('*Type a message to start a Claude session. '
+                    'Try: "create a 20×40×10 box", or `/help` to see the available skills.*')
 
     # -- worker lifecycle ------------------------------------------------
 
@@ -188,18 +202,21 @@ class ChatWidget(QtWidgets.QWidget):
 
         ok, detail = _deps.cli_available()
         if not ok:
-            self._add_md(_deps.INSTALL_HINT)
-            self._add_md(f"*({detail})*")
+            self._note(_deps.INSTALL_HINT)
+            self._note(f"*({detail})*")
             return False
 
-        from . import agent_config, gui_bridge
+        from . import agent_config, freecad_tools, gui_bridge
 
         try:
             port, token = gui_bridge.start()  # runs on the GUI thread
         except Exception as exc:  # noqa: BLE001
-            self._add_md(f"*Could not start the FreeCAD tool bridge: {exc!r}*")
+            self._note(f"*Could not start the FreeCAD tool bridge: {exc!r}*")
             return False
 
+        # Mint this conversation's log folder BEFORE build_config, which reads
+        # it (see freecad_tools.new_session_id / session_dir).
+        freecad_tools.new_session_id()
         self._thread = QtCore.QThread(self)
         self._worker = AgentWorker(agent_config.build_config(detail, port, token))
         self._worker.moveToThread(self._thread)
@@ -209,6 +226,7 @@ class ChatWidget(QtWidgets.QWidget):
         if SHOW_THINKING:
             self._worker.thinking_received.connect(self._on_thinking)
         self._worker.tool_used.connect(self._on_tool)
+        self._worker.tool_result.connect(self._on_tool_result)
         self._worker.turn_finished.connect(self._on_turn_finished)
         self._worker.status_changed.connect(self._on_status)
         self._worker.failed.connect(self._on_failed)
@@ -251,17 +269,14 @@ class ChatWidget(QtWidgets.QWidget):
             text, cli_text = expanded
 
         if self._busy:
-            self._add_md("*Still working on the previous message…*")
+            self._note("*Still working on the previous message…*")
             return
         if not self._ensure_worker():
             return
 
         self.input.clear()
-        self._add_md(
-            f'<span style="color:{_YOU_COLOR}"><b>You:</b></span> {html.escape(text)}'
-        )
+        self._add_entry("you", html.escape(text))
         self._set_busy(True)
-        self._set_thinking(True)
         self._worker.submit(cli_text)
 
     def _expand_slash_command(self, text):
@@ -279,12 +294,12 @@ class ChatWidget(QtWidgets.QWidget):
             lines = ["**Available skills** (explicit-invocation only):"]
             for name, (_, blurb) in _SKILL_COMMANDS.items():
                 lines.append(f"- `/{name}` — {blurb}")
-            self._add_md("\n".join(lines))
+            self._note("\n".join(lines))
             return None
 
         if cmd not in _SKILL_COMMANDS:
             known = ", ".join(f"`/{name}`" for name in _SKILL_COMMANDS)
-            self._add_md(f"*Unknown command `/{cmd}`. Available: {known}, `/help`.*")
+            self._note(f"*Unknown command `/{cmd}`. Available: {known}, `/help`.*")
             return None
 
         skill_name, _ = _SKILL_COMMANDS[cmd]
@@ -304,67 +319,92 @@ class ChatWidget(QtWidgets.QWidget):
 
     @QtCore.Slot(str)
     def _on_text(self, chunk):
-        if self._live is None:
-            self._live = ""
-        self._live += chunk
+        # We now know this phase produced no reasoning -- drop the empty
+        # placeholder thinking entry instead of leaving it stranded above
+        # the reply until the next commit.
+        if self._live_think_entry is not None and not self._live_think_entry.raw_text.strip():
+            self.transcript_view.remove_entry(self._live_think_entry)
+            self._live_think_entry = None
+        if self._live_entry is None:
+            self._live_entry = self.transcript_view.start_live_entry("claude")
+        self._live_entry.append_text(chunk)
         self._render_soon()
 
     @QtCore.Slot(str)
     def _on_thinking(self, chunk):
-        if self._live_think is None:
-            self._live_think = ""
-        self._live_think += chunk
+        self._ensure_live_think_entry()
+        self._live_think_entry.append_text(chunk)
         self._render_soon()
 
-    @QtCore.Slot(str)
-    def _on_tool(self, tool_name):
+    @QtCore.Slot(str, str, dict)
+    def _on_tool(self, tool_id, label, tool_input):
         self._commit_live()
-        self._add_md(f"*↪ used tool: {tool_name}*")
+        entry = self._add_entry("tool", _format_tool_input(tool_input), collapsed=True, tool_name=label)
+        if tool_id:
+            self._tool_entries[tool_id] = entry
+
+    @QtCore.Slot(str, str)
+    def _on_tool_result(self, tool_id, result_text):
+        entry = self._tool_entries.pop(tool_id, None)
+        if entry is None:
+            return
+        body = entry.raw_text
+        if body.strip():
+            body += "\n\n---\n\n"
+        entry.update_content_markdown(body + _format_tool_result(result_text))
 
     @QtCore.Slot()
     def _on_turn_finished(self):
         self._commit_live()
-        self._set_thinking(False)
         self._set_busy(False)
 
     @QtCore.Slot(str)
     def _on_status(self, status):
-        self.status_label.setText(status)
+        self._status_text = status
+        if not self._busy:
+            self.status_label.setText(status)
 
     @QtCore.Slot(str)
     def _on_failed(self, message):
         self._commit_live()
-        self._set_thinking(False)
-        self._add_md(f"**⚠ {message}**")
+        self._add_entry("warning", message)
         self._set_busy(False)
 
     # -- transcript ------------------------------------------------------
 
-    def _add_md(self, fragment):
-        """Append a Markdown fragment to the committed transcript and render."""
-        self._md += fragment.rstrip() + "\n\n"
-        self._render()
+    @property
+    def _md(self):
+        """Plain-Markdown reconstruction of the committed transcript, for eval_runner.py."""
+        return self.transcript_view.to_markdown()
+
+    def _note(self, text):
+        return self._add_entry("note", text)
+
+    def _add_entry(self, kind, text, **kw):
+        return self.transcript_view.add_entry(kind, text, **kw)
+
+    def _ensure_live_think_entry(self):
+        """Lazily create the live thinking entry the moment real reasoning
+        starts streaming in (called from _on_thinking only) -- unlike the old
+        eager placeholder, the transcript never holds an entry with no
+        content behind it. "Is Claude working?" is answered by the status
+        label instead (see _set_busy)."""
+        if not SHOW_THINKING:
+            return
+        if self._live_think_entry is None:
+            self._live_think_entry = self.transcript_view.start_live_entry("thinking")
 
     def _commit_live(self):
-        """Finalize the streamed reasoning + Claude block into the transcript."""
-        if self._live_think is not None:
-            think = self._live_think.strip()
-            if think:
-                self._md += self._format_thinking(think) + "\n\n"
-            self._live_think = None
-        if self._live is not None:
-            text = self._live.strip()
-            if text:
-                self._md += f"{_CLAUDE_HEADER}\n\n{text}\n\n"
-            self._live = None
-
-    @staticmethod
-    def _format_thinking(text, live=False):
-        """Render reasoning as a muted, de-emphasised blockquote."""
-        label = "💭 <i>thinking…</i>" if live else "💭 <i>thought</i>"
-        header = f'<span style="color:{_MUTED_COLOR}">{label}</span>'
-        quoted = "\n".join("> " + line for line in text.splitlines())
-        return f"{header}\n\n{quoted}"
+        """Finalize the streamed reasoning + Claude entries into the transcript."""
+        for attr in ("_live_think_entry", "_live_entry"):
+            entry = getattr(self, attr)
+            if entry is None:
+                continue
+            entry.flush()  # ensure the last (possibly still-throttled) chunk is shown
+            entry.commit()
+            if not entry.raw_text.strip():
+                self.transcript_view.remove_entry(entry)
+            setattr(self, attr, None)
 
     def _render(self):
         """Render now (cancels any pending throttled render)."""
@@ -377,47 +417,14 @@ class ChatWidget(QtWidgets.QWidget):
             self._render_timer.start()
 
     def _do_render(self):
-        """Render committed transcript + the live streamed block + thinking line."""
-        body = self._md
-        if self._live_think is not None:
-            body += self._format_thinking(self._live_think, live=True) + "\n\n"
-        if self._live is not None:
-            body += f"{_CLAUDE_HEADER}\n\n{self._live}\n\n"
-        # Animated placeholder only until reasoning or text starts streaming.
-        if self._thinking and self._live is None and self._live_think is None:
-            elapsed = int(time.monotonic() - self._think_start)
-            body += (
-                f'<span style="color:{_CLAUDE_COLOR}"><i>Thinking'
-                f'{"." * self._think_dots} ({elapsed}s)</i></span>'
-            )
-        bar = self.transcript.verticalScrollBar()
-        # Was the view pinned to (near) the bottom *before* we replace the doc?
-        # Only then do we re-pin -- otherwise leave the user where they scrolled.
-        stick = bar.value() >= bar.maximum() - 8
-        prev = bar.value()
-        self.transcript.setMarkdown(body)
-        if stick:
-            # ensureCursorVisible forces layout to the end and scrolls there,
-            # which is robust to the async relayout of a long document. Reading
-            # bar.maximum() right after setMarkdown can be stale -> the jitter.
-            self.transcript.moveCursor(QtGui.QTextCursor.End)
-            self.transcript.ensureCursorVisible()
-        else:
-            bar.setValue(min(prev, bar.maximum()))
-
-    def _set_thinking(self, on):
-        self._thinking = on
-        self._think_dots = 0
-        if on:
-            self._think_start = time.monotonic()
-            self._think_timer.start()
-        else:
-            self._think_timer.stop()
-        self._render()
-
-    def _tick_thinking(self):
-        self._think_dots = (self._think_dots + 1) % 4
-        self._render()
+        """Flush the live streamed entries."""
+        self._render_timer.stop()
+        pinned = self.transcript_view.is_pinned()
+        if self._live_think_entry is not None:
+            self._live_think_entry.flush()
+        if self._live_entry is not None:
+            self._live_entry.flush()
+        self.transcript_view.scroll_to_bottom_if_pinned(pinned)
 
     def _on_new(self):
         """Start a fresh conversation: reset the agent's session and clear panels."""
@@ -425,18 +432,22 @@ class ChatWidget(QtWidgets.QWidget):
             if self._busy:
                 self._worker.cancel()
             self._worker.reset_session()
-        self._md = ""
-        self._live = None
-        self._live_think = None
+            from . import freecad_tools
+
+            freecad_tools.new_session_id()
+            self._worker.set_log_dir(freecad_tools.session_dir())
+        self.transcript_view.clear()
+        self._live_entry = None
+        self._live_think_entry = None
+        self._tool_entries.clear()
         self._set_busy(False)
-        self._set_thinking(False)
         try:
             from . import plan_panel
 
             plan_panel.get_panel().widget.clear()
         except Exception:  # noqa: BLE001
             pass
-        self._add_md("*New conversation started.*")
+        self._note("*New conversation started.*")
 
     def _open_artifacts(self):
         """Open the FreeCADClaude captures/exports folder in the file manager."""
@@ -451,13 +462,18 @@ class ChatWidget(QtWidgets.QWidget):
         if self._worker is not None and self._busy:
             self._worker.cancel()
             self._commit_live()
-            self._add_md("*(stopped)*")
+            self._note("*(stopped)*")
 
     def _set_busy(self, busy):
         self._busy = busy
         self.send_button.setEnabled(not busy)
         self.send_button.setText("…" if busy else "Send")
         self.stop_button.setEnabled(busy)
+        if busy:
+            color = transcript_widgets.CLAUDE_COLOR
+            self.status_label.setText(f'<span style="color:{color}">Processing</span>')
+        else:
+            self.status_label.setText(self._status_text)
 
 
 class _InputBox(QtWidgets.QPlainTextEdit):

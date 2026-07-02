@@ -188,4 +188,7 @@ def build_config(cli_path, bridge_port, bridge_token):
         "allowed_tools": allowed_tools,
         "builtin_tools": builtin_tools,
         "cwd": skills_dir,  # None -> worker uses a neutral temp dir
+        # The active chat conversation's log folder -- see freecad_tools.new_session_id.
+        # Must be minted (freecad_tools.new_session_id()) before this call.
+        "log_dir": freecad_tools.session_dir(),
     }

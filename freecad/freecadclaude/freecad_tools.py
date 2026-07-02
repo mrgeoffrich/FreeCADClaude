@@ -40,9 +40,66 @@ def ensure_sketches_dir():
     return path
 
 
+#: Folder name of the chat conversation currently being logged, set by
+#: new_session_id() (called from chat_panel on the GUI thread when a chat
+#: starts or "New" resets it).
+_active_session = {"id": None}
+
+#: Top-level folders under artifacts_dir() that are NOT per-session and must
+#: be skipped by session-folder pruning.
+_NON_SESSION_DIRS = {"sketches"}
+
+
+def new_session_id():
+    """Mint a fresh id for the current chat conversation and make it active.
+
+    Everything logged for this conversation -- captures, run_python scripts,
+    and the CLI's raw JSON stream -- lands under
+    <artifacts_dir>/<session_id>/ (see session_dir). Prunes old session
+    folders first so a long history of chats doesn't grow the folder forever.
+    """
+    import secrets
+    import time
+
+    _prune_session_dirs()
+    session_id = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
+    _active_session["id"] = session_id
+    return session_id
+
+
+def session_dir():
+    """Absolute path to the active chat conversation's log folder.
+
+    Falls back to a shared "unsaved" folder if called before new_session_id()
+    -- shouldn't happen via the bridge, which only runs during a live turn.
+    """
+    path = os.path.join(artifacts_dir(), _active_session["id"] or "unsaved")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _prune_session_dirs(keep=40):
+    """Keep only the most recent `keep` session folders (best effort)."""
+    import shutil
+
+    base = artifacts_dir()
+    try:
+        entries = [os.path.join(base, d) for d in os.listdir(base)]
+    except OSError:
+        return
+    dirs = [d for d in entries
+            if os.path.isdir(d) and os.path.basename(d) not in _NON_SESSION_DIRS]
+    dirs.sort(key=os.path.getmtime, reverse=True)
+    for old in dirs[keep:]:
+        try:
+            shutil.rmtree(old)
+        except OSError:
+            pass
+
+
 def _artifact_path(subdir, base, suffix):
-    """A unique, readably-named file under <FreeCADClaude>/<subdir>/."""
-    folder = os.path.join(artifacts_dir(), subdir)
+    """A unique, readably-named file under <session_dir>/<subdir>/."""
+    folder = os.path.join(session_dir(), subdir)
     os.makedirs(folder, exist_ok=True)
     _prune_folder(folder, keep=60)
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in base) or "item"
@@ -67,7 +124,7 @@ def _prune_folder(folder, keep):
 
 
 def _save_run_python_script(code, description):
-    """Archive an approved run_python call under <FreeCADClaude>/scripts/.
+    """Archive an approved run_python call under <session_dir>/scripts/.
 
     Named "<HHMMSS>_<description>.py" -- just the time, not the date, so
     names stay short but a plain alphabetical directory listing still sorts
@@ -78,7 +135,7 @@ def _save_run_python_script(code, description):
     import time
 
     try:
-        folder = os.path.join(artifacts_dir(), "scripts")
+        folder = os.path.join(session_dir(), "scripts")
         os.makedirs(folder, exist_ok=True)
         _prune_folder(folder, keep=60)
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in description) or "run_python"
@@ -616,10 +673,11 @@ def _run_view_sketch_svg(args):
 _CAPTURE_VIEW_SCHEMA = {
     "name": "capture_view",
     "description": (
-        "Take a PNG screenshot of the active 3D view and return a path to open "
-        "with the Read tool. Use for 3D solids/assemblies (for flat 2D geometry, "
-        "prefer view_sketch_svg). Optional 'view' to set the camera first: "
-        "iso, front, rear, top, bottom, left, right."
+        "Take a PNG screenshot of the active document's 3D geometry and return a "
+        "path to open with the Read tool. Renders through a separate offscreen "
+        "camera, so it never disturbs whatever view/tab the user has open. Use "
+        "for 3D solids/assemblies (for flat 2D geometry, prefer view_sketch_svg). "
+        "'view' sets the camera angle: iso, front, rear, top, bottom, left, right."
     ),
     "inputSchema": {
         "type": "object",
@@ -628,6 +686,7 @@ _CAPTURE_VIEW_SCHEMA = {
             "width": {"type": "integer", "description": "Image width px (default 1280)"},
             "height": {"type": "integer", "description": "Image height px (default 960)"},
         },
+        "required": ["view"],
         "additionalProperties": False,
     },
 }
@@ -638,28 +697,107 @@ _VIEW_PRESETS = {
     "bottom": "viewBottom", "left": "viewLeft", "right": "viewRight",
 }
 
+#: View's own render-backend preference. Forced to an offscreen-safe value
+#: for the duration of a capture (see _run_capture_view) -- "GrabFramebuffer"
+#: reads whatever's currently painted on screen, which our hidden view never has.
+_VIEW_PREF_PATH = "User parameter:BaseApp/Preferences/View"
 
-def _run_capture_view(args):
+
+def _mdi_subwindows():
+    """The main window's current set of MDI subwindows (one per open document
+    view/tab) -- diffed before/after creating a view to spot which subwindow
+    it landed in, since FreeCAD's own Python view objects don't expose
+    hide/show/close (those are plain Qt widget operations)."""
+    from PySide import QtWidgets
+
     import FreeCADGui
 
-    view = FreeCADGui.activeView() if hasattr(FreeCADGui, "activeView") else None
-    if view is None or not hasattr(view, "saveImage"):
-        return "No active 3D view to capture (open a document with geometry first)."
+    mdi_area = FreeCADGui.getMainWindow().findChild(QtWidgets.QMdiArea)
+    return set(mdi_area.subWindowList()) if mdi_area else set()
+
+
+def _offscreen_view(doc):
+    """A throwaway, hidden 3D view of `doc`, for capture_view to render
+    through instead of whatever view/tab the user actually has open --
+    so a screenshot never hijacks their camera, and never fails just because
+    a non-3D tab (e.g. a Spreadsheet) or a different document happens to be
+    focused. Returns (view, subwindow); either may be None on failure.
+
+    Gui::Document::createView() unconditionally shows and activates the new
+    view -- it exists for the "split view" feature, not headless use -- so we
+    hide the Qt subwindow it lands in and restore whatever was active
+    immediately after, all within this one call. Qt only actually paints a
+    widget on the next event-loop turn, never synchronously inside show(), so
+    nothing visibly flashes and other tools' SendMsgToActiveView keeps
+    targeting the user's real view.
+    """
+    import FreeCADGui
+
+    gui_doc = FreeCADGui.getDocument(doc.Name)
+    if gui_doc is None:
+        return None, None
+
+    prev_view = FreeCADGui.activeView()
+    before = _mdi_subwindows()
+    view = gui_doc.createView("Gui::View3DInventor")
+    if view is None:
+        return None, None
+
+    subwindow = next(iter(_mdi_subwindows() - before), None)
+    if subwindow is not None:
+        subwindow.hide()
+    if prev_view is not None:
+        FreeCADGui.getMainWindow().setActiveWindow(prev_view)
+    return view, subwindow
+
+
+def _close_offscreen_view(subwindow):
+    if subwindow is not None:
+        try:
+            subwindow.close()  # WA_DeleteOnClose -- also destroys the inner view
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _run_capture_view(args):
+    import FreeCAD
+
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        return "No active document."
 
     preset = _VIEW_PRESETS.get(str(args.get("view") or "").lower())
-    if preset and hasattr(view, preset):
-        getattr(view, preset)()
-    try:
-        view.fitAll()
-    except Exception:  # noqa: BLE001
-        pass
+    if preset is None:
+        return f"Unknown 'view' {args.get('view')!r}. Pick one of: {', '.join(sorted(set(_VIEW_PRESETS)))}."
+
+    view, subwindow = _offscreen_view(doc)
+    if view is None:
+        return "Could not create an offscreen view to capture."
 
     # 1280x960 (1.23 MP) sits near Claude's image ceiling (~1.15-1.2 MP / 1568px
     # long edge); larger just gets downscaled again, so this is the detail sweet spot.
     width = int(args.get("width", 1280))
     height = int(args.get("height", 960))
-    png_path = _artifact_path("captures", f"view_{args.get('view') or 'current'}", ".png")
-    view.saveImage(png_path, width, height, "White")
+    png_path = _artifact_path("captures", f"view_{args['view']}", ".png")
+
+    try:
+        if hasattr(view, preset):
+            getattr(view, preset)()
+        try:
+            view.fitAll()
+        except Exception:  # noqa: BLE001
+            pass
+
+        params = FreeCAD.ParamGet(_VIEW_PREF_PATH)
+        prev_method = params.GetString("SavePicture", "")
+        params.SetString("SavePicture", "FramebufferObject")
+        try:
+            view.saveImage(png_path, width, height, "White")
+        finally:
+            params.SetString("SavePicture", prev_method)
+    finally:
+        _close_offscreen_view(subwindow)
+
     return f"Captured the 3D view to: {png_path}\n(Open it with the Read tool to see it.)"
 
 

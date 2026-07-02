@@ -65,14 +65,22 @@ itself, not the MCP bridge, and `Write` never touches the live document.
 
 Visual perception: prefer `view_sketch_svg` (exact SVG; for 3D pass
 `view=front/top/...` → `TechDraw.projectToSVG` orthographic) over `capture_view`
-(raster screenshot). Artifacts go to `~/FreeCADClaude/{captures,exports,scripts,sketches}`
-(the user's home directory, **not** FreeCAD's `UserAppData`) — `captures`/
+(raster screenshot). Artifacts go to `~/FreeCADClaude/<session-id>/{captures,exports,scripts}`
+(the user's home directory, **not** FreeCAD's `UserAppData`) — `<session-id>` is a
+readable id (`YYYYMMDD-HHMMSS-<6 hex>`) minted by `freecad_tools.new_session_id()`
+when a chat starts and again on "New" (`chat_panel._ensure_worker`/`_on_new`), so
+every conversation gets its own folder; `session_dir()` resolves the active one
+(older session folders are pruned, keeping the most recent 40). `captures`/
 `exports`/`scripts` are written by FreeCAD tools via `_artifact_path` (auto-pruned, kept
 ≤60 files each); `scripts` holds a `.py` copy of every approved `run_python` call
 (written by `_save_run_python_script`, right before `exec`, so both successful and
-failed runs are archived); `sketches` holds `freecad-lofi-sketch`'s concept SVGs, written
-directly by Claude via `Write` (not auto-pruned, since they bypass
-`_artifact_path`).
+failed runs are archived); the same session folder also holds `stream.jsonl` — the
+raw newline-delimited JSON `agent_worker` reads from the `claude` CLI, appended
+turn-by-turn (`AgentWorker._open_log`) — handy for diagnosing a turn after the fact.
+`~/FreeCADClaude/sketches` sits outside any session: it holds `freecad-lofi-sketch`'s
+concept SVGs, written directly by Claude via `Write` (not auto-pruned, since they
+bypass `_artifact_path`, and not session-scoped since a sketch can precede any chat
+turn that would mint one).
 
 ## CLI invocation (built in `agent_config`/`agent_worker`)
 
@@ -105,6 +113,12 @@ directly by Claude via `Write` (not auto-pruned, since they bypass
   `QT_QPA_PLATFORM=offscreen` and may lack fonts/`activeView`.
 - **End-to-end eval:** `pwsh -File eval/run.ps1 [-Prompt ... -Expect <regex>]` —
   launches FreeCAD, runs a prompt, snapshots the doc to JSON, exits 0/1/2.
+- **Diagnosing a past conversation:** everything for it lives in
+  `~/FreeCADClaude/<session-id>/` — `stream.jsonl` (the raw JSON the `claude`
+  CLI streamed, turn by turn), `scripts/` (every approved `run_python` call,
+  success or failure), and `captures/`/`exports/` (images/exported files). See
+  the "Tools" section above for how `<session-id>` is chosen. The "Files"
+  button in the chat panel opens `~/FreeCADClaude` itself (all sessions).
 
 ## Conventions
 
