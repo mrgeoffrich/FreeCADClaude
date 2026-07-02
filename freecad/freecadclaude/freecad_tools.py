@@ -1002,6 +1002,13 @@ _VIEW_PRESETS = {
 #: reads whatever's currently painted on screen, which our hidden view never has.
 _VIEW_PREF_PATH = "User parameter:BaseApp/Preferences/View"
 
+#: Background for saveImage on every raster capture (capture_view/crop_view/
+#: cutaway). Black rather than white: FreeCAD's default shaded geometry is mid
+#: grey, which is low-contrast on white -- a black backdrop makes the part's
+#: silhouette and shading read far more clearly for the vision model. (The SVG
+#: path keeps its white background: that's black line-art, not shaded geometry.)
+_CAPTURE_BG = "Black"
+
 
 def _mdi_subwindows():
     """The main window's current set of MDI subwindows (one per open document
@@ -1212,6 +1219,61 @@ def _apply_camera_orientation(view, rot):
             return False
 
 
+def _resolve_camera_args(args):
+    """Parse the shared capture_view/cutaway camera args into a plan, or an error.
+
+    Angle comes EITHER from a named preset ('view') OR a custom orbit
+    (azimuth/elevation degrees); azimuth/elevation win if given, otherwise fall
+    back to the preset, defaulting to iso when 'view' is omitted too. Returns
+    ``(plan, None)`` or ``(None, error_string)``. plan keys: ``orbit`` (bool);
+    ``azimuth``/``elevation`` (floats, when orbit); ``preset`` (View method
+    name) / ``view_arg`` (str, when preset); ``label`` (for the artifact name).
+    """
+    az_arg, el_arg = args.get("azimuth"), args.get("elevation")
+    orbit = az_arg is not None or el_arg is not None
+    if orbit:
+        try:
+            azimuth = float(az_arg) if az_arg is not None else 0.0
+            elevation = float(el_arg) if el_arg is not None else 0.0
+        except (TypeError, ValueError):
+            return None, "azimuth and elevation must be numbers in degrees."
+        # Elevation is a tilt above/below the horizon; past +/-90 you'd just
+        # cross over to the other side, so clamp it. Azimuth wraps freely.
+        elevation = max(-90.0, min(90.0, elevation))
+        return {
+            "orbit": True, "azimuth": azimuth, "elevation": elevation,
+            "label": f"orbit_az{azimuth:g}_el{elevation:g}",
+        }, None
+
+    view_arg = str(args.get("view") or "").strip().lower() or "iso"
+    preset = _VIEW_PRESETS.get(view_arg)
+    if preset is None:
+        return None, (
+            f"Unknown 'view' {args.get('view')!r}. Pick one of: "
+            f"{', '.join(sorted(set(_VIEW_PRESETS)))}, or pass azimuth/"
+            "elevation (degrees) for a custom angle."
+        )
+    return {
+        "orbit": False, "preset": preset, "view_arg": view_arg,
+        "label": f"view_{view_arg}",
+    }, None
+
+
+def _apply_camera_plan(view, plan):
+    """Aim `view`'s camera per a _resolve_camera_args plan, then fitAll to frame
+    the model and set the focal depth. Returns an error string, or None."""
+    if plan["orbit"]:
+        if not _apply_camera_orientation(view, _orbit_rotation(plan["azimuth"], plan["elevation"])):
+            return "Could not set a custom camera angle on this FreeCAD build -- use a named 'view' preset instead."
+    elif hasattr(view, plan["preset"]):
+        getattr(view, plan["preset"])()
+    try:
+        view.fitAll()
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def _run_capture_view(args):
     import FreeCAD
 
@@ -1219,32 +1281,15 @@ def _run_capture_view(args):
     if doc is None:
         return "No active document."
 
-    # Angle comes EITHER from a named preset ('view') OR a custom orbit
-    # (azimuth/elevation degrees). azimuth/elevation win if given; otherwise
-    # fall back to the preset, defaulting to iso when 'view' is omitted too.
-    az_arg, el_arg = args.get("azimuth"), args.get("elevation")
-    orbit = az_arg is not None or el_arg is not None
-    preset = None
+    plan, err = _resolve_camera_args(args)
+    if err:
+        return err
+    orbit = plan["orbit"]
+    label = plan["label"]
     if orbit:
-        try:
-            azimuth = float(az_arg) if az_arg is not None else 0.0
-            elevation = float(el_arg) if el_arg is not None else 0.0
-        except (TypeError, ValueError):
-            return "azimuth and elevation must be numbers in degrees."
-        # Elevation is a tilt above/below the horizon; past +/-90 you'd just
-        # cross over to the other side, so clamp it. Azimuth wraps freely.
-        elevation = max(-90.0, min(90.0, elevation))
-        label = f"orbit_az{azimuth:g}_el{elevation:g}"
+        azimuth, elevation = plan["azimuth"], plan["elevation"]
     else:
-        view_arg = str(args.get("view") or "").strip().lower() or "iso"
-        preset = _VIEW_PRESETS.get(view_arg)
-        if preset is None:
-            return (
-                f"Unknown 'view' {args.get('view')!r}. Pick one of: "
-                f"{', '.join(sorted(set(_VIEW_PRESETS)))}, or pass azimuth/"
-                "elevation (degrees) for a custom angle."
-            )
-        label = f"view_{view_arg}"
+        view_arg = plan["view_arg"]
 
     view, subwindow, prev_view = _offscreen_view(doc)
     if view is None:
@@ -1266,15 +1311,9 @@ def _run_capture_view(args):
         if subwindow is not None:
             subwindow.resize(width, height)
 
-        if orbit:
-            if not _apply_camera_orientation(view, _orbit_rotation(azimuth, elevation)):
-                return "Could not set a custom camera angle on this FreeCAD build -- use a named 'view' preset instead."
-        elif hasattr(view, preset):
-            getattr(view, preset)()
-        try:
-            view.fitAll()
-        except Exception:  # noqa: BLE001
-            pass
+        err = _apply_camera_plan(view, plan)
+        if err:
+            return err
 
         if extents:
             scene_bbox = _document_bbox(doc)
@@ -1304,7 +1343,7 @@ def _run_capture_view(args):
         prev_method = params.GetString("SavePicture", "")
         params.SetString("SavePicture", "FramebufferObject")
         try:
-            view.saveImage(png_path, width, height, "White")
+            view.saveImage(png_path, width, height, _CAPTURE_BG)
         finally:
             params.SetString("SavePicture", prev_method)
         # Read back the actual camera angle so the result can report it (e.g.
@@ -1449,7 +1488,7 @@ def _run_crop_view(args):
         prev_method = params.GetString("SavePicture", "")
         params.SetString("SavePicture", "FramebufferObject")
         try:
-            view.saveImage(png_path, width, height, "White")
+            view.saveImage(png_path, width, height, _CAPTURE_BG)
         finally:
             params.SetString("SavePicture", prev_method)
     finally:
@@ -1459,6 +1498,276 @@ def _run_crop_view(args):
         f"Zoomed into ({x1:.2f},{y1:.2f})-({x2:.2f},{y2:.2f}) of the last view and "
         "re-rendered that region at full resolution."
     )
+    return text, png_path
+
+
+#: axis name -> index into (x, y, z), for cutaway's convenience axis mode.
+_AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
+
+
+def _resolve_clip_plane(args, doc):
+    """Build a Coin ``SbPlane`` for the cutaway from `args`.
+
+    Two ways to specify it:
+      - ``point`` [x,y,z] + ``normal`` [x,y,z]: an arbitrary plane; the half
+        that is KEPT (drawn) is the side the normal points toward.
+      - ``axis`` (x/y/z) + ``position`` (mm) + ``keep`` (low/high): a plane
+        perpendicular to that axis. ``position`` defaults to the document's
+        bbox midpoint on that axis (so a bare ``axis`` just halves the model);
+        ``keep`` (default low) chooses the smaller- or larger-coordinate side.
+
+    Returns ``(SbPlane, description, None)`` on success, or
+    ``(None, None, error_string)``. The kept-side convention was verified
+    against Coin: SoClipPlane keeps points where the plane's normal points, so
+    the normal below always points at the half we want to see.
+    """
+    from pivy import coin
+
+    point, normal = args.get("point"), args.get("normal")
+    if point is not None or normal is not None:
+        if point is None or normal is None:
+            return None, None, "For a general plane give BOTH 'point' [x,y,z] and 'normal' [x,y,z]."
+        try:
+            px, py, pz = (float(c) for c in point)
+            nx, ny, nz = (float(c) for c in normal)
+        except (TypeError, ValueError):
+            return None, None, "'point' and 'normal' must each be a list of three numbers [x, y, z]."
+        n = coin.SbVec3f(nx, ny, nz)
+        if n.length() < 1e-9:
+            return None, None, "'normal' must be a non-zero vector."
+        plane = coin.SbPlane(n, coin.SbVec3f(px, py, pz))
+        desc = f"a plane through ({px:g}, {py:g}, {pz:g}) with normal ({nx:g}, {ny:g}, {nz:g})"
+        return plane, desc, None
+
+    axis = str(args.get("axis") or "").strip().lower()
+    if axis not in _AXIS_INDEX:
+        return None, None, (
+            "Give a clip plane: either 'axis' (x/y/z) [with optional 'position'/'keep'], "
+            "or a general 'point' [x,y,z] plus 'normal' [x,y,z]."
+        )
+    idx = _AXIS_INDEX[axis]
+
+    if args.get("position") is not None:
+        try:
+            position = float(args["position"])
+        except (TypeError, ValueError):
+            return None, None, "'position' must be a number (mm)."
+    else:
+        bbox = _document_bbox(doc)
+        if bbox.XMin > bbox.XMax:
+            return None, None, "No geometry to pick a default cut position from -- give 'position' (mm)."
+        position = ((bbox.XMin + bbox.XMax) / 2, (bbox.YMin + bbox.YMax) / 2,
+                    (bbox.ZMin + bbox.ZMax) / 2)[idx]
+
+    keep = str(args.get("keep") or "low").strip().lower()
+    if keep not in ("low", "high"):
+        return None, None, "'keep' must be 'low' (smaller coordinate) or 'high' (larger)."
+
+    # Normal points toward the half we KEEP: -axis keeps the low side, +axis high.
+    nvec, pvec = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
+    nvec[idx] = -1.0 if keep == "low" else 1.0
+    pvec[idx] = position
+    plane = coin.SbPlane(coin.SbVec3f(*nvec), coin.SbVec3f(*pvec))
+    desc = f"{axis} = {position:g} mm, keeping the {keep} side"
+    return plane, desc, None
+
+
+def _insert_clip_plane(view, clip):
+    """Insert `clip` (an SoClipPlane) into `view`'s scene graph so it clips all
+    geometry in world space.
+
+    Coin issues glClipPlane under the camera's viewing matrix, so the node must
+    be traversed AFTER the camera or the plane lands in the wrong space.
+    FreeCAD's getSceneGraph() may or may not include the camera: if it does
+    (camera is a direct child), we place the clip right after it; if it doesn't
+    (the viewer applies the camera in a super-scene the Python API doesn't
+    return), the returned graph is already post-camera and index 0 is correct.
+    Both arrangements were exercised against pivy; the fallback covers either.
+    """
+    from pivy import coin
+
+    sg = view.getSceneGraph()
+    try:
+        search = coin.SoSearchAction()
+        search.setType(coin.SoCamera.getClassTypeId())
+        search.setInterest(coin.SoSearchAction.FIRST)
+        search.apply(sg)
+        path = search.getPath()
+        if path is not None and path.getLength() == 2:
+            parent, cam = path.getNodeFromTail(1), path.getTail()
+            if parent.isOfType(coin.SoGroup.getClassTypeId()):
+                idx = parent.findChild(cam)
+                if idx >= 0:
+                    parent.insertChild(clip, idx + 1)
+                    return
+    except Exception:  # noqa: BLE001 - fall back to the simple post-camera insert
+        pass
+    sg.insertChild(clip, 0)
+
+
+def _frame_on_objects(view, doc, names, width, height):
+    """Zoom `view` to frame just the named objects. Returns a warning string to
+    surface, or None.
+
+    The cutaway clips every visible object regardless; this only tightens the
+    camera onto a subset so a specific part fills the frame. Reuses the same
+    self-calibrating pixel-box math as capture_view's world crop, so it works
+    under any preset/orbit camera.
+    """
+    import FreeCAD
+
+    box = FreeCAD.BoundBox()
+    missing = []
+    for n in names:
+        obj = doc.getObject(n)
+        if obj is None:
+            missing.append(n)
+            continue
+        shape = getattr(obj, "Shape", None)
+        if shape is not None and not shape.isNull():
+            box.add(shape.BoundBox)
+    if box.XMin > box.XMax:
+        return "Warning: none of the requested 'names' have geometry to frame -- showing the whole model."
+    pixels = _pixel_bounds_for_box(view, box, width, height)
+    if pixels:
+        try:
+            view.boxZoom(*pixels)
+        except Exception as exc:  # noqa: BLE001
+            return f"Warning: could not frame the requested objects ({exc!r}) -- showing the whole model."
+    if missing:
+        return f"Note: no object(s) named {', '.join(missing)} -- framed the rest."
+    return None
+
+
+_CUTAWAY_SCHEMA = {
+    "name": "cutaway",
+    "description": (
+        "Screenshot like capture_view, but with a CLIP PLANE that slices the "
+        "model open so you can see INSIDE it -- for inspecting internal features "
+        "(bores, ribs, wall thickness, pockets, cavities). Renders through the "
+        "same offscreen camera, so it never disturbs the user's view or the "
+        "document. The cut is HOLLOW: the clip removes the near half and exposes "
+        "the interior surfaces, but the cut face itself is open, not a filled "
+        "cross-section.\n"
+        "Define the plane EITHER the easy way with 'axis' (x/y/z) -- a plane "
+        "perpendicular to that axis at 'position' mm (defaults to the model's "
+        "midpoint on that axis, i.e. cut it in half), keeping the 'low' "
+        "(smaller-coordinate) or 'high' side ('keep', default low) -- OR "
+        "generally with 'point' [x,y,z] and 'normal' [x,y,z], where the kept "
+        "half is the side the normal points toward.\n"
+        "Set the camera angle exactly as capture_view does: a 'view' preset "
+        "(iso/front/rear/top/bottom/left/right, default iso) OR 'azimuth'+"
+        "'elevation' in degrees for a custom orbit. Optionally pass 'names' "
+        "(object internal Names) to frame the shot on specific objects; the clip "
+        "still applies to all visible geometry regardless. Tip: aim the camera "
+        "at the cut -- e.g. cut axis=x and view from the left/right, or cut "
+        "axis=z and view top/bottom -- so you look squarely into the opened part."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "axis": {"type": "string", "description": "Cut perpendicular to this axis: x, y, or z (the simple way to define the plane)."},
+            "position": {"type": "number", "description": "Where along 'axis' to cut, in mm (default: the model's midpoint on that axis)."},
+            "keep": {"type": "string", "description": "Which half of an 'axis' cut to keep: 'low' (smaller coordinate) or 'high' (default low)."},
+            "point": {"type": "array", "items": {"type": "number"}, "description": "A point on the clip plane [x,y,z] in mm. Use with 'normal' for an arbitrary plane instead of 'axis'."},
+            "normal": {"type": "array", "items": {"type": "number"}, "description": "Clip plane normal [x,y,z]; the kept (visible) half is the side it points toward. Use with 'point'."},
+            "view": {"type": "string", "description": "Camera preset: iso/front/rear/top/bottom/left/right (default iso). Ignored when azimuth/elevation are given."},
+            "azimuth": {"type": "number", "description": "Custom orbit angle around the vertical axis, degrees: 0=front, +90=right, 180=back, -90=left."},
+            "elevation": {"type": "number", "description": "Custom orbit angle above/below eye level, degrees: 0=side-on, +90=top-down, -90=bottom-up."},
+            "names": {"type": "array", "items": {"type": "string"}, "description": "Internal Names of objects to frame the shot on (optional; the clip still applies to all visible geometry)."},
+            "width": {"type": "integer", "description": "Image width px (default 1280)"},
+            "height": {"type": "integer", "description": "Image height px (default 960)"},
+        },
+        "required": [],
+        "additionalProperties": False,
+    },
+}
+
+
+def _run_cutaway(args):
+    import FreeCAD
+
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        return "No active document."
+
+    plan, err = _resolve_camera_args(args)
+    if err:
+        return err
+
+    try:
+        plane, clip_desc, err = _resolve_clip_plane(args, doc)
+    except Exception as exc:  # noqa: BLE001 - e.g. pivy/coin unavailable
+        return f"Could not build the clip plane: {exc!r}"
+    if err:
+        return err
+
+    try:
+        from pivy import coin
+    except Exception as exc:  # noqa: BLE001
+        return f"Could not load the Coin3D scene-graph library for clipping: {exc!r}"
+
+    view, subwindow, prev_view = _offscreen_view(doc)
+    if view is None:
+        return "Could not create an offscreen view to capture."
+
+    width = int(args.get("width", 1280))
+    height = int(args.get("height", 960))
+    png_path = _artifact_path("captures", "cutaway", ".png")
+    frame_names = args.get("names")
+
+    frame_warning = None
+    measured = None
+    try:
+        # Match the render's pixel size before framing (boxZoom in _frame_on_objects
+        # works in this widget's pixel space), same as capture_view.
+        if subwindow is not None:
+            subwindow.resize(width, height)
+
+        # Clip THIS offscreen view's scene graph (world coords -- see
+        # _insert_clip_plane for the camera-order nuance). It clips only this
+        # throwaway view and is discarded when the view closes, so the user's
+        # real view and the document stay untouched.
+        clip = coin.SoClipPlane()
+        clip.plane.setValue(plane)
+        clip.on.setValue(True)
+        try:
+            _insert_clip_plane(view, clip)
+        except Exception as exc:  # noqa: BLE001
+            return f"Could not apply the clip plane to the view: {exc!r}"
+
+        err = _apply_camera_plan(view, plan)
+        if err:
+            return err
+
+        if frame_names:
+            frame_warning = _frame_on_objects(view, doc, frame_names, width, height)
+
+        # Direction is unchanged by fitAll/boxZoom, so this matches the saved image.
+        measured = _orbit_angles_from_view(view)
+
+        params = FreeCAD.ParamGet(_VIEW_PREF_PATH)
+        prev_method = params.GetString("SavePicture", "")
+        params.SetString("SavePicture", "FramebufferObject")
+        try:
+            view.saveImage(png_path, width, height, _CAPTURE_BG)
+        finally:
+            params.SetString("SavePicture", prev_method)
+    finally:
+        _close_offscreen_view(subwindow, prev_view)
+
+    text = f"Cutaway at {clip_desc}, saved to {png_path}."
+    if measured is not None:
+        meas_az, meas_el = measured
+        text += f" Camera angle: azimuth {meas_az:.0f} deg, elevation {meas_el:.0f} deg."
+    text += (
+        " The cut is hollow -- you're seeing the interior surfaces the clip "
+        "exposed, not a filled cross-section. If the opening looks flat/empty, "
+        "orbit so the camera looks INTO the cut, or flip 'keep' to view the "
+        "other half."
+    )
+    if frame_warning:
+        text += f"\n\n{frame_warning}"
     return text, png_path
 
 
@@ -1657,6 +1966,7 @@ TOOLS = {
     "view_sketch_svg": {"schema": _VIEW_SKETCH_SVG_SCHEMA, "run": _run_view_sketch_svg},
     "capture_view": {"schema": _CAPTURE_VIEW_SCHEMA, "run": _run_capture_view},
     "crop_view": {"schema": _CROP_VIEW_SCHEMA, "run": _run_crop_view},
+    "cutaway": {"schema": _CUTAWAY_SCHEMA, "run": _run_cutaway},
     "export": {"schema": _EXPORT_SCHEMA, "run": _run_export},
     "inspect_api": {"schema": _INSPECT_API_SCHEMA, "run": _run_inspect_api},
     "run_python": {

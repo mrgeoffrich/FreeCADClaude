@@ -50,7 +50,8 @@ chat panel (GUI thread)
 
 Registry: `freecad_tools.TOOLS` = name → `{schema, run, confirm?}`. Current set:
 `create_box`, `get_objects`, `get_selection`, `view_sketch_svg`, `capture_view`,
-`export`, `run_python` (confirm-gated; the general Sketcher/PartDesign/Part path).
+`crop_view`, `cutaway`, `export`, `inspect_api`, `get_diagnostics`, `run_python`
+(confirm-gated; the general Sketcher/PartDesign/Part path).
 
 **Adding a tool** is purely additive: add a `{schema, run}` entry. `run(args)`
 executes on the GUI thread and returns a string; the MCP allow-list and the
@@ -78,8 +79,17 @@ from `_SKILL_TOOLS`, which is now just `Skill`), since file search is a general
 capability, not a skill-only one.
 
 Visual perception: `capture_view` (raster screenshot, returned inline as an
-image) is the only way Claude actually *sees* geometry — reach for it whenever
-shape needs visual inspection, especially 3D. `view_sketch_svg` (exact SVG; for
+image) is the way Claude actually *sees* geometry — reach for it whenever
+shape needs visual inspection, especially 3D. `cutaway` is its sibling: the same
+offscreen-render + inline-PNG path, but with a Coin `SoClipPlane` inserted at the
+root of the throwaway view's scene graph (world coords; discarded with the view,
+so the document and the user's real view are untouched) to slice the model open
+and reveal internal features. The cut is *hollow* (the exposed interior surfaces,
+not a filled cross-section — Coin's clip doesn't cap); a capped section would mean
+a geometry Boolean cut on temporary objects, deliberately not done to keep the
+tool non-mutating like `capture_view`. Both share `_resolve_camera_args`/
+`_apply_camera_plan` for the `view`/`azimuth`/`elevation` angle handling.
+`view_sketch_svg` (exact SVG; for
 3D pass `view=front/top/...` → `TechDraw.projectToSVG` orthographic) is for
 reasoning about exact coordinates as text, not for looking at the shape — its
 3D-projection path data is tessellated into many small segments and isn't
