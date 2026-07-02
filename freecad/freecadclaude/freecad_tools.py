@@ -198,17 +198,30 @@ def _crop_bbox(base_bbox, extents):
     )
 
 
+#: Shapes with any extent beyond this (mm) are excluded from _document_bbox --
+#: PartDesign datum axes/planes (App::Line, App::Plane) report a literally
+#: infinite (~1e100) BoundBox for their visualization geometry, which would
+#: otherwise swamp any real part's extent and poison every axis a caller
+#: didn't explicitly override with an x_min/x_max/etc crop bound.
+_MAX_SANE_EXTENT = 1e6
+
+
 def _document_bbox(doc):
-    """Union BoundBox of every Shape-bearing object in `doc` -- the same
-    population fitAll() frames -- used to default any crop axis the caller
-    didn't specify for capture_view."""
+    """Union BoundBox of every real (finite, Shape-bearing) object in `doc`
+    -- the same population fitAll() frames -- used to default any crop axis
+    the caller didn't specify for capture_view."""
     import FreeCAD
 
     box = FreeCAD.BoundBox()
     for obj in doc.Objects:
         shape = getattr(obj, "Shape", None)
-        if shape is not None and not shape.isNull():
-            box.add(shape.BoundBox)
+        if shape is None or shape.isNull():
+            continue
+        bbox = shape.BoundBox
+        if max(abs(bbox.XMin), abs(bbox.XMax), abs(bbox.YMin), abs(bbox.YMax),
+               abs(bbox.ZMin), abs(bbox.ZMax)) > _MAX_SANE_EXTENT:
+            continue
+        box.add(bbox)
     return box
 
 
@@ -1118,6 +1131,7 @@ def _run_capture_view(args):
     png_path = _artifact_path("captures", f"view_{args['view']}", ".png")
     extents = _extent_args(args)
 
+    crop_warning = None
     try:
         # Match the render's own pixel size before framing -- boxZoom below
         # works in this widget's pixel space, which must line up with the
@@ -1140,8 +1154,21 @@ def _run_capture_view(args):
                 if pixels:
                     try:
                         view.boxZoom(*pixels)
-                    except Exception:  # noqa: BLE001
-                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        crop_warning = (
+                            f"Warning: could not apply the requested crop ({exc!r}) -- "
+                            "showing the full extent instead."
+                        )
+                else:
+                    crop_warning = (
+                        "Warning: could not compute a pixel region for the requested "
+                        "crop -- showing the full extent instead."
+                    )
+            else:
+                crop_warning = (
+                    "Warning: the document has no real geometry to crop against -- "
+                    "showing the full extent instead."
+                )
 
         params = FreeCAD.ParamGet(_VIEW_PREF_PATH)
         prev_method = params.GetString("SavePicture", "")
@@ -1153,7 +1180,10 @@ def _run_capture_view(args):
     finally:
         _close_offscreen_view(subwindow, prev_view)
 
-    return f"Captured the 3D view (saved to {png_path}).", png_path
+    text = f"Captured the 3D view (saved to {png_path})."
+    if crop_warning:
+        text += f"\n\n{crop_warning}"
+    return text, png_path
 
 
 _GET_SELECTION_SCHEMA = {
