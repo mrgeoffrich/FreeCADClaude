@@ -1865,6 +1865,30 @@ def _run_get_selection(args):
     return json.dumps({"selection_count": len(out), "selection": out}, indent=2)
 
 
+#: Plain container types whose own .Shape aggregation can't be trusted (e.g. FreeCAD
+#: excludes a child that appears in another object's InList, treating it as an
+#: intermediate/consumed shape -- wrong for cases like a body used as a Mirror source
+#: where both the original and the mirror are separate final solids). Expand these into
+#: their Group children instead of exporting the container's own Shape.
+_CONTAINER_TYPES = ("App::Part", "App::DocumentObjectGroup")
+
+
+def _expand_containers(objs):
+    expanded = []
+    seen = set()
+    stack = list(objs)
+    while stack:
+        o = stack.pop(0)
+        if o.Name in seen:
+            continue
+        seen.add(o.Name)
+        if getattr(o, "TypeId", "") in _CONTAINER_TYPES:
+            stack = list(getattr(o, "Group", None) or []) + stack
+            continue
+        expanded.append(o)
+    return expanded
+
+
 _EXPORT_SCHEMA = {
     "name": "export",
     "description": (
@@ -1912,6 +1936,7 @@ def _run_export(args):
         if not objs:
             objs = [o for o in doc.Objects
                     if getattr(o, "Shape", None) is not None and not o.Shape.isNull()]
+    objs = _expand_containers(objs)
     objs = [o for o in objs if getattr(o, "Shape", None) is not None]
     if not objs:
         return "No objects with a shape to export."
