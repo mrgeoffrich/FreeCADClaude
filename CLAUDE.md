@@ -37,7 +37,8 @@ chat panel (GUI thread)
 | `freecad/freecadclaude/chat_panel.py` | The dock, Markdown transcript (streamed), buttons, worker wiring. |
 | `freecad/freecadclaude/plan_panel.py` | Second dock: Plan (subagent output) + live task checklist. |
 | `freecad/freecadclaude/agent_worker.py` | Drives the `claude` CLI per turn; parses stream-json → Qt signals. |
-| `freecad/freecadclaude/agent_config.py` | Model, system prompt, CLI flags (tools/mcp/cwd/skills). |
+| `freecad/freecadclaude/agent_config.py` | Model, system prompt (loaded from `system_prompt.md`), CLI flags (tools/mcp/cwd/skills). |
+| `freecad/freecadclaude/system_prompt.md` | The system prompt text itself, edited as plain Markdown. |
 | `freecad/freecadclaude/gui_bridge.py` | In-FreeCAD socket server; runs tools on the GUI thread; run_python confirm dialog. |
 | `freecad/freecadclaude/freecad_tools.py` | The tool registry (`TOOLS`) + implementations + SVG/raster/export helpers. |
 | `freecad/freecadclaude/_deps.py` | Locates the `claude` CLI. |

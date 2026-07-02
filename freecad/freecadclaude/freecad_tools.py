@@ -153,7 +153,16 @@ def _save_run_python_script(code, description):
         pass
 
 
-def _rasterize_svg(svg_path, png_path, target=768):
+#: Claude's own image ceiling (see capture_view's 1280x960 comment below) --
+#: applied as a dual constraint so elongated viewBoxes (e.g. a long thin pin
+#: viewed from the front) don't get starved on their short axis: scaling
+#: only by the long edge (the old behaviour, fixed at 768) let width collapse
+#: to ~100px for a 6:1 aspect ratio, too compressed to read fine features.
+_SVG_LONG_EDGE_MAX = 1568
+_SVG_AREA_MAX = 1_200_000
+
+
+def _rasterize_svg(svg_path, png_path):
     """Render an SVG file to a PNG using bundled QtSvg. Returns True on success."""
     from PySide import QtGui, QtSvg
 
@@ -161,9 +170,9 @@ def _rasterize_svg(svg_path, png_path, target=768):
     if not renderer.isValid():
         return False
     box = renderer.viewBoxF()
-    w = box.width() or target
-    h = box.height() or target
-    scale = target / max(w, h)
+    w = box.width() or _SVG_LONG_EDGE_MAX
+    h = box.height() or _SVG_LONG_EDGE_MAX
+    scale = min(_SVG_LONG_EDGE_MAX / max(w, h), (_SVG_AREA_MAX / (w * h)) ** 0.5)
     image = QtGui.QImage(max(1, int(w * scale)), max(1, int(h * scale)),
                          QtGui.QImage.Format_ARGB32)
     image.fill(QtGui.QColor("white"))
@@ -310,6 +319,47 @@ def _projected_crop_viewbox(shape, direction, crop_box):
     )
     fragment = TechDraw.projectToSVG(marker, FreeCAD.Vector(*direction))
     return _svg_fragment_bounds(fragment)
+
+
+def _projection_degeneracy_warning(content_bounds, crop_viewbox, view):
+    """A warning to surface to Claude if a projection render is likely blank
+    or useless, else None -- both failure modes below still "succeed" (valid
+    SVG/PNG written, no exception) so nothing else catches them.
+
+    - content_bounds is None or a zero-width/zero-height box: the shape has
+      no extent left in one screen axis, e.g. a flat/planar object (a sketch
+      always has zero thickness) viewed edge-on collapses to a line/point.
+    - crop_viewbox (the requested crop, already in the same projected screen
+      frame -- see _projected_crop_viewbox) doesn't overlap content_bounds at
+      all: the crop excludes 100% of the actual geometry, e.g. a z_min/z_max
+      that doesn't include the shape's real Z range.
+    """
+    if content_bounds is None:
+        return (
+            f"Warning: nothing projected from the '{view}' direction -- this shape has "
+            "no visible edges from this view."
+        )
+    cminx, cminy, cmaxx, cmaxy = content_bounds
+    span = max(cmaxx - cminx, cmaxy - cminy, 1.0)
+    eps = span * 1e-4
+    if (cmaxx - cminx) < eps or (cmaxy - cminy) < eps:
+        return (
+            f"Warning: from the '{view}' direction this shape's projection collapses to "
+            "a degenerate line or point (no width or height) -- it's likely flat/planar "
+            "and edge-on from this view. Try a different 'view', or if this is a 2D "
+            "sketch, omit 'view' entirely to get its exact flat geometry instead."
+        )
+    if crop_viewbox is not None:
+        vminx, vminy, vmaxx, vmaxy = crop_viewbox
+        if cmaxx < vminx or cminx > vmaxx or cmaxy < vminy or cminy > vmaxy:
+            return (
+                "Warning: the requested crop (x_min/x_max/y_min/y_max/z_min/z_max) "
+                "doesn't overlap this shape's projected geometry at all -- the rendered "
+                "image is blank. Check the crop values against the object's real extent "
+                "(get_objects reports each object's bounding box), or omit them to see "
+                "the full extent."
+            )
+    return None
 
 
 def _flat_crop_svg(svg_text, obj, crop_box):
@@ -624,22 +674,37 @@ _INSPECT_API_SCHEMA = {
         "Part, Sketcher, PartDesign, Draft, Gui, doc, and the active document's "
         "objects). For each it returns the type, a Python signature when one is "
         "available, the docstring (which for FreeCAD's C++ methods usually spells "
-        "out the accepted argument forms), and -- for modules/classes -- the list "
-        "of public members, or -- for a list/tuple value -- its items (e.g. "
-        "'doc.ExampleBoxInstance.PropertiesList' lists every property name on "
-        "that object). Examples: ['Sketcher.Constraint', 'Part.makeBox', "
-        "'doc.ExampleBodyInstance', 'doc.ExampleSketchInstance.addGeometry'] "
-        "-- the last two are illustrative; substitute the real internal Name "
-        "of a body/sketch already in the document (check get_objects if "
-        "unsure -- it's rarely literally 'Body'/'Sketch'). Only resolves "
-        "things already reachable by attribute access -- NOT 'Type::String' "
-        "names like 'PartDesign::AdditiveBox' (those are passed as strings to "
-        "addObject/newObject, not imported; once you've created one, inspect "
-        "the resulting object instead, e.g. 'doc.ExampleBoxInstance."
-        "PropertiesList' then 'doc.ExampleBoxInstance.Length' for a "
-        "specific property). Read-only and needs no approval: it only walks "
-        "attribute chains, never calls or subscripts. Look up everything "
-        "you're unsure of in ONE call, then write the code."
+        "out the accepted argument forms), and then either -- for modules/classes "
+        "-- the list of public members, -- for a list/tuple value -- its items, "
+        "or -- for a document object instance (has a PropertiesList) -- every "
+        "property name AND its current value in one shot (e.g. 'doc.ExampleBox"
+        "Instance' already returns 'Length=20.0 mm, Placement=..., ...' with no "
+        "extra round trip needed). Examples: ['Sketcher.Constraint', "
+        "'Part.makeBox', 'doc.ExampleBodyInstance', "
+        "'doc.ExampleSketchInstance.addGeometry'] -- the last two are "
+        "illustrative; substitute the real internal Name of a body/sketch "
+        "already in the document (check get_objects if unsure -- it's rarely "
+        "literally 'Body'/'Sketch'). Only resolves things already reachable by "
+        "attribute access -- NOT 'Type::String' names like "
+        "'PartDesign::AdditiveBox' or 'PartDesign::Body' (those are passed as "
+        "strings to addObject/newObject, not imported -- and don't swap '::' "
+        "for '.' and guess a module attribute either, e.g. 'PartDesign.Body' "
+        "is NOT a thing; the PartDesign/Part/Sketcher modules expose almost no "
+        "feature classes directly, only a few free functions like "
+        "Part.makeBox). There is nothing to inspect until you've created one "
+        "-- go straight to doc.addObject('PartDesign::Body', 'Body') (or "
+        "body.newObject(...) inside a Body), THEN inspect the resulting "
+        "object, e.g. 'doc.ExampleBoxInstance'. Watch out for 'Sketcher.Sketch' "
+        "specifically -- it resolves (no error) but is a different, lower-level "
+        "class from the one your sketches actually are ('Sketcher::SketchObject', "
+        "which isn't reachable as a module attribute at all), so its methods carry "
+        "thin/misleading docstrings, e.g. 'Sketcher.Sketch.addGeometry' gives just "
+        "one line while the real 'doc.ExampleSketchInstance.addGeometry' spells out "
+        "every overload and argument. Always inspect sketch methods via an actual "
+        "instance, never via 'Sketcher.Sketch'. "
+        "Read-only and needs no approval: it only walks attribute chains, "
+        "never calls or subscripts. Look up everything you're unsure of in ONE "
+        "call, then write the code."
     ),
     "inputSchema": {
         "type": "object",
@@ -715,7 +780,22 @@ def _describe_api(obj, name):
             doc = doc[:2000] + " […]"
         lines.append(doc)
 
-    if inspect.ismodule(obj) or inspect.isclass(obj):
+    props = getattr(obj, "PropertiesList", None)
+    if isinstance(props, (list, tuple)) and not (inspect.ismodule(obj) or inspect.isclass(obj)):
+        rows = []
+        for prop in props:
+            if prop.startswith("_"):
+                continue
+            try:
+                value = repr(getattr(obj, prop))
+            except Exception as exc:  # noqa: BLE001
+                value = f"<error: {exc!r}>"
+            if len(value) > 200:
+                value = value[:200] + " […]"
+            rows.append(f"{prop}={value}")
+        if rows:
+            lines.append("properties: " + ", ".join(rows[:60]) + (" …" if len(rows) > 60 else ""))
+    elif inspect.ismodule(obj) or inspect.isclass(obj):
         members = [m for m in dir(obj) if not m.startswith("_")]
         if members:
             shown = ", ".join(members[:60])
@@ -756,13 +836,18 @@ def _run_inspect_api(args):
 _VIEW_SKETCH_SVG_SCHEMA = {
     "name": "view_sketch_svg",
     "description": (
-        "See geometry as SVG (exact vector lines). Returns the SVG source plus a "
-        "path to a rendered PNG you can open with the Read tool. PREFER this over "
-        "capture_view whenever crisp line geometry helps:\n"
-        "- Flat/2D (sketches, profiles): exports the geometry directly.\n"
+        "See geometry as SVG (exact vector lines). Always returns a rendered PNG "
+        "path -- open it with the Read tool to actually SEE the shape. PREFER "
+        "this over capture_view whenever crisp line geometry helps:\n"
+        "- Flat/2D (sketches, profiles): exports the geometry directly, and also "
+        "includes the raw SVG source text (clean parametric M/L/A commands -- "
+        "useful to read directly for exact coordinates).\n"
         "- 3D solids: pass 'view' (front/rear/top/bottom/left/right/iso) to get a "
         "clean orthographic projection -- ideal for DIAGNOSING 3D parts (checking "
-        "profiles, alignment, holes) from standard views.\n"
+        "profiles, alignment, holes) from standard views. This path is "
+        "hidden-line-removed and tessellated into many small segments, so the "
+        "raw source is NOT included -- always open the rendered image instead "
+        "of trying to infer shape from path data.\n"
         "Optional 'name' = the object's internal Name; defaults to the selected "
         "object, or the first sketch in the document. Optionally crop to a region "
         "by giving one or more of x_min/x_max/y_min/y_max/z_min/z_max (world mm) "
@@ -823,16 +908,20 @@ def _run_view_sketch_svg(args):
     if extents and shape is not None and not shape.isNull():
         crop_box = _crop_bbox(shape.BoundBox, extents)
 
-    if view and shape is not None:
+    is_projection = bool(view and shape is not None)
+    warning = None
+    if is_projection:
         # Orthographic projection of 3D geometry (hidden-line removed).
         try:
             import TechDraw
 
             direction = _PROJECTION_DIRS.get(view, _PROJECTION_DIRS["front"])
             fragment = TechDraw.projectToSVG(shape, FreeCAD.Vector(*direction))
+            content_bounds = _svg_fragment_bounds(fragment)
             crop_viewbox = (
                 _projected_crop_viewbox(shape, direction, crop_box) if crop_box else None
             )
+            warning = _projection_degeneracy_warning(content_bounds, crop_viewbox, view)
             svg_text = _wrap_svg_fragment(fragment, viewbox=crop_viewbox)
             with open(svg_path, "w", encoding="utf-8") as fh:
                 fh.write(svg_text)
@@ -855,10 +944,23 @@ def _run_view_sketch_svg(args):
         header = f"Exported '{obj.Label}' ({obj.TypeId}) to SVG."
 
     parts = [header]
+    if warning:
+        parts.append(warning)
     png_path = _artifact_path("captures", base, ".png")
     if _rasterize_svg(svg_path, png_path):
         parts.append(f"Rendered image (open with the Read tool): {png_path}")
-    if len(svg_text) <= 8000:
+    if is_projection:
+        # Hidden-line-removed projections tessellate curves/fillets into dozens
+        # of near-duplicate micro-segments (and reuse path ids across groups) --
+        # noise to read as text even though the render is clean. Dumping it
+        # unprompted invited reasoning from the raw numbers instead of the
+        # image, which is how "I can't see X" complaints happened in practice.
+        parts.append(
+            "(This projection's raw path data is tessellated into many tiny "
+            "segments and isn't meant to be read as text -- open the rendered "
+            "image above to see the shape.)"
+        )
+    elif len(svg_text) <= 8000:
         parts.append("SVG source:\n" + svg_text)
     else:
         parts.append(f"(SVG source is {len(svg_text)} chars — Read the rendered image instead.)")
@@ -921,7 +1023,8 @@ def _offscreen_view(doc):
     through instead of whatever view/tab the user actually has open --
     so a screenshot never hijacks their camera, and never fails just because
     a non-3D tab (e.g. a Spreadsheet) or a different document happens to be
-    focused. Returns (view, subwindow); either may be None on failure.
+    focused. Returns (view, subwindow, prev_view); view/subwindow may be
+    None on failure.
 
     Gui::Document::createView() unconditionally shows and activates the new
     view -- it exists for the "split view" feature, not headless use -- so we
@@ -930,18 +1033,23 @@ def _offscreen_view(doc):
     widget on the next event-loop turn, never synchronously inside show(), so
     nothing visibly flashes and other tools' SendMsgToActiveView keeps
     targeting the user's real view.
+
+    prev_view is also handed back to the caller so _close_offscreen_view can
+    reassert it once more after the throwaway subwindow is actually closed
+    (see that function -- this is what fixes the rare case where the user's
+    tabbed layout gets scrambled, e.g. the Start tab reappearing).
     """
     import FreeCADGui
 
     gui_doc = FreeCADGui.getDocument(doc.Name)
     if gui_doc is None:
-        return None, None
+        return None, None, None
 
     prev_view = FreeCADGui.activeView()
     before = _mdi_subwindows()
     view = gui_doc.createView("Gui::View3DInventor")
     if view is None:
-        return None, None
+        return None, None, prev_view
 
     # viewTop()/viewIsometric()/fitAll() etc. animate the camera over several
     # QTimer ticks by default and return before the animation finishes; since
@@ -955,13 +1063,26 @@ def _offscreen_view(doc):
         subwindow.hide()
     if prev_view is not None:
         FreeCADGui.getMainWindow().setActiveWindow(prev_view)
-    return view, subwindow
+    return view, subwindow, prev_view
 
 
-def _close_offscreen_view(subwindow):
+def _close_offscreen_view(subwindow, prev_view=None):
     if subwindow is not None:
         try:
             subwindow.close()  # WA_DeleteOnClose -- also destroys the inner view
+        except Exception:  # noqa: BLE001
+            pass
+    # Closing a QMdiSubWindow (even a hidden one) makes Qt re-pick an active
+    # subwindow via its own activation-history bookkeeping, which can land on
+    # the wrong one and desync FreeCAD's tabbed MDI area from what's actually
+    # active -- seen in the wild as the Start tab and the document both
+    # reappearing as untabbed floating windows. Reassert the real previous
+    # view now that the close event has fully processed, not just beforehand.
+    if prev_view is not None:
+        try:
+            import FreeCADGui
+
+            FreeCADGui.getMainWindow().setActiveWindow(prev_view)
         except Exception:  # noqa: BLE001
             pass
 
@@ -1015,7 +1136,7 @@ def _run_capture_view(args):
     if preset is None:
         return f"Unknown 'view' {args.get('view')!r}. Pick one of: {', '.join(sorted(set(_VIEW_PRESETS)))}."
 
-    view, subwindow = _offscreen_view(doc)
+    view, subwindow, prev_view = _offscreen_view(doc)
     if view is None:
         return "Could not create an offscreen view to capture."
 
@@ -1059,7 +1180,7 @@ def _run_capture_view(args):
         finally:
             params.SetString("SavePicture", prev_method)
     finally:
-        _close_offscreen_view(subwindow)
+        _close_offscreen_view(subwindow, prev_view)
 
     return f"Captured the 3D view to: {png_path}\n(Open it with the Read tool to see it.)"
 
