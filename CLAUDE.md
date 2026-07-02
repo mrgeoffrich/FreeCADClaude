@@ -65,12 +65,17 @@ writes an SVG file and returns just its path as plain text; Claude opens it with
 the built-in `Read` tool to read the raw vector source, since it's text Claude
 reasons about, not something it can visually see.
 
-Besides this MCP registry, a couple of the CLI's own built-in tools are always
+Besides this MCP registry, a few of the CLI's own built-in tools are always
 enabled (`agent_config.build_config`'s `builtin_tools`): `Read` (the SVG file
-from `view_sketch_svg`, and skill reference files) and `Write` (author
-plain-text files, e.g. `freecad-lofi-sketch`'s SVGs). Both run inside the
-`claude` CLI process itself, not the MCP bridge, and `Write` never touches the
-live document.
+from `view_sketch_svg`, and skill reference files), `Write` (author plain-text
+files, e.g. `freecad-lofi-sketch`'s SVGs), and `Glob`/`Grep` (file search — find
+files by name/path, search their contents; so Claude can locate a STEP/STL to
+import or a previous export before Reading it). All run inside the `claude` CLI
+process itself, not the MCP bridge; all are read-only except `Write`, which
+authors files on disk but never touches the live document. `Glob`/`Grep` used to
+be gated behind a configured skills project — they're now always-on (decoupled
+from `_SKILL_TOOLS`, which is now just `Skill`), since file search is a general
+capability, not a skill-only one.
 
 Visual perception: `capture_view` (raster screenshot, returned inline as an
 image) is the only way Claude actually *sees* geometry — reach for it whenever
@@ -110,11 +115,11 @@ project dir (so its `.claude/skills` load) else a temp dir.
 
 - `--tools ""` disables ALL built-ins (incl. `Skill`). We enable a safe set:
   `Read` and `Write` (always — skill reference files and plain-text file
-  authoring), the `Task*` family (todo + Plan subagent), and `Skill/Glob/Grep` when a
-  skills project is configured. `Bash`/`Edit` stay OFF — the only path that
-  mutates the *live FreeCAD document* is the confirm-gated `run_python`;
-  `Write` can create/overwrite arbitrary files on disk but never touches the
-  document.
+  authoring), `Glob`/`Grep` (always — file search), the `Task*` family (todo +
+  Plan subagent), and `Skill` when a skills project is configured. `Bash`/`Edit`
+  stay OFF — the only path that mutates the *live FreeCAD document* is the
+  confirm-gated `run_python`; `Write` can create/overwrite arbitrary files on
+  disk but never touches the document.
 - The subagent launcher is reported as `Agent` in tool_use even though enabled via
   `Task`; `Agent` is in the allow-list so subagents (e.g. `Plan`) don't prompt.
 

@@ -958,21 +958,35 @@ _CAPTURE_VIEW_SCHEMA = {
         "it inline. Renders through a separate offscreen "
         "camera, so it never disturbs whatever view/tab the user has open. Use "
         "for 3D solids/assemblies (for flat 2D geometry, prefer view_sketch_svg). "
-        "'view' sets the camera angle: iso, front, rear, top, bottom, left, right. "
+        "Set the camera angle EITHER with 'view' (a named preset: iso, front, "
+        "rear, top, bottom, left, right -- the default is iso) OR with "
+        "'azimuth'+'elevation' in degrees for any custom orbit angle. Azimuth "
+        "swings around the vertical axis: 0 faces the front, +90 the right "
+        "side, 180 the back, -90 the left. Elevation tilts above/below eye "
+        "level: 0 is side-on, +90 looks straight down from the top, -90 "
+        "straight up from below. So a 3/4 view from above-front-right is about "
+        "azimuth 45, elevation 30; to see a feature from below-left try azimuth "
+        "-45, elevation -30. The whole part is always framed to fit, so "
+        "changing the angle re-frames predictably (part centred) rather than "
+        "moving the camera nearer/further. "
         "Optionally zoom to a region by giving one or more of x_min/x_max/"
         "y_min/y_max/z_min/z_max (world mm) -- any axis you omit uses the full "
         "document extent, so e.g. for 'top' you'd typically only give x_min/"
-        "x_max/y_min/y_max."
+        "x_max/y_min/y_max. To instead zoom into part of the image you just got "
+        "back -- without working out world coordinates -- use crop_view, which "
+        "re-renders a sub-region you point at in normalized 0-1 image space."
     ),
     "inputSchema": {
         "type": "object",
         "properties": {
-            "view": {"type": "string", "description": "Camera preset: iso/front/rear/top/bottom/left/right"},
+            "view": {"type": "string", "description": "Camera preset: iso/front/rear/top/bottom/left/right (default iso). Ignored when azimuth/elevation are given."},
+            "azimuth": {"type": "number", "description": "Custom orbit angle around the vertical axis, degrees: 0=front, +90=right, 180=back, -90=left. Use with elevation for an angle no preset covers."},
+            "elevation": {"type": "number", "description": "Custom orbit angle above/below eye level, degrees: 0=side-on, +90=straight down (top), -90=straight up (bottom). Use with azimuth."},
             "width": {"type": "integer", "description": "Image width px (default 1280)"},
             "height": {"type": "integer", "description": "Image height px (default 960)"},
             **_EXTENT_SCHEMA_PROPS,
         },
-        "required": ["view"],
+        "required": [],
         "additionalProperties": False,
     },
 }
@@ -1109,6 +1123,95 @@ def _pixel_bounds_for_box(view, box, width, height):
     return int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))
 
 
+#: The exact camera + render size of the most recent capture_view, saved so
+#: crop_view can reproduce the framing Claude just saw and zoom into a
+#: sub-rectangle of it (see _run_crop_view). Written at the tail of
+#: _run_capture_view while the offscreen view is still alive.
+_last_capture = {"camera": None, "width": None, "height": None, "doc": None}
+
+#: crop_view maps a normalized image y (0 = TOP, matching how saveImage writes
+#: PNG rows top-first) straight to boxZoom's pixel y. That holds when boxZoom
+#: uses a top-left pixel origin -- which is the same convention
+#: _pixel_bounds_for_box already relies on (it labels the +y focal-plane
+#: direction "down" and feeds the result to boxZoom, and world-space cropping
+#: works). Flip to False only if a build renders crops vertically mirrored.
+_BOXZOOM_Y_TOPLEFT = True
+
+
+def _orbit_rotation(azimuth_deg, elevation_deg):
+    """Camera orientation for an orbit-style (azimuth, elevation) angle around
+    the model, in FreeCAD's Z-up world.
+
+    azimuth: degrees around the vertical Z axis. 0 looks at the model's FRONT
+      (camera on -Y, same as the 'front' preset); +90 swings to the right side
+      (camera on +X), 180 to the back, -90 to the left. Turning right is +.
+    elevation: degrees above the horizon. 0 is eye-level/side-on, +90 looks
+      straight down (top), -90 straight up (bottom).
+
+    Returns a FreeCAD.Rotation mapping the camera's local axes (X=right, Y=up,
+    Z=toward the viewer) to world -- feed rot.Q to setCameraOrientation and
+    then fitAll() to frame the model and fix the focal depth, exactly as
+    FreeCAD's own BIM/Draft code does. The cardinal (azimuth, elevation) pairs
+    reproduce the matching presets (verified against front/right/back/left/
+    top/bottom), so orbit and preset framing agree.
+    """
+    import math
+
+    import FreeCAD
+
+    az = math.radians(azimuth_deg)
+    el = math.radians(elevation_deg)
+    ca, sa = math.cos(az), math.sin(az)
+    ce, se = math.cos(el), math.sin(el)
+    # zc: unit vector from the model centre toward the eye (camera "backward").
+    zc = FreeCAD.Vector(sa * ce, -ca * ce, se)
+    # yc: screen-up = world +Z carried onto the view plane. This closed form is
+    # exact even looking straight down/up (where projecting +Z would collapse):
+    # there it tends to the in-plane heading, keeping up continuous.
+    yc = FreeCAD.Vector(-sa * se, ca * se, ce)
+    xc = yc.cross(zc)  # screen-right; completes a right-handed camera basis
+    return FreeCAD.Rotation(xc, yc, zc, "ZXY")
+
+
+def _orbit_angles_from_view(view):
+    """The (azimuth, elevation) degrees describing where `view`'s camera
+    currently sits, read back from its actual view direction -- the inverse of
+    _orbit_rotation. Lets a preset (iso/front/...) report the concrete angle it
+    resolved to, so the next capture_view can orbit a little off it. Returns
+    None if the direction can't be read. Elevation is +/-90 looking straight
+    down/up (azimuth is then indeterminate and reported as ~0)."""
+    import math
+
+    try:
+        d = view.getViewDirection()  # unit vector the camera looks ALONG
+    except Exception:  # noqa: BLE001
+        return None
+    # zc = model-centre -> eye = the reverse of the look direction.
+    zx, zy, zz = -d.x, -d.y, -d.z
+    norm = math.sqrt(zx * zx + zy * zy + zz * zz) or 1.0
+    zx, zy, zz = zx / norm, zy / norm, zz / norm
+    elevation = math.degrees(math.asin(max(-1.0, min(1.0, zz))))
+    azimuth = math.degrees(math.atan2(zx, -zy))  # inverse of the zc formula
+    return azimuth, elevation
+
+
+def _apply_camera_orientation(view, rot):
+    """Aim `view`'s camera with a Base.Rotation (camera axes -> world), the way
+    FreeCAD's BIM code does (setCameraOrientation(rot.Q) + fitAll). Returns True
+    on success; the caller fitAll()s afterwards to frame the model and set the
+    focal depth. Falls back to the raw Coin camera node if the high-level call
+    is missing on some build."""
+    try:
+        view.setCameraOrientation(rot.Q)
+        return True
+    except Exception:  # noqa: BLE001 - drop to the underlying Coin camera node
+        try:
+            view.getCameraNode().orientation.setValue(list(rot.Q))
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+
 def _run_capture_view(args):
     import FreeCAD
 
@@ -1116,9 +1219,32 @@ def _run_capture_view(args):
     if doc is None:
         return "No active document."
 
-    preset = _VIEW_PRESETS.get(str(args.get("view") or "").lower())
-    if preset is None:
-        return f"Unknown 'view' {args.get('view')!r}. Pick one of: {', '.join(sorted(set(_VIEW_PRESETS)))}."
+    # Angle comes EITHER from a named preset ('view') OR a custom orbit
+    # (azimuth/elevation degrees). azimuth/elevation win if given; otherwise
+    # fall back to the preset, defaulting to iso when 'view' is omitted too.
+    az_arg, el_arg = args.get("azimuth"), args.get("elevation")
+    orbit = az_arg is not None or el_arg is not None
+    preset = None
+    if orbit:
+        try:
+            azimuth = float(az_arg) if az_arg is not None else 0.0
+            elevation = float(el_arg) if el_arg is not None else 0.0
+        except (TypeError, ValueError):
+            return "azimuth and elevation must be numbers in degrees."
+        # Elevation is a tilt above/below the horizon; past +/-90 you'd just
+        # cross over to the other side, so clamp it. Azimuth wraps freely.
+        elevation = max(-90.0, min(90.0, elevation))
+        label = f"orbit_az{azimuth:g}_el{elevation:g}"
+    else:
+        view_arg = str(args.get("view") or "").strip().lower() or "iso"
+        preset = _VIEW_PRESETS.get(view_arg)
+        if preset is None:
+            return (
+                f"Unknown 'view' {args.get('view')!r}. Pick one of: "
+                f"{', '.join(sorted(set(_VIEW_PRESETS)))}, or pass azimuth/"
+                "elevation (degrees) for a custom angle."
+            )
+        label = f"view_{view_arg}"
 
     view, subwindow, prev_view = _offscreen_view(doc)
     if view is None:
@@ -1128,10 +1254,11 @@ def _run_capture_view(args):
     # long edge); larger just gets downscaled again, so this is the detail sweet spot.
     width = int(args.get("width", 1280))
     height = int(args.get("height", 960))
-    png_path = _artifact_path("captures", f"view_{args['view']}", ".png")
+    png_path = _artifact_path("captures", label, ".png")
     extents = _extent_args(args)
 
     crop_warning = None
+    measured = None
     try:
         # Match the render's own pixel size before framing -- boxZoom below
         # works in this widget's pixel space, which must line up with the
@@ -1139,7 +1266,10 @@ def _run_capture_view(args):
         if subwindow is not None:
             subwindow.resize(width, height)
 
-        if hasattr(view, preset):
+        if orbit:
+            if not _apply_camera_orientation(view, _orbit_rotation(azimuth, elevation)):
+                return "Could not set a custom camera angle on this FreeCAD build -- use a named 'view' preset instead."
+        elif hasattr(view, preset):
             getattr(view, preset)()
         try:
             view.fitAll()
@@ -1177,12 +1307,158 @@ def _run_capture_view(args):
             view.saveImage(png_path, width, height, "White")
         finally:
             params.SetString("SavePicture", prev_method)
+        # Read back the actual camera angle so the result can report it (e.g.
+        # what az/el 'iso' resolved to) -- direction is unchanged by fitAll,
+        # boxZoom or saveImage, so measuring here matches the saved image.
+        measured = _orbit_angles_from_view(view)
+        # Remember this exact framing so crop_view can reproduce it and zoom
+        # into a sub-region (getCamera() serializes the Inventor camera node;
+        # setCamera() restores it -- independent of preset/fitAll/boxZoom).
+        try:
+            _last_capture.update(
+                camera=view.getCamera(), width=width, height=height, doc=doc.Name
+            )
+        except Exception:  # noqa: BLE001 - crop_view just falls back to "capture first"
+            _last_capture.update(camera=None)
     finally:
         _close_offscreen_view(subwindow, prev_view)
 
-    text = f"Captured the 3D view (saved to {png_path})."
+    # Report the resolved camera angle (measured from the real view direction,
+    # so presets like iso report their concrete az/el too) and how to nudge it.
+    if measured is not None:
+        meas_az, meas_el = measured
+    elif orbit:
+        meas_az, meas_el = azimuth, elevation
+    else:
+        meas_az = meas_el = None
+
+    if orbit:
+        text = f"Captured a custom view of the 3D geometry, saved to {png_path}."
+    else:
+        text = f"Captured the {view_arg} view, saved to {png_path}."
+    if meas_az is not None:
+        text += (
+            f" Camera angle: azimuth {meas_az:.0f} deg, elevation {meas_el:.0f} deg. "
+            "To orbit from here, call capture_view again with adjusted azimuth/"
+            "elevation (azimuth + swings right / - left; elevation + lifts the "
+            "camera for a more top-down look / - drops it to look upward)."
+        )
     if crop_warning:
         text += f"\n\n{crop_warning}"
+    return text, png_path
+
+
+_CROP_VIEW_SCHEMA = {
+    "name": "crop_view",
+    "description": (
+        "Zoom into a sub-region of the image from your LAST capture_view and "
+        "re-render it at full resolution -- the way to read fine detail or a "
+        "small feature. Give the region in normalized 0-1 coordinates of the "
+        "image you just saw: (0,0) is the top-left corner, (1,1) the "
+        "bottom-right, (0.5,0.5) the center. x1,y1 is the top-left of the crop "
+        "and x2,y2 the bottom-right (so x1<x2 and y1<y2). Unlike cropping a "
+        "static picture, this re-renders the 3D scene for that region, so you "
+        "get genuinely sharper geometry, not just enlarged pixels. Call "
+        "capture_view first; then call crop_view (repeatedly, narrowing in) to "
+        "inspect any part of it more closely. It reuses the last capture's "
+        "camera, so you don't pass a 'view'."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "x1": {"type": "number", "minimum": 0, "maximum": 1,
+                   "description": "Left edge of the crop, 0-1 (0=left edge, 0.5=center)"},
+            "y1": {"type": "number", "minimum": 0, "maximum": 1,
+                   "description": "Top edge of the crop, 0-1 (0=top edge, 0.5=center)"},
+            "x2": {"type": "number", "minimum": 0, "maximum": 1,
+                   "description": "Right edge of the crop, 0-1 (must be > x1)"},
+            "y2": {"type": "number", "minimum": 0, "maximum": 1,
+                   "description": "Bottom edge of the crop, 0-1 (must be > y1)"},
+        },
+        "required": ["x1", "y1", "x2", "y2"],
+        "additionalProperties": False,
+    },
+}
+
+
+def _run_crop_view(args):
+    import FreeCAD
+
+    camera = _last_capture.get("camera")
+    if not camera:
+        return (
+            "No image to crop yet -- call capture_view first, then crop_view to "
+            "zoom into a region of it."
+        )
+
+    try:
+        x1, y1, x2, y2 = (float(args[k]) for k in ("x1", "y1", "x2", "y2"))
+    except (KeyError, TypeError, ValueError):
+        return "Pass x1, y1, x2, y2 as numbers in 0-1 (top-left of the crop through bottom-right)."
+
+    # Order/clamp so a swapped or out-of-range corner still yields a sane box.
+    x1, x2 = sorted((max(0.0, min(1.0, x1)), max(0.0, min(1.0, x2))))
+    y1, y2 = sorted((max(0.0, min(1.0, y1)), max(0.0, min(1.0, y2))))
+    if (x2 - x1) < 1e-3 or (y2 - y1) < 1e-3:
+        return (
+            "Crop region is empty or too small -- give x1<x2 and y1<y2 spanning a "
+            "visible area of the last image (values in 0-1)."
+        )
+
+    doc = None
+    doc_name = _last_capture.get("doc")
+    if doc_name:
+        try:
+            doc = FreeCAD.getDocument(doc_name)
+        except Exception:  # noqa: BLE001
+            doc = None
+    if doc is None:
+        doc = FreeCAD.ActiveDocument
+    if doc is None:
+        return "The document from the last capture is no longer open -- capture_view again first."
+
+    view, subwindow, prev_view = _offscreen_view(doc)
+    if view is None:
+        return "Could not create an offscreen view to capture."
+
+    width = int(_last_capture.get("width") or 1280)
+    height = int(_last_capture.get("height") or 960)
+
+    try:
+        # boxZoom works in the viewport's pixel space, so match the render size
+        # (and hence the pixel frame) the saved camera was captured at.
+        if subwindow is not None:
+            subwindow.resize(width, height)
+        try:
+            view.setCamera(camera)  # reproduce EXACTLY what Claude last saw
+        except Exception as exc:  # noqa: BLE001
+            return f"Could not reproduce the last camera to crop from: {exc!r}"
+
+        # Normalized image y has its origin at the TOP; flip if this build's
+        # boxZoom counts pixels from the bottom (see _BOXZOOM_Y_TOPLEFT).
+        py1 = y1 if _BOXZOOM_Y_TOPLEFT else (1.0 - y2)
+        py2 = y2 if _BOXZOOM_Y_TOPLEFT else (1.0 - y1)
+        pixels = (int(x1 * width), int(py1 * height), int(x2 * width), int(py2 * height))
+        try:
+            view.boxZoom(*pixels)
+        except Exception as exc:  # noqa: BLE001
+            return f"Could not zoom into the requested region: {exc!r}"
+
+        png_path = _artifact_path("captures", "crop", ".png")
+        params = FreeCAD.ParamGet(_VIEW_PREF_PATH)
+        prev_method = params.GetString("SavePicture", "")
+        params.SetString("SavePicture", "FramebufferObject")
+        try:
+            view.saveImage(png_path, width, height, "White")
+        finally:
+            params.SetString("SavePicture", prev_method)
+    finally:
+        _close_offscreen_view(subwindow, prev_view)
+
+    text = (
+        f"Zoomed into ({x1:.2f},{y1:.2f})-({x2:.2f},{y2:.2f}) of the last view and "
+        "re-rendered that region at full resolution."
+    )
     return text, png_path
 
 
@@ -1380,6 +1656,7 @@ TOOLS = {
     "get_selection": {"schema": _GET_SELECTION_SCHEMA, "run": _run_get_selection},
     "view_sketch_svg": {"schema": _VIEW_SKETCH_SVG_SCHEMA, "run": _run_view_sketch_svg},
     "capture_view": {"schema": _CAPTURE_VIEW_SCHEMA, "run": _run_capture_view},
+    "crop_view": {"schema": _CROP_VIEW_SCHEMA, "run": _run_crop_view},
     "export": {"schema": _EXPORT_SCHEMA, "run": _run_export},
     "inspect_api": {"schema": _INSPECT_API_SCHEMA, "run": _run_inspect_api},
     "run_python": {

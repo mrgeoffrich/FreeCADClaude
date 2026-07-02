@@ -66,11 +66,16 @@ _READ_TOOLS = ["Read"]
 #: confirm-gated run_python remains the only path that mutates the document.
 _WRITE_TOOLS = ["Write"]
 
-#: Extra built-in tools enabled when a skills project is configured: Skill loads
-#: skills; Glob/Grep help a skill find its reference files. Bash/Edit stay
-#: OFF -- the only mutation path to the live document is the gated run_python
-#: tool.
-_SKILL_TOOLS = ["Skill", "Glob", "Grep"]
+#: File-search tools, always on so Claude can look for files on disk (find by
+#: name with Glob, search contents with Grep) -- e.g. locate a STEP to import or
+#: a previous export. Read-only, like Read: they discover paths but never mutate.
+#: Bash/Edit stay OFF -- the only mutation path to the live document is the gated
+#: run_python tool.
+_SEARCH_TOOLS = ["Glob", "Grep"]
+
+#: Extra built-in tool enabled only when a skills project is configured: Skill
+#: loads the bundled skills (Glob/Grep it may need are already always-on above).
+_SKILL_TOOLS = ["Skill"]
 
 
 def get_model():
@@ -131,7 +136,10 @@ def build_config(cli_path, bridge_port, bridge_token):
 
     skills_dir = get_skills_dir()
     builtin_tools = (
-        list(_TASK_TOOLS) + list(_READ_TOOLS) + list(_WRITE_TOOLS)
+        list(_TASK_TOOLS)
+        + list(_READ_TOOLS)
+        + list(_WRITE_TOOLS)
+        + list(_SEARCH_TOOLS)
     )  # always available
     if skills_dir:
         builtin_tools += _SKILL_TOOLS
