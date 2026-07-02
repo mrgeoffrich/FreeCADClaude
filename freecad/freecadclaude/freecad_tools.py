@@ -66,6 +66,36 @@ def _prune_folder(folder, keep):
         pass
 
 
+def _save_run_python_script(code, description):
+    """Archive an approved run_python call under <FreeCADClaude>/scripts/.
+
+    Named "<HHMMSS>_<description>.py" -- just the time, not the date, so
+    names stay short but a plain alphabetical directory listing still sorts
+    chronologically. Mirrors the captures/exports artifact pattern (pruned to
+    the most recent 60) so past runs stay browsable/diffable. Best effort --
+    a write failure shouldn't block the actual code execution.
+    """
+    import time
+
+    try:
+        folder = os.path.join(artifacts_dir(), "scripts")
+        os.makedirs(folder, exist_ok=True)
+        _prune_folder(folder, keep=60)
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in description) or "run_python"
+        name = time.strftime("%H%M%S") + "_" + safe
+        path = os.path.join(folder, name + ".py")
+        n = 2
+        while os.path.exists(path):  # two runs in the same second
+            path = os.path.join(folder, f"{name}-{n}.py")
+            n += 1
+        with open(path, "w", encoding="utf-8") as f:
+            if description:
+                f.write(f"# {description}\n")
+            f.write(code)
+    except OSError:
+        pass
+
+
 def _rasterize_svg(svg_path, png_path, target=768):
     """Render an SVG file to a PNG using bundled QtSvg. Returns True on success."""
     from PySide import QtGui, QtSvg
@@ -305,6 +335,8 @@ def _run_python(args):
 
     code = args.get("code", "")
     doc = FreeCAD.ActiveDocument or FreeCAD.newDocument()
+
+    _save_run_python_script(code, args.get("description") or "")
 
     namespace = {"FreeCAD": FreeCAD, "App": FreeCAD, "doc": doc}
     try:

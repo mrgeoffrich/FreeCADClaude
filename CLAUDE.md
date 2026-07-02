@@ -65,10 +65,12 @@ itself, not the MCP bridge, and `Write` never touches the live document.
 
 Visual perception: prefer `view_sketch_svg` (exact SVG; for 3D pass
 `view=front/top/...` → `TechDraw.projectToSVG` orthographic) over `capture_view`
-(raster screenshot). Artifacts go to `~/FreeCADClaude/{captures,exports,sketches}`
+(raster screenshot). Artifacts go to `~/FreeCADClaude/{captures,exports,scripts,sketches}`
 (the user's home directory, **not** FreeCAD's `UserAppData`) — `captures`/
-`exports` are written by FreeCAD tools via `_artifact_path` (auto-pruned, kept
-≤60 files); `sketches` holds `freecad-lofi-sketch`'s concept SVGs, written
+`exports`/`scripts` are written by FreeCAD tools via `_artifact_path` (auto-pruned, kept
+≤60 files each); `scripts` holds a `.py` copy of every approved `run_python` call
+(written by `_save_run_python_script`, right before `exec`, so both successful and
+failed runs are archived); `sketches` holds `freecad-lofi-sketch`'s concept SVGs, written
 directly by Claude via `Write` (not auto-pruned, since they bypass
 `_artifact_path`).
 
