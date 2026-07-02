@@ -30,7 +30,8 @@ class AgentWorker(QtCore.QObject):
     """Runs the claude CLI per turn, streaming replies out as signals."""
 
     text_received = QtCore.Signal(str)      # assistant text
-    thinking_received = QtCore.Signal(str)  # streamed extended-thinking text
+    thinking_received = QtCore.Signal(str)  # streamed extended-thinking text (rare: usually redacted)
+    thinking_started = QtCore.Signal()      # Claude is reasoning this round (text redacted; no count shown)
     tool_used = QtCore.Signal(str, str, dict)  # tool_use_id, display label, input args
     tool_result = QtCore.Signal(str, str)   # tool_use_id, result text
     task_event = QtCore.Signal(dict)        # {op:create,num,subject} | {op:update,num,status}
@@ -181,7 +182,18 @@ class AgentWorker(QtCore.QObject):
             return False
         if kind == "stream_event":
             event = obj.get("event", {})
-            if event.get("type") == "content_block_delta":
+            etype = event.get("type")
+            if etype == "content_block_start":
+                # A thinking block opens here. In headless mode its text is
+                # redacted (only a signature_delta follows -- confirmed live at
+                # every effort level), so this start event is the one reliable
+                # marker that Claude reasoned. The token-count metadata the CLI
+                # sometimes adds is inconsistent, so we don't depend on it.
+                if event.get("content_block", {}).get("type") == "thinking":
+                    self._thought = True
+                    self.thinking_started.emit()
+                return False
+            if etype == "content_block_delta":
                 delta = event.get("delta", {})
                 dtype = delta.get("type")
                 if dtype == "text_delta" and delta.get("text"):
@@ -189,8 +201,7 @@ class AgentWorker(QtCore.QObject):
                     self.text_received.emit(delta["text"])
                     return True
                 if dtype == "thinking_delta" and delta.get("thinking"):
-                    # Reasoning is only available live -- it's redacted in the
-                    # saved transcript -- so surfacing it here is the only chance.
+                    # Real reasoning text -- rare; almost always redacted to "".
                     self._thought = True
                     self.thinking_received.emit(delta["thinking"])
             return False
@@ -203,10 +214,16 @@ class AgentWorker(QtCore.QObject):
                     if not self._streamed:
                         self.text_received.emit(block["text"])
                         produced = True
-                elif btype == "thinking" and block.get("thinking"):
-                    # Fallback for the same reason -- only if deltas were absent.
+                elif btype == "thinking":
+                    # Fallback when partial-message events were absent this round:
+                    # emit the reasoning text if present, else just the marker
+                    # (a redacted thinking block still means Claude reasoned).
                     if not self._thought:
-                        self.thinking_received.emit(block["thinking"])
+                        self._thought = True
+                        if block.get("thinking"):
+                            self.thinking_received.emit(block["thinking"])
+                        else:
+                            self.thinking_started.emit()
                 elif btype == "tool_use":
                     self._handle_tool_use(block)
             # A turn can involve several internal assistant/tool round-trips

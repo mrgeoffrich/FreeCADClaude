@@ -11,7 +11,7 @@ import os
 
 import FreeCAD
 
-DEFAULT_MODEL = "claude-opus-4-8"
+DEFAULT_MODEL = "claude-sonnet-5"
 
 #: Reasoning effort passed to the CLI as --effort. Pinning it stops the addon
 #: inheriting your global Claude Code effortLevel (which can be xhigh/max and
@@ -88,7 +88,9 @@ SYSTEM_PROMPT = (
 _PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/FreeCADClaude"
 
 #: Addon root = three levels up from this file (.../FreeCADClaude/freecad/freecadclaude).
-_ADDON_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ADDON_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 
 #: A project directory whose .claude/skills hold FreeCAD skills (e.g. the
 #: bundled freecad-design-advisor planning skill under this addon's .claude/skills).
@@ -101,7 +103,15 @@ DEFAULT_SKILLS_DIR = _ADDON_ROOT
 #: Task/todo tracking tools (always enabled) so the agent can plan and track
 #: multi-step modeling work. "Task" is the subagent launcher; the rest are the
 #: todo-list family. These have no system side effects.
-_TASK_TOOLS = ["Task", "TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate"]
+_TASK_TOOLS = [
+    "Task",
+    "TaskCreate",
+    "TaskGet",
+    "TaskList",
+    "TaskOutput",
+    "TaskStop",
+    "TaskUpdate",
+]
 
 #: Read is always on so the agent can open the PNGs produced by view_sketch_svg
 #: and capture_view (and read skill reference files). Read-only.
@@ -130,14 +140,18 @@ def get_effort():
     """Reasoning effort (low/medium/high/xhigh/max). Pinned so it doesn't
     inherit the user's global Claude Code effortLevel."""
     params = FreeCAD.ParamGet(_PARAM_PATH)
-    effort = (params.GetString("Effort", DEFAULT_EFFORT) or DEFAULT_EFFORT).strip().lower()
+    effort = (
+        (params.GetString("Effort", DEFAULT_EFFORT) or DEFAULT_EFFORT).strip().lower()
+    )
     return effort if effort in _VALID_EFFORT else DEFAULT_EFFORT
 
 
 def get_skills_dir():
     """Return the configured skills project dir if it has .claude/skills, else None."""
     params = FreeCAD.ParamGet(_PARAM_PATH)
-    path = params.GetString("SkillsProjectDir", DEFAULT_SKILLS_DIR) or DEFAULT_SKILLS_DIR
+    path = (
+        params.GetString("SkillsProjectDir", DEFAULT_SKILLS_DIR) or DEFAULT_SKILLS_DIR
+    )
     if path and os.path.isdir(os.path.join(path, ".claude", "skills")):
         return path
     return None
@@ -157,22 +171,26 @@ def build_config(cli_path, bridge_port, bridge_token):
     """Bundle everything the worker needs, including the MCP wiring."""
     from . import freecad_tools
 
-    mcp_config = json.dumps({
-        "mcpServers": {
-            "freecad": {
-                "command": _python_exe(),
-                "args": [os.path.join(_ADDON_ROOT, "mcp_server.py")],
-                "env": {
-                    "FREECAD_BRIDGE_PORT": str(bridge_port),
-                    "FREECAD_BRIDGE_TOKEN": bridge_token,
-                },
+    mcp_config = json.dumps(
+        {
+            "mcpServers": {
+                "freecad": {
+                    "command": _python_exe(),
+                    "args": [os.path.join(_ADDON_ROOT, "mcp_server.py")],
+                    "env": {
+                        "FREECAD_BRIDGE_PORT": str(bridge_port),
+                        "FREECAD_BRIDGE_TOKEN": bridge_token,
+                    },
+                }
             }
         }
-    })
+    )
     allowed_tools = ["mcp__freecad__" + name for name in freecad_tools.TOOLS]
 
     skills_dir = get_skills_dir()
-    builtin_tools = list(_TASK_TOOLS) + list(_READ_TOOLS) + list(_WRITE_TOOLS)  # always available
+    builtin_tools = (
+        list(_TASK_TOOLS) + list(_READ_TOOLS) + list(_WRITE_TOOLS)
+    )  # always available
     if skills_dir:
         builtin_tools += _SKILL_TOOLS
     allowed_tools += builtin_tools

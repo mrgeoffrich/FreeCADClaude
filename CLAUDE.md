@@ -85,7 +85,7 @@ turn that would mint one).
 ## CLI invocation (built in `agent_config`/`agent_worker`)
 
 `claude -p <text> --output-format stream-json --verbose --include-partial-messages
---model claude-opus-4-8 --tools <builtins...> --strict-mcp-config
+--model claude-sonnet-5 --tools <builtins...> --strict-mcp-config
 --mcp-config <json> --allowed-tools "<list>"` plus `--append-system-prompt`
 (turn 1) or `--resume <id>` (later). cwd = the skills project dir (so its
 `.claude/skills` load) else a temp dir.

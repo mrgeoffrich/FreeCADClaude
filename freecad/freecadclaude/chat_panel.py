@@ -25,9 +25,16 @@ from PySide import QtCore, QtWidgets
 from . import _deps, transcript_widgets
 from .agent_worker import AgentWorker
 
-#: Show Claude's streamed reasoning as a muted blockquote. Flip to False to hide
-#: it (the agent still thinks; you just won't see it).
+#: Show Claude's reasoning entry. Flip to False to hide it (the agent still
+#: thinks; you just won't see it). The reasoning *text* is redacted by the CLI,
+#: so in practice this surfaces a "💭 thought" marker with the note below rather
+#: than the reasoning itself.
 SHOW_THINKING = True
+
+#: Body for a reasoning entry whose text the CLI withheld (the common case): the
+#: "💭 thought" header records that Claude reasoned; this explains the empty body
+#: when someone expands it.
+_THINKING_HIDDEN_NOTE = "*Claude's reasoning isn't shown by the CLI.*"
 
 #: Object name used both to register the dock and to find it again later.
 DOCK_OBJECT_NAME = "FreeCADClaudeDock"
@@ -139,6 +146,7 @@ class ChatWidget(QtWidgets.QWidget):
         self._busy = False
         self._live_entry = None       # the in-progress Claude entry being streamed
         self._live_think_entry = None  # the in-progress reasoning entry being streamed
+        self._think_has_text = False   # did the current reasoning burst stream real text (vs. redacted)?
         self._tool_entries = {}       # tool_use_id -> CollapsibleSection, awaiting its result
         self._status_text = ""        # last worker status ("ready"/"closed"), shown when idle
         # Coalesces rapid streaming deltas into ~12 renders/sec instead of one
@@ -225,6 +233,7 @@ class ChatWidget(QtWidgets.QWidget):
         self._worker.text_received.connect(self._on_text)
         if SHOW_THINKING:
             self._worker.thinking_received.connect(self._on_thinking)
+            self._worker.thinking_started.connect(self._on_thinking_started)
         self._worker.tool_used.connect(self._on_tool)
         self._worker.tool_result.connect(self._on_tool_result)
         self._worker.turn_finished.connect(self._on_turn_finished)
@@ -330,9 +339,24 @@ class ChatWidget(QtWidgets.QWidget):
         self._live_entry.append_text(chunk)
         self._render_soon()
 
+    @QtCore.Slot()
+    def _on_thinking_started(self):
+        # Claude reasoned this round but the CLI redacts the text. Surface a
+        # muted "💭 thinking…" marker (committed as "💭 thought") so the turn
+        # doesn't look stalled; the note gives the body something on expand.
+        self._ensure_live_think_entry()
+        if not self._think_has_text and not self._live_think_entry.raw_text.strip():
+            self._live_think_entry.update_content_markdown(_THINKING_HIDDEN_NOTE)
+            self._render_soon()
+
     @QtCore.Slot(str)
     def _on_thinking(self, chunk):
         self._ensure_live_think_entry()
+        if not self._think_has_text:
+            # Real reasoning text arrived (rare) -- drop the redacted-note
+            # placeholder so it doesn't sit above the actual reasoning.
+            self._think_has_text = True
+            self._live_think_entry.update_content_markdown("")
         self._live_think_entry.append_text(chunk)
         self._render_soon()
 
@@ -405,6 +429,7 @@ class ChatWidget(QtWidgets.QWidget):
             if not entry.raw_text.strip():
                 self.transcript_view.remove_entry(entry)
             setattr(self, attr, None)
+        self._think_has_text = False  # next reasoning burst starts fresh
 
     def _render(self):
         """Render now (cancels any pending throttled render)."""
@@ -439,6 +464,7 @@ class ChatWidget(QtWidgets.QWidget):
         self.transcript_view.clear()
         self._live_entry = None
         self._live_think_entry = None
+        self._think_has_text = False
         self._tool_entries.clear()
         self._set_busy(False)
         try:
