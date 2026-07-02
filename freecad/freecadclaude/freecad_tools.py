@@ -1516,32 +1516,35 @@ def _resolve_clip_plane(args, doc):
         bbox midpoint on that axis (so a bare ``axis`` just halves the model);
         ``keep`` (default low) chooses the smaller- or larger-coordinate side.
 
-    Returns ``(SbPlane, description, None)`` on success, or
-    ``(None, None, error_string)``. The kept-side convention was verified
+    Returns ``(SbPlane, description, (nx, ny, nz), None)`` on success, or
+    ``(None, None, None, error_string)``. The kept-side convention was verified
     against Coin: SoClipPlane keeps points where the plane's normal points, so
-    the normal below always points at the half we want to see.
+    the normal below always points at the half we want to see -- the normal is
+    handed back too so the caller can tell whether the camera ended up looking
+    INTO the kept half (reveals the cut) or AT its outer surface (looks
+    unclipped) without re-deriving it.
     """
     from pivy import coin
 
     point, normal = args.get("point"), args.get("normal")
     if point is not None or normal is not None:
         if point is None or normal is None:
-            return None, None, "For a general plane give BOTH 'point' [x,y,z] and 'normal' [x,y,z]."
+            return None, None, None, "For a general plane give BOTH 'point' [x,y,z] and 'normal' [x,y,z]."
         try:
             px, py, pz = (float(c) for c in point)
             nx, ny, nz = (float(c) for c in normal)
         except (TypeError, ValueError):
-            return None, None, "'point' and 'normal' must each be a list of three numbers [x, y, z]."
+            return None, None, None, "'point' and 'normal' must each be a list of three numbers [x, y, z]."
         n = coin.SbVec3f(nx, ny, nz)
         if n.length() < 1e-9:
-            return None, None, "'normal' must be a non-zero vector."
+            return None, None, None, "'normal' must be a non-zero vector."
         plane = coin.SbPlane(n, coin.SbVec3f(px, py, pz))
         desc = f"a plane through ({px:g}, {py:g}, {pz:g}) with normal ({nx:g}, {ny:g}, {nz:g})"
-        return plane, desc, None
+        return plane, desc, (nx, ny, nz), None
 
     axis = str(args.get("axis") or "").strip().lower()
     if axis not in _AXIS_INDEX:
-        return None, None, (
+        return None, None, None, (
             "Give a clip plane: either 'axis' (x/y/z) [with optional 'position'/'keep'], "
             "or a general 'point' [x,y,z] plus 'normal' [x,y,z]."
         )
@@ -1551,17 +1554,17 @@ def _resolve_clip_plane(args, doc):
         try:
             position = float(args["position"])
         except (TypeError, ValueError):
-            return None, None, "'position' must be a number (mm)."
+            return None, None, None, "'position' must be a number (mm)."
     else:
         bbox = _document_bbox(doc)
         if bbox.XMin > bbox.XMax:
-            return None, None, "No geometry to pick a default cut position from -- give 'position' (mm)."
+            return None, None, None, "No geometry to pick a default cut position from -- give 'position' (mm)."
         position = ((bbox.XMin + bbox.XMax) / 2, (bbox.YMin + bbox.YMax) / 2,
                     (bbox.ZMin + bbox.ZMax) / 2)[idx]
 
     keep = str(args.get("keep") or "low").strip().lower()
     if keep not in ("low", "high"):
-        return None, None, "'keep' must be 'low' (smaller coordinate) or 'high' (larger)."
+        return None, None, None, "'keep' must be 'low' (smaller coordinate) or 'high' (larger)."
 
     # Normal points toward the half we KEEP: -axis keeps the low side, +axis high.
     nvec, pvec = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
@@ -1569,7 +1572,7 @@ def _resolve_clip_plane(args, doc):
     pvec[idx] = position
     plane = coin.SbPlane(coin.SbVec3f(*nvec), coin.SbVec3f(*pvec))
     desc = f"{axis} = {position:g} mm, keeping the {keep} side"
-    return plane, desc, None
+    return plane, desc, tuple(nvec), None
 
 
 def _insert_clip_plane(view, clip):
@@ -1658,10 +1661,15 @@ _CUTAWAY_SCHEMA = {
         "Set the camera angle exactly as capture_view does: a 'view' preset "
         "(iso/front/rear/top/bottom/left/right, default iso) OR 'azimuth'+"
         "'elevation' in degrees for a custom orbit. Optionally pass 'names' "
-        "(object internal Names) to frame the shot on specific objects; the clip "
-        "still applies to all visible geometry regardless. Tip: aim the camera "
-        "at the cut -- e.g. cut axis=x and view from the left/right, or cut "
-        "axis=z and view top/bottom -- so you look squarely into the opened part."
+        "(object internal Names) to frame the shot on specific objects, or "
+        "x_min/x_max/y_min/y_max/z_min/z_max (mm, same as capture_view) to crop "
+        "the shot to a world-space region; the clip still applies to all visible "
+        "geometry regardless of framing.\n"
+        "Tip: aim the camera at the cut -- e.g. cut axis=x and view from the "
+        "left/right, or cut axis=z and view top/bottom -- so you look squarely "
+        "into the opened part. If a cut looks flat/empty/unchanged, change "
+        "EXACTLY ONE of 'keep' or 'view' (not both -- flipping both together "
+        "cancels out and lands back on the same unclipped-looking angle)."
     ),
     "inputSchema": {
         "type": "object",
@@ -1675,6 +1683,7 @@ _CUTAWAY_SCHEMA = {
             "azimuth": {"type": "number", "description": "Custom orbit angle around the vertical axis, degrees: 0=front, +90=right, 180=back, -90=left."},
             "elevation": {"type": "number", "description": "Custom orbit angle above/below eye level, degrees: 0=side-on, +90=top-down, -90=bottom-up."},
             "names": {"type": "array", "items": {"type": "string"}, "description": "Internal Names of objects to frame the shot on (optional; the clip still applies to all visible geometry)."},
+            **_EXTENT_SCHEMA_PROPS,
             "width": {"type": "integer", "description": "Image width px (default 1280)"},
             "height": {"type": "integer", "description": "Image height px (default 960)"},
         },
@@ -1696,7 +1705,7 @@ def _run_cutaway(args):
         return err
 
     try:
-        plane, clip_desc, err = _resolve_clip_plane(args, doc)
+        plane, clip_desc, clip_normal, err = _resolve_clip_plane(args, doc)
     except Exception as exc:  # noqa: BLE001 - e.g. pivy/coin unavailable
         return f"Could not build the clip plane: {exc!r}"
     if err:
@@ -1715,9 +1724,12 @@ def _run_cutaway(args):
     height = int(args.get("height", 960))
     png_path = _artifact_path("captures", "cutaway", ".png")
     frame_names = args.get("names")
+    extents = _extent_args(args)
 
     frame_warning = None
+    crop_warning = None
     measured = None
+    degenerate_warning = None
     try:
         # Match the render's pixel size before framing (boxZoom in _frame_on_objects
         # works in this widget's pixel space), same as capture_view.
@@ -1740,11 +1752,58 @@ def _run_cutaway(args):
         if err:
             return err
 
+        if extents:
+            scene_bbox = _document_bbox(doc)
+            if scene_bbox.XMin <= scene_bbox.XMax or all(k in extents for k in _EXTENT_KEYS):
+                crop_box = _crop_bbox(scene_bbox, extents)
+                pixels = _pixel_bounds_for_box(view, crop_box, width, height)
+                if pixels:
+                    try:
+                        view.boxZoom(*pixels)
+                    except Exception as exc:  # noqa: BLE001
+                        crop_warning = (
+                            f"Warning: could not apply the requested crop ({exc!r}) -- "
+                            "showing the full extent instead."
+                        )
+                else:
+                    crop_warning = (
+                        "Warning: could not compute a pixel region for the requested "
+                        "crop -- showing the full extent instead."
+                    )
+            else:
+                crop_warning = (
+                    "Warning: the document has no real geometry to crop against -- "
+                    "showing the full extent instead."
+                )
+
         if frame_names:
             frame_warning = _frame_on_objects(view, doc, frame_names, width, height)
 
         # Direction is unchanged by fitAll/boxZoom, so this matches the saved image.
         measured = _orbit_angles_from_view(view)
+
+        # Detect the "cut looks unclipped" degenerate case: the camera sits ON
+        # the kept side, looking further into it, so the (removed) far half was
+        # already hidden behind the intact near half -- nothing visibly changes
+        # from an ordinary capture_view. That's the case exactly when the
+        # camera's view direction points opposite the plane's kept-side normal
+        # (dot near -1); dot near +1 means the camera is on the removed side
+        # looking INTO the opened cavity, which is what reveals the cut.
+        try:
+            d = view.getViewDirection()
+            dot = d.x * clip_normal[0] + d.y * clip_normal[1] + d.z * clip_normal[2]
+        except Exception:  # noqa: BLE001
+            dot = None
+        if dot is not None and dot < -0.75:
+            degenerate_warning = (
+                "Warning: this camera angle looks straight at the KEPT half's outer "
+                "surface, not into the cut -- the image likely looks identical to an "
+                "uncropped capture_view. To actually see inside, change EXACTLY ONE "
+                "of 'keep' or 'view' (not both -- flipping both together cancels out "
+                "and lands back on this same angle): either keep this 'view' and flip "
+                "'keep' to the other side, or keep 'keep' as-is and move the camera to "
+                "the opposite side (e.g. the opposite 'view' preset, or azimuth+180)."
+            )
 
         params = FreeCAD.ParamGet(_VIEW_PREF_PATH)
         prev_method = params.GetString("SavePicture", "")
@@ -1762,10 +1821,12 @@ def _run_cutaway(args):
         text += f" Camera angle: azimuth {meas_az:.0f} deg, elevation {meas_el:.0f} deg."
     text += (
         " The cut is hollow -- you're seeing the interior surfaces the clip "
-        "exposed, not a filled cross-section. If the opening looks flat/empty, "
-        "orbit so the camera looks INTO the cut, or flip 'keep' to view the "
-        "other half."
+        "exposed, not a filled cross-section."
     )
+    if degenerate_warning:
+        text += f"\n\n{degenerate_warning}"
+    if crop_warning:
+        text += f"\n\n{crop_warning}"
     if frame_warning:
         text += f"\n\n{frame_warning}"
     return text, png_path
