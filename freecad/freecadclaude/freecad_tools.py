@@ -181,17 +181,86 @@ _PROJECTION_DIRS = {
     "iso": (1, -1, 1), "isometric": (1, -1, 1),
 }
 
+#: Optional world-space crop bounds shared by capture_view and view_sketch_svg.
+_EXTENT_KEYS = ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")
+_EXTENT_SCHEMA_PROPS = {
+    key: {"type": "number", "description": f"World-space {key.replace('_', ' ')} (mm) -- omit to use the full extent"}
+    for key in _EXTENT_KEYS
+}
 
-def _wrap_svg_fragment(fragment):
-    """Wrap a TechDraw projection fragment in a full SVG (viewBox + stroke)."""
+
+def _extent_args(args):
+    """Pull optional x_min/x_max/y_min/y_max/z_min/z_max floats out of `args`.
+
+    Returns None if the caller gave none of them (skip cropping entirely),
+    else a dict with only the keys that were actually provided.
+    """
+    given = {k: float(args[k]) for k in _EXTENT_KEYS if args.get(k) is not None}
+    return given or None
+
+
+def _crop_bbox(base_bbox, extents):
+    """A FreeCAD.BoundBox combining `extents` (from _extent_args) with
+    `base_bbox` for any axis the caller didn't specify."""
+    import FreeCAD
+
+    return FreeCAD.BoundBox(
+        extents.get("x_min", base_bbox.XMin), extents.get("y_min", base_bbox.YMin),
+        extents.get("z_min", base_bbox.ZMin), extents.get("x_max", base_bbox.XMax),
+        extents.get("y_max", base_bbox.YMax), extents.get("z_max", base_bbox.ZMax),
+    )
+
+
+def _document_bbox(doc):
+    """Union BoundBox of every Shape-bearing object in `doc` -- the same
+    population fitAll() frames -- used to default any crop axis the caller
+    didn't specify for capture_view."""
+    import FreeCAD
+
+    box = FreeCAD.BoundBox()
+    for obj in doc.Objects:
+        shape = getattr(obj, "Shape", None)
+        if shape is not None and not shape.isNull():
+            box.add(shape.BoundBox)
+    return box
+
+
+def _svg_fragment_bounds(fragment):
+    """(minx, miny, maxx, maxy) spanning every coordinate in `fragment`'s
+    path data, or None if it has none.
+
+    Applies `fragment`'s own <g transform="scale(sx,sy)">, if any -- e.g.
+    TechDraw.projectToSVG wraps its paths in one (always scale(1,-1), to
+    flip CAD's Y-up into SVG's Y-down) that the raw d= numbers alone don't
+    reflect, so bounds computed straight from those numbers land in the
+    wrong place once actually rendered.
+    """
     import re
+
+    scale_match = re.search(r'transform="scale\(([^,]+),\s*([^)]+)\)"', fragment)
+    sx, sy = (
+        (float(scale_match.group(1)), float(scale_match.group(2))) if scale_match else (1.0, 1.0)
+    )
 
     coords = []
     for d in re.findall(r'd="([^"]*)"', fragment):
         coords += [float(n) for n in re.findall(r"-?\d+\.?\d*(?:[eE][-+]?\d+)?", d)]
-    xs, ys = coords[0::2], coords[1::2]
-    if xs and ys:
-        minx, miny, maxx, maxy = min(xs), min(ys), max(xs), max(ys)
+    xs, ys = [x * sx for x in coords[0::2]], [y * sy for y in coords[1::2]]
+    if not (xs and ys):
+        return None
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _wrap_svg_fragment(fragment, viewbox=None):
+    """Wrap a TechDraw projection fragment in a full SVG (viewBox + stroke).
+
+    `viewbox`, if given, is an explicit (minx, miny, maxx, maxy) to frame
+    instead of auto-fitting to every coordinate in `fragment` -- used to crop
+    to a caller-requested region (see _run_view_sketch_svg).
+    """
+    bounds = viewbox or _svg_fragment_bounds(fragment)
+    if bounds:
+        minx, miny, maxx, maxy = bounds
         pad = max(1.0, (maxx - minx + maxy - miny) * 0.03)
         minx, miny, maxx, maxy = minx - pad, miny - pad, maxx + pad, maxy + pad
     else:
@@ -205,6 +274,83 @@ def _wrap_svg_fragment(fragment):
         f'<style>path{{fill:none;stroke:#000000;stroke-width:{stroke};}}</style>'
         f"{fragment}</svg>"
     )
+
+
+def _projected_crop_viewbox(shape, direction, crop_box):
+    """(minx, miny, maxx, maxy) that `crop_box` occupies in the SAME 2D frame
+    TechDraw.projectToSVG(shape, direction) draws into.
+
+    TechDraw derives its projection axes from OpenCascade's automatic
+    perpendicular-to-direction pick, which isn't a documented/stable
+    convention (verified empirically -- it doesn't match "screen-right=X,
+    screen-up=Y/Z" for any of the standard presets). Rather than guess it,
+    project a marker box built from crop_box with the SAME call and read
+    back where ITS corners land -- self-calibrating regardless of direction.
+    """
+    import FreeCAD
+    import Part
+    import TechDraw
+
+    xlen = max(crop_box.XLength, 0.01)
+    ylen = max(crop_box.YLength, 0.01)
+    zlen = max(crop_box.ZLength, 0.01)
+    marker = Part.makeBox(
+        xlen, ylen, zlen, FreeCAD.Vector(crop_box.XMin, crop_box.YMin, crop_box.ZMin)
+    )
+    fragment = TechDraw.projectToSVG(marker, FreeCAD.Vector(*direction))
+    return _svg_fragment_bounds(fragment)
+
+
+def _flat_crop_svg(svg_text, obj, crop_box):
+    """Rewrite a flat importSVG.export() SVG's outer viewBox/<g transform>
+    to frame just `crop_box` (world-space mm), converted into the object's
+    own local/Placement-relative frame first.
+
+    importSVG emits raw LOCAL path coordinates -- Placement is applied only
+    by the wrapping <g transform="translate(...) scale(...)">, not baked
+    into the `d=` data (verified empirically) -- so cropping by world bounds
+    means inverse-transforming crop_box into that local frame, then
+    generating a fresh transform/viewBox pair from scratch (matching the
+    original's flip sign, whatever it is, rather than assuming it).
+    Returns svg_text unchanged if the expected structure isn't found.
+    """
+    import re
+
+    import FreeCAD
+
+    match = re.search(
+        r'transform="translate\(([^,]+),\s*([^)]+)\)\s*scale\(([^,]+),\s*([^)]+)\)"', svg_text
+    )
+    if match is None:
+        return svg_text
+    sx, sy = float(match.group(3)), float(match.group(4))
+
+    inv = obj.Placement.inverse()
+    corners = [
+        inv.multVec(FreeCAD.Vector(x, y, z))
+        for x in (crop_box.XMin, crop_box.XMax)
+        for y in (crop_box.YMin, crop_box.YMax)
+        for z in (crop_box.ZMin, crop_box.ZMax)
+    ]
+    xs, ys = [c.x for c in corners], [c.y for c in corners]
+    xmin, xmax, ymin, ymax = min(xs), max(xs), min(ys), max(ys)
+
+    pad = max(1.0, ((xmax - xmin) + (ymax - ymin)) * 0.03)
+    w = pad * 2 + abs(sx) * (xmax - xmin)
+    h = pad * 2 + abs(sy) * (ymax - ymin)
+    tx = pad - min(sx * xmin, sx * xmax)
+    ty = pad - min(sy * ymin, sy * ymax)
+
+    svg_text = re.sub(r'viewBox="[^"]*"', f'viewBox="0 0 {w:.4f} {h:.4f}"', svg_text, count=1)
+    svg_text = re.sub(r'width="[^"]*mm"', f'width="{w:.4f}mm"', svg_text, count=1)
+    svg_text = re.sub(r'height="[^"]*mm"', f'height="{h:.4f}mm"', svg_text, count=1)
+    svg_text = re.sub(
+        r'transform="translate\([^,]+,\s*[^)]+\)\s*scale\([^,]+,\s*[^)]+\)"',
+        f'transform="translate({tx:.4f},{ty:.4f}) scale({sx:g},{sy:g})"',
+        svg_text,
+        count=1,
+    )
+    return svg_text
 
 
 #: MCP tool schema for create_box (name/description/inputSchema).
@@ -584,7 +730,9 @@ _VIEW_SKETCH_SVG_SCHEMA = {
         "clean orthographic projection -- ideal for DIAGNOSING 3D parts (checking "
         "profiles, alignment, holes) from standard views.\n"
         "Optional 'name' = the object's internal Name; defaults to the selected "
-        "object, or the first sketch in the document."
+        "object, or the first sketch in the document. Optionally crop to a region "
+        "by giving one or more of x_min/x_max/y_min/y_max/z_min/z_max (world mm) "
+        "-- any axis you omit uses the object's full extent."
     ),
     "inputSchema": {
         "type": "object",
@@ -594,6 +742,7 @@ _VIEW_SKETCH_SVG_SCHEMA = {
                 "type": "string",
                 "description": "For 3D objects: front/rear/top/bottom/left/right/iso (orthographic projection)",
             },
+            **_EXTENT_SCHEMA_PROPS,
         },
         "additionalProperties": False,
     },
@@ -635,6 +784,11 @@ def _run_view_sketch_svg(args):
     base = obj.Name + (f"_{view}" if view else "_flat")
     svg_path = _artifact_path("captures", base, ".svg")
 
+    extents = _extent_args(args)
+    crop_box = None
+    if extents and shape is not None and not shape.isNull():
+        crop_box = _crop_bbox(shape.BoundBox, extents)
+
     if view and shape is not None:
         # Orthographic projection of 3D geometry (hidden-line removed).
         try:
@@ -642,7 +796,10 @@ def _run_view_sketch_svg(args):
 
             direction = _PROJECTION_DIRS.get(view, _PROJECTION_DIRS["front"])
             fragment = TechDraw.projectToSVG(shape, FreeCAD.Vector(*direction))
-            svg_text = _wrap_svg_fragment(fragment)
+            crop_viewbox = (
+                _projected_crop_viewbox(shape, direction, crop_box) if crop_box else None
+            )
+            svg_text = _wrap_svg_fragment(fragment, viewbox=crop_viewbox)
             with open(svg_path, "w", encoding="utf-8") as fh:
                 fh.write(svg_text)
         except Exception as exc:  # noqa: BLE001
@@ -655,6 +812,10 @@ def _run_view_sketch_svg(args):
 
             importSVG.export([obj], svg_path)
             svg_text = open(svg_path, encoding="utf-8").read()
+            if crop_box:
+                svg_text = _flat_crop_svg(svg_text, obj, crop_box)
+                with open(svg_path, "w", encoding="utf-8") as fh:
+                    fh.write(svg_text)
         except Exception as exc:  # noqa: BLE001
             return f"SVG export failed for '{obj.Label}': {exc!r}"
         header = f"Exported '{obj.Label}' ({obj.TypeId}) to SVG."
@@ -677,7 +838,11 @@ _CAPTURE_VIEW_SCHEMA = {
         "path to open with the Read tool. Renders through a separate offscreen "
         "camera, so it never disturbs whatever view/tab the user has open. Use "
         "for 3D solids/assemblies (for flat 2D geometry, prefer view_sketch_svg). "
-        "'view' sets the camera angle: iso, front, rear, top, bottom, left, right."
+        "'view' sets the camera angle: iso, front, rear, top, bottom, left, right. "
+        "Optionally zoom to a region by giving one or more of x_min/x_max/"
+        "y_min/y_max/z_min/z_max (world mm) -- any axis you omit uses the full "
+        "document extent, so e.g. for 'top' you'd typically only give x_min/"
+        "x_max/y_min/y_max."
     ),
     "inputSchema": {
         "type": "object",
@@ -685,6 +850,7 @@ _CAPTURE_VIEW_SCHEMA = {
             "view": {"type": "string", "description": "Camera preset: iso/front/rear/top/bottom/left/right"},
             "width": {"type": "integer", "description": "Image width px (default 1280)"},
             "height": {"type": "integer", "description": "Image height px (default 960)"},
+            **_EXTENT_SCHEMA_PROPS,
         },
         "required": ["view"],
         "additionalProperties": False,
@@ -743,6 +909,13 @@ def _offscreen_view(doc):
     if view is None:
         return None, None
 
+    # viewTop()/viewIsometric()/fitAll() etc. animate the camera over several
+    # QTimer ticks by default and return before the animation finishes; since
+    # this view is never shown, the event loop never advances the animation
+    # and saveImage() would capture the pre-transition (default) orientation.
+    # Disabling animation makes those calls apply immediately/synchronously.
+    view.setAnimationEnabled(False)
+
     subwindow = next(iter(_mdi_subwindows() - before), None)
     if subwindow is not None:
         subwindow.hide()
@@ -757,6 +930,44 @@ def _close_offscreen_view(subwindow):
             subwindow.close()  # WA_DeleteOnClose -- also destroys the inner view
         except Exception:  # noqa: BLE001
             pass
+
+
+def _pixel_bounds_for_box(view, box, width, height):
+    """Pixel-space (xmin, ymin, xmax, ymax) framing `box` (a FreeCAD.BoundBox)
+    under `view`'s CURRENT camera, for boxZoom.
+
+    Self-calibrated by sampling getPointOnFocalPlane at three known pixel
+    corners rather than assuming any particular screen-axis convention --
+    orthographic projection makes that sampling exact, and it works
+    regardless of which preset (including iso) set up the camera. Returns
+    None if the calibration is degenerate (e.g. a zero-size viewport).
+    """
+    import FreeCAD
+
+    p00 = view.getPointOnFocalPlane(0, 0)
+    pw0 = view.getPointOnFocalPlane(width, 0)
+    p0h = view.getPointOnFocalPlane(0, height)
+    right = (pw0 - p00) * (1.0 / width)
+    down = (p0h - p00) * (1.0 / height)
+
+    rr, rd, dd = right.dot(right), right.dot(down), down.dot(down)
+    det = rr * dd - rd * rd
+    if abs(det) < 1e-9:
+        return None
+
+    def pixel_of(point):
+        diff = point - p00
+        br, bd = diff.dot(right), diff.dot(down)
+        return (dd * br - rd * bd) / det, (rr * bd - rd * br) / det
+
+    corners = [
+        FreeCAD.Vector(x, y, z)
+        for x in (box.XMin, box.XMax)
+        for y in (box.YMin, box.YMax)
+        for z in (box.ZMin, box.ZMax)
+    ]
+    xs, ys = zip(*(pixel_of(c) for c in corners))
+    return int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))
 
 
 def _run_capture_view(args):
@@ -779,14 +990,32 @@ def _run_capture_view(args):
     width = int(args.get("width", 1280))
     height = int(args.get("height", 960))
     png_path = _artifact_path("captures", f"view_{args['view']}", ".png")
+    extents = _extent_args(args)
 
     try:
+        # Match the render's own pixel size before framing -- boxZoom below
+        # works in this widget's pixel space, which must line up with the
+        # width/height saveImage renders at or the crop lands off-target.
+        if subwindow is not None:
+            subwindow.resize(width, height)
+
         if hasattr(view, preset):
             getattr(view, preset)()
         try:
             view.fitAll()
         except Exception:  # noqa: BLE001
             pass
+
+        if extents:
+            scene_bbox = _document_bbox(doc)
+            if scene_bbox.XMin <= scene_bbox.XMax or all(k in extents for k in _EXTENT_KEYS):
+                crop_box = _crop_bbox(scene_bbox, extents)
+                pixels = _pixel_bounds_for_box(view, crop_box, width, height)
+                if pixels:
+                    try:
+                        view.boxZoom(*pixels)
+                    except Exception:  # noqa: BLE001
+                        pass
 
         params = FreeCAD.ParamGet(_VIEW_PREF_PATH)
         prev_method = params.GetString("SavePicture", "")
