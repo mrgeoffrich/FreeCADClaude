@@ -225,6 +225,17 @@ def _document_bbox(doc):
     return box
 
 
+def _bbox_dict(bbox):
+    """A FreeCAD.BoundBox as {x_min, x_max, y_min, y_max, z_min, z_max} (mm,
+    rounded) -- the same key names capture_view/view_sketch_svg's crop
+    params take, so a caller can copy these straight over."""
+    return {
+        "x_min": round(bbox.XMin, 3), "x_max": round(bbox.XMax, 3),
+        "y_min": round(bbox.YMin, 3), "y_max": round(bbox.YMax, 3),
+        "z_min": round(bbox.ZMin, 3), "z_max": round(bbox.ZMax, 3),
+    }
+
+
 def _svg_fragment_bounds(fragment):
     """(minx, miny, maxx, maxy) spanning every coordinate in `fragment`'s
     path data, or None if it has none.
@@ -411,10 +422,13 @@ def _run_create_box(args):
 _GET_OBJECTS_SCHEMA = {
     "name": "get_objects",
     "description": (
-        "Inspect the active FreeCAD document: returns its name and a list of "
-        "every object with its internal name, label, type, position, key "
-        "dimensions, and visibility (as JSON). Call this before modifying or "
-        "referring to existing geometry so you know what's there."
+        "Inspect the active FreeCAD document: returns its name, its overall "
+        "bounding box, and a list of every object with its internal name, "
+        "label, type, position, key dimensions, bounding box, and visibility "
+        "(as JSON). Call this before modifying or referring to existing "
+        "geometry so you know what's there -- the bounding boxes are also the "
+        "quickest way to find x_min/x_max/y_min/y_max/z_min/z_max values for "
+        "capture_view/view_sketch_svg's crop params."
     ),
     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
 }
@@ -453,6 +467,10 @@ def _run_get_objects(args):
         if dims:
             info["dimensions"] = dims
 
+        shape = getattr(obj, "Shape", None)
+        if shape is not None and not shape.isNull():
+            info["bounding_box"] = _bbox_dict(shape.BoundBox)
+
         view = getattr(obj, "ViewObject", None)
         if view is not None:
             try:
@@ -465,10 +483,11 @@ def _run_get_objects(args):
 
         objects.append(info)
 
-    return json.dumps(
-        {"document": doc.Label, "object_count": len(objects), "objects": objects},
-        indent=2,
-    )
+    result = {"document": doc.Label, "object_count": len(objects), "objects": objects}
+    scene_bbox = _document_bbox(doc)
+    if scene_bbox.XMin <= scene_bbox.XMax:
+        result["bounding_box"] = _bbox_dict(scene_bbox)
+    return json.dumps(result, indent=2)
 
 
 _RUN_PYTHON_SCHEMA = {
