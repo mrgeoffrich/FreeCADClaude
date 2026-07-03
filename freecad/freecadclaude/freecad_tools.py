@@ -992,7 +992,7 @@ _VIEW_PRESETS = {
 
 #: View's own render-backend preference. Forced to an offscreen-safe value
 #: for the duration of a capture (see _run_capture_view) -- "GrabFramebuffer"
-#: reads whatever's currently painted on screen, which our hidden view never has.
+#: reads whatever's currently painted on screen, which our throwaway view never has.
 _VIEW_PREF_PATH = "User parameter:BaseApp/Preferences/View"
 
 #: Background for saveImage on every raster capture (capture_view/crop_view/
@@ -1035,25 +1035,28 @@ def _force_flat_lines(view):
 
 
 def _offscreen_view(doc):
-    """A throwaway, hidden 3D view of `doc`, for capture_view to render
-    through instead of whatever view/tab the user actually has open --
-    so a screenshot never hijacks their camera, and never fails just because
-    a non-3D tab (e.g. a Spreadsheet) or a different document happens to be
+    """A throwaway 3D view of `doc`, for capture_view to render through
+    instead of whatever view/tab the user actually has open -- so a
+    screenshot never hijacks their camera, and never fails just because a
+    non-3D tab (e.g. a Spreadsheet) or a different document happens to be
     focused. Returns (view, subwindow, prev_view); view/subwindow may be
     None on failure.
 
     Gui::Document::createView() unconditionally shows and activates the new
-    view -- it exists for the "split view" feature, not headless use -- so we
-    hide the Qt subwindow it lands in and restore whatever was active
-    immediately after, all within this one call. Qt only actually paints a
-    widget on the next event-loop turn, never synchronously inside show(), so
-    nothing visibly flashes and other tools' SendMsgToActiveView keeps
-    targeting the user's real view.
+    view (it exists for the "split view" feature, not headless use), so it
+    briefly becomes the active tab while the capture runs. That's fine to let
+    happen -- the whole tool call is one blocked GUI-thread event, so Qt never
+    gets a turn to paint it anyway. An earlier version tried to hide the
+    subwindow and restore focus immediately, before the capture even ran; that
+    extra churn (deactivating/hiding a window Qt still considered "active")
+    was what confused QMdiArea's own activation-history bookkeeping and left
+    the user's tabbed layout scrambled after close() -- e.g. the Start tab or
+    the document reappearing untabbed. Letting the new view become active
+    normally, then closing it and reasserting `prev_view` exactly once (see
+    _close_offscreen_view), is the sequence Qt's bookkeeping handles cleanly.
 
-    prev_view is also handed back to the caller so _close_offscreen_view can
-    reassert it once more after the throwaway subwindow is actually closed
-    (see that function -- this is what fixes the rare case where the user's
-    tabbed layout gets scrambled, e.g. the Start tab reappearing).
+    prev_view is handed back to the caller so _close_offscreen_view can
+    reactivate it once the throwaway subwindow is actually closed.
     """
     import FreeCADGui
 
@@ -1069,32 +1072,26 @@ def _offscreen_view(doc):
 
     # viewTop()/viewIsometric()/fitAll() etc. animate the camera over several
     # QTimer ticks by default and return before the animation finishes; since
-    # this view is never shown, the event loop never advances the animation
-    # and saveImage() would capture the pre-transition (default) orientation.
-    # Disabling animation makes those calls apply immediately/synchronously.
+    # the event loop never turns during this call, disable animation so those
+    # calls apply immediately/synchronously instead of capturing mid-transition.
     view.setAnimationEnabled(False)
     _force_flat_lines(view)
 
     subwindow = next(iter(_mdi_subwindows() - before), None)
-    if subwindow is not None:
-        subwindow.hide()
-    if prev_view is not None:
-        FreeCADGui.getMainWindow().setActiveWindow(prev_view)
     return view, subwindow, prev_view
 
 
 def _close_offscreen_view(subwindow, prev_view=None):
+    """Tear down the throwaway view and hand focus back to whatever the user
+    actually had open. Closing a QMdiSubWindow makes Qt re-pick an active
+    subwindow via its own activation-history bookkeeping; reasserting
+    `prev_view` afterwards makes sure that pick is the user's real previous
+    view, not whatever QMdiArea happened to land on."""
     if subwindow is not None:
         try:
             subwindow.close()  # WA_DeleteOnClose -- also destroys the inner view
         except Exception:  # noqa: BLE001
             pass
-    # Closing a QMdiSubWindow (even a hidden one) makes Qt re-pick an active
-    # subwindow via its own activation-history bookkeeping, which can land on
-    # the wrong one and desync FreeCAD's tabbed MDI area from what's actually
-    # active -- seen in the wild as the Start tab and the document both
-    # reappearing as untabbed floating windows. Reassert the real previous
-    # view now that the close event has fully processed, not just beforehand.
     if prev_view is not None:
         try:
             import FreeCADGui
@@ -1141,7 +1138,7 @@ def _frame_camera_on_box(view, box, aspect, margin=1.06):
     camera fields directly.
 
     This replaces the old boxZoom-based crop, which worked in the offscreen
-    viewer's pixel space -- but that hidden view is never realized at the render
+    viewer's pixel space -- but that throwaway view is never realized at the render
     size, so boxZoom's pixel math ran against a mismatched/degenerate viewport
     and mis-framed (blank images, or a sliver of unrelated geometry over-zoomed),
     worst of all under rotated iso/orbit cameras. Setting height/position/aspect
@@ -1583,7 +1580,7 @@ def _run_capture_user_view(args):
     # GrabFramebuffer reads whatever's already painted on screen -- the user's
     # real camera, draw style and background, unchanged -- as opposed to
     # FramebufferObject/CoinOffscreenRenderer, which re-render the scene (and
-    # are what the hidden offscreen views elsewhere in this file need, since
+    # are what the throwaway offscreen views elsewhere in this file need, since
     # they're never actually painted). Only valid because this view IS visible.
     params = FreeCAD.ParamGet(_VIEW_PREF_PATH)
     prev_method = params.GetString("SavePicture", "")

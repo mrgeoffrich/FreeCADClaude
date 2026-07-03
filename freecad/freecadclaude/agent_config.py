@@ -11,7 +11,7 @@ import os
 
 import FreeCAD
 
-DEFAULT_MODEL = "claude-sonnet-5"
+DEFAULT_MODEL = "claude-opus-4-8"
 
 #: Reasoning effort passed to the CLI as --effort. Pinning it stops the addon
 #: inheriting your global Claude Code effortLevel (which can be xhigh/max and
