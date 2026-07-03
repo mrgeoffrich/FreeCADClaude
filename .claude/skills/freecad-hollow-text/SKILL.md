@@ -90,28 +90,70 @@ shrink inward at all.
 
 5. **Hollow the merged cluster profile by growing outward, never shrinking:**
    - The cavity is the merged profile itself, untouched — no offset needed on
-     it at all. LEDs thread through the letter's natural stroke shape.
-   - The wall is a *second*, larger profile: offset the merged profile's
-     **outer wire only** (drop any inner hole wires — see below) outward by
-     `+wall` via `makeOffset2D(wall, join=0, fill=True, ...)`. Positive/
-     outward offsets are the robust direction in OCCT: convex growth at
-     concave corners diverges instead of self-intersecting.
+     it at all. LEDs thread through the letter's natural stroke shape, and any
+     enclosed counter (see step 6) stays solid because it's already a hole in
+     this same profile.
+   - The wall is a *second*, larger profile, built in two steps (step 6
+     explains why the outer wire is used on its own):
+     1. Offset the cluster's **outer wire only** —
+        `Part.Face(cluster_face.OuterWire)`, dropping any inner hole wires —
+        outward by `+wall` via `makeOffset2D(wall, join=0, fill=True,
+        openResult=False, intersection=False)`. Positive/outward offsets are
+        the robust direction in OCCT: convex growth at concave corners
+        diverges instead of self-intersecting.
+     2. **Fuse that offset result back onto the outer-wire-only face**
+        (`.fuse()` + `.removeSplitter()`) before extruding. `fill=True`'s
+        docstring reads "the output is a face filling the space covered by
+        offset," which reads like it hands back the whole grown blob
+        (original + margin) — it doesn't. It's only the thin swept border
+        strip *between* the original boundary and the offset boundary
+        (confirmed empirically: an outer face of area 262mm² offset by
+        1.8mm produces a strip of area ~200mm², not ~280mm²; area scales
+        roughly linearly with the offset distance, consistent with
+        perimeter × offset, not blob growth). Skip this fuse and the wall
+        silently loses all its interior fill — harmless for a holeless
+        letter (see step 6) but wrong for any letter with a counter.
    - Extrude both profiles to the target height, `outer_solid.cut(inner_solid)`
-     → one hollow "tube" per cluster.
+     → one hollow "tube" per cluster, possibly plus separate solid "islands"
+     for any filled counters (see step 6) — not necessarily one solid.
    - Try a wall-thickness candidate list from thickest to thinnest (e.g.
-     `[1.8, 1.2, 0.8, 0.5]`) and take the first that yields a valid single
-     solid — a script font's thinnest cluster may need a smaller wall than a
-     blockier one, and there's no way to know which without trying.
+     `[1.8, 1.2, 0.8, 0.5]`) and take the first that yields a valid solid — a
+     script font's thinnest cluster may need a smaller wall than a blockier
+     one, and there's no way to know which without trying. Don't require
+     exactly one solid (`len(Solids) == 1`); see step 6 for why.
 
-6. **Drop inner hole wires before offsetting a cluster's outer boundary.** A
-   font's own enclosed counter (e.g. a looped "e") is a *hole* in the glyph
-   face. Offsetting a face-with-a-hole outward also shrinks the hole inward —
-   resurrecting the exact "no room to shrink" failure this whole approach
-   exists to avoid, just at the hole boundary instead of the outer one. Build
-   the outer offset from `Part.Face(cluster_face.OuterWire)` only, so tiny
-   counters get filled solid instead. An LED channel can't loop through a
-   counter that small anyway — this is a deliberate simplification, not a
-   defect.
+6. **Enclosed counters (e.g. a looped "e" or "o") stay filled solid, as
+   separate islands.** A font's own enclosed counter is a *hole* in the glyph
+   face. Two things follow from that:
+   - **The outer wall offset must ignore it.** Offsetting a face-with-a-hole
+     outward also shrinks the hole inward — resurrecting the exact "no room
+     to shrink" failure this whole approach exists to avoid, just at the hole
+     boundary instead of the outer one. That's why step 5's wall offset
+     starts from `Part.Face(cluster_face.OuterWire)` — outer wire only, hole
+     dropped — rather than the cluster face itself.
+   - **But the counter must still end up filled**, not swallowed into the
+     open cavity. Because the outer-wire-only face treats the counter's
+     footprint as solid, and step 5's fuse-back-on step (not the bare offset
+     strip alone) preserves that fill, the counter's footprint ends up with
+     material in `outer_solid` but *not* in `inner_solid` (which extrudes the
+     real face, hole intact) — so `outer_solid.cut(inner_solid)` leaves it
+     standing. Skip the fuse-back-on step (i.e. use the bare offset strip as
+     `outer_solid`, as an earlier version of this skill did) and this
+     silently breaks: the strip only traces the outer boundary and never
+     covers the counter's interior, so the cut leaves nothing there and the
+     counter becomes part of the open cavity — a visibly hollow ring where a
+     filled loop was expected. This only shows up from an angled/shaded 3D
+     view; a flat top-down orthographic capture hides it — verify hollow
+     text with `capture_view` from an angle, not just from directly above.
+   - **Heads-up for 3D printing:** a filled counter typically ends up as its
+     own separate solid, not fused to the surrounding wall — most fonts don't
+     give the counter island and the wall a shared boundary edge to weld
+     along (confirmed on Pacifico "Juliette" at 120mm wide/8mm deep: filling
+     all counters solid took the final assembly from 2 solids to 9). That's
+     fine for viewing, but a floating island isn't anchored to the channel
+     walls — flag it to the user so they can plan support (e.g. resting the
+     piece on a baseplate) if printing. Don't auto-fuse the islands onto the
+     wall to "solve" this; that's a separate, unrequested feature.
 
 7. **Bridge clusters that don't touch at all** (e.g. a genuinely separate
    word, or a stray "i" dot far from its stem) with a plain **solid** web —
@@ -153,7 +195,10 @@ second" rule applies here too:
   expected softening of the letterforms, not a bug. Mention it if the user
   seems to expect an exact silhouette match.
 - **Verify afterward**, same discipline as any `run_python` step:
-  `get_objects`/`get_diagnostics` for a single valid solid, and sanity-check
-  that `Volume / (bbox height)` roughly matches the sum of the flat end-cap
-  face areas — a segfault-free run doesn't guarantee the geometry is actually
-  hollow rather than a solid blob.
+  `get_objects`/`get_diagnostics` for a valid shape (one or more solids — more
+  than one is expected once any cluster has a filled counter, see step 6), and
+  sanity-check that `Volume / (bbox height)` roughly matches the sum of the
+  flat end-cap face areas — a segfault-free run doesn't guarantee the geometry
+  is actually hollow rather than a solid blob. Also `capture_view` from an
+  angled/shaded 3D view, not just a flat top-down one — a wrongly-open counter
+  (step 6) is invisible from directly above.

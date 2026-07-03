@@ -75,21 +75,26 @@ def merge_cluster_faces(indices):
 
 ```python
 def hollow_profile(face, height, wall_candidates):
-    """Cavity = face itself, untouched. Wall = grown outward from its outer
-    wire only. Never shrinks -- that's the whole point."""
+    """Cavity = face itself (holes/counters excluded, so they stay solid).
+    Wall = outer boundary grown outward, fused back onto the full outer
+    silhouette (not just the hole-dropping outer_only alone) before cutting
+    the cavity -- otherwise makeOffset2D(fill=True) returns only the thin
+    swept strip, not a filled blob, and any counter never gets material to
+    begin with."""
     outer_only = Part.Face(face.OuterWire)
     for wall in wall_candidates:
         try:
-            outer_face = outer_only.makeOffset2D(wall, join=0, fill=True,
-                                                  openResult=False, intersection=False)
-            outer_face = outer_face.removeSplitter()
-            if len(outer_face.Faces) != 1:
-                continue  # hole vanished/split oddly at this wall -- try smaller
-            outer_solid = outer_face.Faces[0].extrude(App.Vector(0, 0, height))
+            strip = outer_only.makeOffset2D(wall, join=0, fill=True,
+                                             openResult=False, intersection=False)
+            grown = outer_only.fuse(strip)
+            grown = grown.removeSplitter()
+            if len(grown.Faces) != 1:
+                continue  # outer boundary split oddly at this wall -- try smaller
+            outer_solid = grown.Faces[0].extrude(App.Vector(0, 0, height))
             inner_solid = face.extrude(App.Vector(0, 0, height))
             tube = outer_solid.cut(inner_solid)
             tube = tube.removeSplitter()
-            if tube.isValid() and len(tube.Solids) == 1:
+            if tube.isValid() and len(tube.Solids) >= 1:
                 return tube, wall
         except Exception:
             continue
@@ -97,10 +102,15 @@ def hollow_profile(face, height, wall_candidates):
 ```
 
 Call `hollow_profile` once per cluster (or once per face, for the rare
-cluster that didn't merge into one). If a cluster falls back to solid (no
-wall in the candidate list worked), say so plainly rather than silently
-shipping a letter with no channel — the user may want a smaller minimum
-candidate, or may be fine with that one letter solid.
+cluster that didn't merge into one). A cluster with a filled counter (a
+looped "e", "o", etc.) typically returns *more than one* solid — the tube
+plus one separate island per counter, since most fonts don't give the
+island a shared edge with the wall to weld along; that's expected, not a
+failure (see SKILL.md step 6 for the 3D-printing heads-up on floating
+islands). If a cluster falls back to solid (no wall in the candidate list
+worked at all), say so plainly rather than silently shipping a letter with
+no channel — the user may want a smaller minimum candidate, or may be fine
+with that one letter solid.
 
 ## Step 7: bridge disjoint clusters
 
@@ -149,16 +159,22 @@ result = {
 print(result)
 ```
 
-`len(final.Solids) == 1` and `is_valid == True` are the two things worth
+`is_valid == True` and `len(final.Solids) >= 1` are the two things worth
 checking before calling it done — same as `result` reads back through
 `run_python`'s return channel per `freecad-run-python`'s execution model.
+Don't expect exactly 1: any cluster with a filled counter (SKILL.md step 6)
+contributes its own separate solid island on top of the main tube(s), so a
+healthy result is often several solids, not one.
 
 ## What "good" looks like when verified
 
 From the validated run (Pacifico "Juliette", 120mm wide, 8mm deep, wall
-1.2–1.8mm depending on cluster): one valid solid, bbox height matches the
-extrusion height to within OCCT's usual tolerance (~0.01mm), and
-`Volume / height` roughly equals the sum of the flat end-cap face areas —
-confirming a genuine constant-cross-section hollow shape rather than a solid
-blob or a broken partial shell. Use `get_objects`/`get_diagnostics` after the
-call the same way you would for any `run_python` step.
+1.2–1.8mm depending on cluster): 9 valid solids (the tube pieces plus one
+filled island per enclosed counter — up from 2 solids before counters were
+fixed to fill correctly), bbox height matches the extrusion height to within
+OCCT's usual tolerance (~0.01mm), and `Volume / height` roughly equals the
+sum of the flat end-cap face areas — confirming a genuine constant-
+cross-section hollow shape rather than a solid blob or a broken partial
+shell. Use `get_objects`/`get_diagnostics` after the call the same way you
+would for any `run_python` step, and `capture_view` from an angle (not
+straight down) to actually see whether counters came out filled.
