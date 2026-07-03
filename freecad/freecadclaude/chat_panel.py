@@ -444,12 +444,10 @@ class ChatWidget(QtWidgets.QWidget):
     def _do_render(self):
         """Flush the live streamed entries."""
         self._render_timer.stop()
-        pinned = self.transcript_view.is_pinned()
         if self._live_think_entry is not None:
             self._live_think_entry.flush()
         if self._live_entry is not None:
             self._live_entry.flush()
-        self.transcript_view.scroll_to_bottom_if_pinned(pinned)
 
     def _on_new(self):
         """Start a fresh conversation: reset the agent's session and clear panels."""

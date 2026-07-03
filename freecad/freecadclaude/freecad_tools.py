@@ -640,13 +640,6 @@ def _run_python(args):
             msg += "\n--- stdout before error ---\n" + captured
         return msg
 
-    try:
-        import FreeCADGui
-
-        FreeCADGui.SendMsgToActiveView("ViewFit")
-    except Exception:  # noqa: BLE001
-        pass
-
     parts = ["OK (committed)."]
     captured = stdout.getvalue()
     if captured:
@@ -1111,42 +1104,171 @@ def _close_offscreen_view(subwindow, prev_view=None):
             pass
 
 
-def _pixel_bounds_for_box(view, box, width, height):
-    """Pixel-space (xmin, ymin, xmax, ymax) framing `box` (a FreeCAD.BoundBox)
-    under `view`'s CURRENT camera, for boxZoom.
+def _camera_basis(cam):
+    """(right, up, forward) unit FreeCAD.Vectors of an SoCamera's orientation in
+    world coords -- forward is the look-along direction. Derived from the node's
+    orientation quaternion so it's exact regardless of preset/orbit."""
+    import FreeCAD
 
-    Self-calibrated by sampling getPointOnFocalPlane at three known pixel
-    corners rather than assuming any particular screen-axis convention --
-    orthographic projection makes that sampling exact, and it works
-    regardless of which preset (including iso) set up the camera. Returns
-    None if the calibration is degenerate (e.g. a zero-size viewport).
+    q = cam.orientation.getValue().getValue()  # (x, y, z, w) quaternion
+    rot = FreeCAD.Rotation(q[0], q[1], q[2], q[3])
+    return (
+        rot.multVec(FreeCAD.Vector(1, 0, 0)),
+        rot.multVec(FreeCAD.Vector(0, 1, 0)),
+        rot.multVec(FreeCAD.Vector(0, 0, -1)),
+    )
+
+
+def _ortho_camera(view):
+    """`view`'s camera node iff it's an orthographic camera, else None. The
+    analytic framing below only holds for orthographic projection (which is
+    what capture_view uses); callers fall back to the plain fitAll frame
+    otherwise."""
+    try:
+        from pivy import coin
+
+        cam = view.getCameraNode()
+        if cam is not None and cam.isOfType(coin.SoOrthographicCamera.getClassTypeId()):
+            return cam
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _frame_camera_on_box(view, box, aspect, margin=1.06):
+    """Aim `view`'s ORTHOGRAPHIC camera at world BoundBox `box` and scale it so
+    the box fills a viewport of `aspect` (= render width/height), by writing the
+    camera fields directly.
+
+    This replaces the old boxZoom-based crop, which worked in the offscreen
+    viewer's pixel space -- but that hidden view is never realized at the render
+    size, so boxZoom's pixel math ran against a mismatched/degenerate viewport
+    and mis-framed (blank images, or a sliver of unrelated geometry over-zoomed),
+    worst of all under rotated iso/orbit cameras. Setting height/position/aspect
+    on the camera node is viewport-independent, so it frames the same at any
+    (or no) realized widget size. Returns True on success, False if the camera
+    isn't orthographic or the box is degenerate (caller keeps the fitAll frame).
     """
     import FreeCAD
 
-    p00 = view.getPointOnFocalPlane(0, 0)
-    pw0 = view.getPointOnFocalPlane(width, 0)
-    p0h = view.getPointOnFocalPlane(0, height)
-    right = (pw0 - p00) * (1.0 / width)
-    down = (p0h - p00) * (1.0 / height)
+    cam = _ortho_camera(view)
+    if cam is None:
+        return False
+    try:
+        right, up, fwd = _camera_basis(cam)
+        center = FreeCAD.Vector(
+            (box.XMin + box.XMax) / 2.0,
+            (box.YMin + box.YMax) / 2.0,
+            (box.ZMin + box.ZMax) / 2.0,
+        )
+        # Half-extents of the box measured along the camera's own axes: how wide
+        # (hu), tall (hv) and deep (hd) it is on screen. min/max over the 8
+        # corners gives the tight screen-aligned bound for any orientation.
+        hu = hv = hd = 0.0
+        for cx in (box.XMin, box.XMax):
+            for cy in (box.YMin, box.YMax):
+                for cz in (box.ZMin, box.ZMax):
+                    d = FreeCAD.Vector(cx, cy, cz) - center
+                    hu = max(hu, abs(d.dot(right)))
+                    hv = max(hv, abs(d.dot(up)))
+                    hd = max(hd, abs(d.dot(fwd)))
+        if hu <= 1e-9 and hv <= 1e-9:
+            return False
+        # Ortho height that contains the box both ways at the render's aspect.
+        height = 2.0 * max(hv, hu / aspect) * margin
+        if height <= 1e-9:
+            return False
+        # Ortho scale is set by `height`, not distance, so the standoff only has
+        # to keep the box comfortably between the near/far planes.
+        standoff = 2.0 * hd + height + 1.0
+        eye = center - fwd * standoff
+        cam.position.setValue(eye.x, eye.y, eye.z)
+        cam.focalDistance.setValue(standoff)
+        cam.aspectRatio.setValue(aspect)
+        cam.height.setValue(height)
+        pad = height * 0.1 + 1.0
+        cam.nearDistance.setValue(max(1e-4, standoff - hd - pad))
+        cam.farDistance.setValue(standoff + hd + pad)
+        return True
+    except Exception:  # noqa: BLE001 - any coin/API hiccup -> keep the fitAll frame
+        return False
 
-    rr, rd, dd = right.dot(right), right.dot(down), down.dot(down)
-    det = rr * dd - rd * rd
-    if abs(det) < 1e-9:
-        return None
 
-    def pixel_of(point):
-        diff = point - p00
-        br, bd = diff.dot(right), diff.dot(down)
-        return (dd * br - rd * bd) / det, (rr * bd - rd * br) / det
+def _crop_camera_frame(view, x1, y1, x2, y2, aspect):
+    """Zoom `view`'s ORTHOGRAPHIC camera into the normalized sub-rectangle
+    (x1,y1)-(x2,y2) of what it currently frames (0-1, y from the TOP), by
+    offsetting and rescaling the camera node directly -- the viewport-independent
+    equivalent of the old boxZoom, for crop_view. Returns True on success, False
+    if the camera isn't orthographic."""
+    import FreeCAD
 
-    corners = [
-        FreeCAD.Vector(x, y, z)
-        for x in (box.XMin, box.XMax)
-        for y in (box.YMin, box.YMax)
-        for z in (box.ZMin, box.ZMax)
-    ]
-    xs, ys = zip(*(pixel_of(c) for c in corners))
-    return int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))
+    cam = _ortho_camera(view)
+    if cam is None:
+        return False
+    try:
+        right, up, _fwd = _camera_basis(cam)
+        height = cam.height.getValue()
+        vis_w = height * aspect
+        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        # Shift the eye laterally so the sub-rect's centre becomes the new centre
+        # (image y grows downward, i.e. against +up).
+        offset = right * ((cx - 0.5) * vis_w) + up * ((0.5 - cy) * height)
+        p = cam.position.getValue().getValue()
+        eye = FreeCAD.Vector(p[0], p[1], p[2]) + offset
+        cam.position.setValue(eye.x, eye.y, eye.z)
+        # Grow the smaller side to the render aspect so nothing is squashed.
+        cam.height.setValue(max(height * max(y2 - y1, x2 - x1), 1e-4))
+        cam.aspectRatio.setValue(aspect)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _save_view_png(view, png_path, width, height):
+    """Render `view` to `png_path` at width x height on the _CAPTURE_BG
+    background, forcing the FBO save method (and restoring the user's) -- the
+    one place capture_view/crop_view/cutaway actually write an image."""
+    import FreeCAD
+
+    params = FreeCAD.ParamGet(_VIEW_PREF_PATH)
+    prev_method = params.GetString("SavePicture", "")
+    params.SetString("SavePicture", "FramebufferObject")
+    try:
+        view.saveImage(png_path, width, height, _CAPTURE_BG)
+    finally:
+        params.SetString("SavePicture", prev_method)
+
+
+def _looks_blank(png_path):
+    """True if the saved PNG is essentially just the background (plus the tiny
+    axis gizmo) -- i.e. the framing missed the geometry. Lets the capture tools
+    tell Claude 'that came out empty' instead of silently handing back a black
+    image it can't tell apart from a genuinely wrong/hidden model. Best-effort:
+    any read failure returns False (assume not blank)."""
+    try:
+        from PySide import QtGui
+
+        img = QtGui.QImage(png_path)
+        if img.isNull() or img.width() == 0 or img.height() == 0:
+            return False
+        w, h = img.width(), img.height()
+        bg = img.pixelColor(0, 0)  # a corner is always background
+        br, bgc, bb = bg.red(), bg.green(), bg.blue()
+        step = max(1, min(w, h) // 150)  # subsample to ~30k points
+        content = total = 0
+        y = 0
+        while y < h:
+            x = 0
+            while x < w:
+                c = img.pixelColor(x, y)
+                if abs(c.red() - br) + abs(c.green() - bgc) + abs(c.blue() - bb) > 60:
+                    content += 1
+                total += 1
+                x += step
+            y += step
+        return total > 0 and (content / total) < 0.004
+    except Exception:  # noqa: BLE001
+        return False
 
 
 #: The exact camera + render size of the most recent capture_view, saved so
@@ -1154,14 +1276,6 @@ def _pixel_bounds_for_box(view, box, width, height):
 #: sub-rectangle of it (see _run_crop_view). Written at the tail of
 #: _run_capture_view while the offscreen view is still alive.
 _last_capture = {"camera": None, "width": None, "height": None, "doc": None}
-
-#: crop_view maps a normalized image y (0 = TOP, matching how saveImage writes
-#: PNG rows top-first) straight to boxZoom's pixel y. That holds when boxZoom
-#: uses a top-left pixel origin -- which is the same convention
-#: _pixel_bounds_for_box already relies on (it labels the +y focal-plane
-#: direction "down" and feeds the result to boxZoom, and world-space cropping
-#: works). Flip to False only if a build renders crops vertically mirrored.
-_BOXZOOM_Y_TOPLEFT = True
 
 
 def _orbit_rotation(azimuth_deg, elevation_deg):
@@ -1321,12 +1435,9 @@ def _run_capture_view(args):
     png_path = _artifact_path("captures", label, ".png")
     extents = _extent_args(args)
 
-    crop_warning = None
+    warnings = []
     measured = None
     try:
-        # Match the render's own pixel size before framing -- boxZoom below
-        # works in this widget's pixel space, which must line up with the
-        # width/height saveImage renders at or the crop lands off-target.
         if subwindow is not None:
             subwindow.resize(width, height)
 
@@ -1334,44 +1445,56 @@ def _run_capture_view(args):
         if err:
             return err
 
+        aspect = float(width) / float(height)
         if extents:
             scene_bbox = _document_bbox(doc)
             if scene_bbox.XMin <= scene_bbox.XMax or all(k in extents for k in _EXTENT_KEYS):
                 crop_box = _crop_bbox(scene_bbox, extents)
-                pixels = _pixel_bounds_for_box(view, crop_box, width, height)
-                if pixels:
-                    try:
-                        view.boxZoom(*pixels)
-                    except Exception as exc:  # noqa: BLE001
-                        crop_warning = (
-                            f"Warning: could not apply the requested crop ({exc!r}) -- "
-                            "showing the full extent instead."
-                        )
-                else:
-                    crop_warning = (
-                        "Warning: could not compute a pixel region for the requested "
-                        "crop -- showing the full extent instead."
+                if not _frame_camera_on_box(view, crop_box, aspect):
+                    warnings.append(
+                        "Warning: could not frame the requested crop on this build -- "
+                        "showing the full extent instead."
                     )
+                    view.fitAll()
             else:
-                crop_warning = (
+                warnings.append(
                     "Warning: the document has no real geometry to crop against -- "
                     "showing the full extent instead."
                 )
 
-        params = FreeCAD.ParamGet(_VIEW_PREF_PATH)
-        prev_method = params.GetString("SavePicture", "")
-        params.SetString("SavePicture", "FramebufferObject")
-        try:
-            view.saveImage(png_path, width, height, _CAPTURE_BG)
-        finally:
-            params.SetString("SavePicture", prev_method)
+        _save_view_png(view, png_path, width, height)
+
+        # Don't silently hand back a black frame: if it's essentially empty, tell
+        # Claude (and for a crop, retry once at the full fitAll frame) so it gets
+        # a signal instead of burning turns re-shooting a blank it can't diagnose.
+        if _looks_blank(png_path):
+            if extents and not warnings:
+                view.fitAll()
+                _save_view_png(view, png_path, width, height)
+                if _looks_blank(png_path):
+                    warnings.append(
+                        "Warning: the view is empty -- no visible geometry to show "
+                        "(is everything hidden?)."
+                    )
+                else:
+                    warnings.append(
+                        "Warning: the requested crop region came out empty at this "
+                        "camera angle -- showing the full view instead. Re-check the "
+                        "x_min..z_max values against get_objects."
+                    )
+            elif not warnings:
+                warnings.append(
+                    "Warning: the view is empty -- no visible geometry to show at this "
+                    "angle (is everything hidden, or is the object off to one side?)."
+                )
+
         # Read back the actual camera angle so the result can report it (e.g.
-        # what az/el 'iso' resolved to) -- direction is unchanged by fitAll,
-        # boxZoom or saveImage, so measuring here matches the saved image.
+        # what az/el 'iso' resolved to) -- direction is unchanged by fitAll or
+        # saveImage, so measuring here matches the saved image.
         measured = _orbit_angles_from_view(view)
         # Remember this exact framing so crop_view can reproduce it and zoom
         # into a sub-region (getCamera() serializes the Inventor camera node;
-        # setCamera() restores it -- independent of preset/fitAll/boxZoom).
+        # setCamera() restores it -- independent of how the frame was set).
         try:
             _last_capture.update(
                 camera=view.getCamera(), width=width, height=height, doc=doc.Name
@@ -1401,9 +1524,84 @@ def _run_capture_view(args):
             "elevation (azimuth + swings right / - left; elevation + lifts the "
             "camera for a more top-down look / - drops it to look upward)."
         )
-    if crop_warning:
-        text += f"\n\n{crop_warning}"
+    if warnings:
+        text += "\n\n" + "\n".join(warnings)
     return text, png_path
+
+
+_CAPTURE_USER_VIEW_SCHEMA = {
+    "name": "capture_user_view",
+    "description": (
+        "Take a PNG screenshot of EXACTLY what the user is currently looking at "
+        "in their own 3D view -- their real camera angle, zoom, pan, draw style "
+        "(shaded/wireframe/etc.) and background. Unlike capture_view (which "
+        "renders through a separate auto-framed offscreen camera and never "
+        "touches the user's view), this reads the already-rendered pixels of "
+        "the user's actual active view, so it never moves their camera or "
+        "changes anything about the document either -- it's purely read-only. "
+        "Reach for this when the user is pointing at or describing something "
+        "in front of them right now ('look at this', 'why does this edge look "
+        "wrong', 'see what I mean?') and you want to see precisely what they "
+        "see, instead of guessing an angle with capture_view. Fails if the "
+        "active tab isn't a 3D view (e.g. a Spreadsheet or TechDraw page is "
+        "focused) -- ask the user to click into their 3D view and try again."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "width": {
+                "type": "integer",
+                "description": (
+                    "Max image width px (default 1280). The user's real view's "
+                    "current aspect ratio is preserved, so height follows "
+                    "automatically -- this only caps output size."
+                ),
+            },
+        },
+        "required": [],
+        "additionalProperties": False,
+    },
+}
+
+
+def _run_capture_user_view(args):
+    import FreeCAD
+    import FreeCADGui
+
+    view = FreeCADGui.activeView()
+    if view is None or not hasattr(view, "saveImage"):
+        return (
+            "The active tab isn't a 3D view -- click into the user's 3D view "
+            "(not a Spreadsheet/TechDraw/other tab) and try again."
+        )
+
+    width = int(args.get("width") or 1280)
+    if width <= 0:
+        width = 1280
+    png_path = _artifact_path("captures", "user_view", ".png")
+
+    # GrabFramebuffer reads whatever's already painted on screen -- the user's
+    # real camera, draw style and background, unchanged -- as opposed to
+    # FramebufferObject/CoinOffscreenRenderer, which re-render the scene (and
+    # are what the hidden offscreen views elsewhere in this file need, since
+    # they're never actually painted). Only valid because this view IS visible.
+    params = FreeCAD.ParamGet(_VIEW_PREF_PATH)
+    prev_method = params.GetString("SavePicture", "")
+    params.SetString("SavePicture", "GrabFramebuffer")
+    try:
+        # Passing only width (no height) -- the GrabFramebuffer backend scales
+        # the captured framebuffer to this width and derives height from its
+        # own aspect ratio, so the user's real window shape is preserved.
+        view.saveImage(png_path, width)
+    except Exception as exc:  # noqa: BLE001
+        return f"Could not capture the active view: {exc!r}"
+    finally:
+        params.SetString("SavePicture", prev_method)
+
+    return (
+        "Captured exactly what the user currently sees in their 3D view, "
+        f"saved to {png_path}."
+    ), png_path
 
 
 _CROP_VIEW_SCHEMA = {
@@ -1482,9 +1680,8 @@ def _run_crop_view(args):
     width = int(_last_capture.get("width") or 1280)
     height = int(_last_capture.get("height") or 960)
 
+    blank = False
     try:
-        # boxZoom works in the viewport's pixel space, so match the render size
-        # (and hence the pixel frame) the saved camera was captured at.
         if subwindow is not None:
             subwindow.resize(width, height)
         try:
@@ -1492,24 +1689,15 @@ def _run_crop_view(args):
         except Exception as exc:  # noqa: BLE001
             return f"Could not reproduce the last camera to crop from: {exc!r}"
 
-        # Normalized image y has its origin at the TOP; flip if this build's
-        # boxZoom counts pixels from the bottom (see _BOXZOOM_Y_TOPLEFT).
-        py1 = y1 if _BOXZOOM_Y_TOPLEFT else (1.0 - y2)
-        py2 = y2 if _BOXZOOM_Y_TOPLEFT else (1.0 - y1)
-        pixels = (int(x1 * width), int(py1 * height), int(x2 * width), int(py2 * height))
-        try:
-            view.boxZoom(*pixels)
-        except Exception as exc:  # noqa: BLE001
-            return f"Could not zoom into the requested region: {exc!r}"
+        if not _crop_camera_frame(view, x1, y1, x2, y2, float(width) / float(height)):
+            return (
+                "Could not zoom into the requested region on this build "
+                "(the last view isn't an orthographic camera)."
+            )
 
         png_path = _artifact_path("captures", "crop", ".png")
-        params = FreeCAD.ParamGet(_VIEW_PREF_PATH)
-        prev_method = params.GetString("SavePicture", "")
-        params.SetString("SavePicture", "FramebufferObject")
-        try:
-            view.saveImage(png_path, width, height, _CAPTURE_BG)
-        finally:
-            params.SetString("SavePicture", prev_method)
+        _save_view_png(view, png_path, width, height)
+        blank = _looks_blank(png_path)
     finally:
         _close_offscreen_view(subwindow, prev_view)
 
@@ -1517,6 +1705,12 @@ def _run_crop_view(args):
         f"Zoomed into ({x1:.2f},{y1:.2f})-({x2:.2f},{y2:.2f}) of the last view and "
         "re-rendered that region at full resolution."
     )
+    if blank:
+        text += (
+            "\n\nWarning: that region came out empty -- nothing there in the last "
+            "view. Pick a sub-rectangle over a visible part of it, or capture_view "
+            "again to reframe."
+        )
     return text, png_path
 
 
@@ -1633,8 +1827,8 @@ def _frame_on_objects(view, doc, names, width, height):
 
     The cutaway clips every visible object regardless; this only tightens the
     camera onto a subset so a specific part fills the frame. Reuses the same
-    self-calibrating pixel-box math as capture_view's world crop, so it works
-    under any preset/orbit camera.
+    viewport-independent camera framing as capture_view's world crop, so it
+    works under any preset/orbit camera.
     """
     import FreeCAD
 
@@ -1650,12 +1844,8 @@ def _frame_on_objects(view, doc, names, width, height):
             box.add(shape.BoundBox)
     if box.XMin > box.XMax:
         return "Warning: none of the requested 'names' have geometry to frame -- showing the whole model."
-    pixels = _pixel_bounds_for_box(view, box, width, height)
-    if pixels:
-        try:
-            view.boxZoom(*pixels)
-        except Exception as exc:  # noqa: BLE001
-            return f"Warning: could not frame the requested objects ({exc!r}) -- showing the whole model."
+    if not _frame_camera_on_box(view, box, float(width) / float(height)):
+        return "Warning: could not frame the requested objects on this build -- showing the whole model."
     if missing:
         return f"Note: no object(s) named {', '.join(missing)} -- framed the rest."
     return None
@@ -1750,8 +1940,6 @@ def _run_cutaway(args):
     measured = None
     degenerate_warning = None
     try:
-        # Match the render's pixel size before framing (boxZoom in _frame_on_objects
-        # works in this widget's pixel space), same as capture_view.
         if subwindow is not None:
             subwindow.resize(width, height)
 
@@ -1775,20 +1963,12 @@ def _run_cutaway(args):
             scene_bbox = _document_bbox(doc)
             if scene_bbox.XMin <= scene_bbox.XMax or all(k in extents for k in _EXTENT_KEYS):
                 crop_box = _crop_bbox(scene_bbox, extents)
-                pixels = _pixel_bounds_for_box(view, crop_box, width, height)
-                if pixels:
-                    try:
-                        view.boxZoom(*pixels)
-                    except Exception as exc:  # noqa: BLE001
-                        crop_warning = (
-                            f"Warning: could not apply the requested crop ({exc!r}) -- "
-                            "showing the full extent instead."
-                        )
-                else:
+                if not _frame_camera_on_box(view, crop_box, float(width) / float(height)):
                     crop_warning = (
-                        "Warning: could not compute a pixel region for the requested "
-                        "crop -- showing the full extent instead."
+                        "Warning: could not frame the requested crop on this build -- "
+                        "showing the full extent instead."
                     )
+                    view.fitAll()
             else:
                 crop_warning = (
                     "Warning: the document has no real geometry to crop against -- "
@@ -1798,7 +1978,7 @@ def _run_cutaway(args):
         if frame_names:
             frame_warning = _frame_on_objects(view, doc, frame_names, width, height)
 
-        # Direction is unchanged by fitAll/boxZoom, so this matches the saved image.
+        # Direction is unchanged by fitAll, so this matches the saved image.
         measured = _orbit_angles_from_view(view)
 
         # Detect the "cut looks unclipped" degenerate case: the camera sits ON
@@ -1824,13 +2004,7 @@ def _run_cutaway(args):
                 "the opposite side (e.g. the opposite 'view' preset, or azimuth+180)."
             )
 
-        params = FreeCAD.ParamGet(_VIEW_PREF_PATH)
-        prev_method = params.GetString("SavePicture", "")
-        params.SetString("SavePicture", "FramebufferObject")
-        try:
-            view.saveImage(png_path, width, height, _CAPTURE_BG)
-        finally:
-            params.SetString("SavePicture", prev_method)
+        _save_view_png(view, png_path, width, height)
     finally:
         _close_offscreen_view(subwindow, prev_view)
 
@@ -2070,6 +2244,7 @@ TOOLS = {
     "get_selection": {"schema": _GET_SELECTION_SCHEMA, "run": _run_get_selection},
     "view_sketch_svg": {"schema": _VIEW_SKETCH_SVG_SCHEMA, "run": _run_view_sketch_svg},
     "capture_view": {"schema": _CAPTURE_VIEW_SCHEMA, "run": _run_capture_view},
+    "capture_user_view": {"schema": _CAPTURE_USER_VIEW_SCHEMA, "run": _run_capture_user_view},
     "crop_view": {"schema": _CROP_VIEW_SCHEMA, "run": _run_crop_view},
     "cutaway": {"schema": _CUTAWAY_SCHEMA, "run": _run_cutaway},
     "export": {"schema": _EXPORT_SCHEMA, "run": _run_export},

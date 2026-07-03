@@ -50,8 +50,9 @@ chat panel (GUI thread)
 
 Registry: `freecad_tools.TOOLS` = name → `{schema, run, confirm?}`. Current set:
 `create_box`, `get_objects`, `get_selection`, `view_sketch_svg`, `capture_view`,
-`crop_view`, `cutaway`, `export`, `inspect_api`, `get_diagnostics`, `run_python`
-(confirm-gated; the general Sketcher/PartDesign/Part path).
+`capture_user_view`, `crop_view`, `cutaway`, `export`, `inspect_api`,
+`get_diagnostics`, `run_python` (confirm-gated; the general Sketcher/PartDesign/
+Part path).
 
 **Adding a tool** is purely additive: add a `{schema, run}` entry. `run(args)`
 executes on the GUI thread and returns a string; the MCP allow-list and the
@@ -89,6 +90,16 @@ not a filled cross-section — Coin's clip doesn't cap); a capped section would 
 a geometry Boolean cut on temporary objects, deliberately not done to keep the
 tool non-mutating like `capture_view`. Both share `_resolve_camera_args`/
 `_apply_camera_plan` for the `view`/`azimuth`/`elevation` angle handling.
+`capture_user_view` is the other sibling, for the opposite situation: instead of
+an auto-framed offscreen camera Claude controls, it screenshots the user's *own*
+active 3D view exactly as painted on screen (their real camera angle, zoom, draw
+style, background) — useful when the user is pointing at something in front of
+them rather than asking Claude to go find an angle. It temporarily flips the
+`SavePicture` preference to `GrabFramebuffer` (reads the already-rendered
+widget — only valid because, unlike the other two, this view is actually
+visible) and restores it in a `finally`; no offscreen view, no camera move, no
+draw-style override — genuinely read-only. Fails with a plain-text message if
+the active tab isn't a 3D view.
 `view_sketch_svg` (exact SVG; for
 3D pass `view=front/top/...` → `TechDraw.projectToSVG` orthographic) is for
 reasoning about exact coordinates as text, not for looking at the shape — its

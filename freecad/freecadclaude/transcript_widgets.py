@@ -202,15 +202,27 @@ class TranscriptView(QtWidgets.QScrollArea):
 
         self._entries = []        # ordered CollapsibleSection list (incl. live ones)
 
+        # Auto-follow the bottom while streaming. Driven by the scrollbar's own
+        # signals rather than a "check pinned, resize, singleShot(0) rescroll"
+        # dance around each content mutation: rangeChanged fires exactly when
+        # Qt finishes recalculating the scrollable range (however many layout
+        # passes a given change takes), so re-pinning there can't read a
+        # stale bar.maximum() the way a fixed-delay timer could. It also
+        # covers every content-mutating path uniformly (streamed text, a
+        # newly-added entry, an expanded tool result, a collapse/expand)
+        # without each call site needing its own pinned/rescroll bookkeeping.
+        self._stick_to_bottom = True
+        bar = self.verticalScrollBar()
+        bar.rangeChanged.connect(self._on_range_changed)
+        bar.valueChanged.connect(self._on_value_changed)
+
     # -- entries -------------------------------------------------------
 
     def add_entry(self, kind, text="", *, collapsed=None, live=False, tool_name=""):
-        pinned = self.is_pinned()
         entry = CollapsibleSection(kind, text, collapsed=collapsed, live=live,
                                     tool_name=tool_name, parent=self.widget())
         self._layout.insertWidget(self._layout.count() - 1, entry)  # before the stretch
         self._entries.append(entry)
-        self.scroll_to_bottom_if_pinned(pinned)
         return entry
 
     def start_live_entry(self, kind, **kw):
@@ -228,17 +240,17 @@ class TranscriptView(QtWidgets.QScrollArea):
 
     # -- scroll pinning --------------------------------------------------
 
-    def is_pinned(self):
-        bar = self.verticalScrollBar()
-        return bar.value() >= bar.maximum() - 8
+    def _on_range_changed(self, _minimum, maximum):
+        if self._stick_to_bottom:
+            self.verticalScrollBar().setValue(maximum)
 
-    def scroll_to_bottom_if_pinned(self, was_pinned):
-        if was_pinned:
-            QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
-
-    def _scroll_to_bottom(self):
+    def _on_value_changed(self, value):
+        # Recomputed on every value change regardless of cause (our own
+        # re-pin above, a streaming resize nudging things, or the user
+        # dragging the scrollbar) -- so scrolling back to the bottom by hand
+        # mid-stream resumes auto-follow, and scrolling away stops it.
         bar = self.verticalScrollBar()
-        bar.setValue(bar.maximum())
+        self._stick_to_bottom = value >= bar.maximum() - 8
 
     # -- ChatWidget._md compatibility -----------------------------------
 
