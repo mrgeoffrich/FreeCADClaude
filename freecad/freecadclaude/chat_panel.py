@@ -57,6 +57,10 @@ _SKILL_COMMANDS = {
         "freecad-run-python",
         "Write/debug the run_python code to build or fix the live document",
     ),
+    "hollow-text": (
+        "freecad-hollow-text",
+        "Turn font text into hollow channel-letter lettering (e.g. LED signage)",
+    ),
 }
 
 #: Cap how much of a tool's result text gets shown in its (collapsed-by-default)
