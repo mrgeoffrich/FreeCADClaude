@@ -2465,31 +2465,32 @@ def summarize_new_failures():
             "Call get_diagnostics for details.")
 
 
-# ---- ineffective-cut diagnostics -------------------------------------------
-# A subtractive PartDesign feature that removes NO material still "succeeds":
-# valid shape, no recompute error, nothing flags it -- yet the solid is
-# unchanged. The overwhelmingly common cause is a wrong cut direction: Pocket/
-# Groove/Hole remove material OPPOSITE the sketch normal by default, so a cut
-# sketched on the same base plane a solid was padded UP from cuts DOWNWARD into
-# empty space and takes away nothing (the exact trap behind "make a hole in the
-# bottom of the star" -> no hole). We catch it by comparing the feature's Shape
-# volume to the feature it cuts into (its BaseFeature): unchanged volume == an
-# empty cut.
+# ---- per-operation feature-change report -----------------------------------
+# A PartDesign feature can "succeed" (valid shape, no recompute error) while
+# doing the wrong thing, and nothing flags it: a cut that removes no material
+# (wrong direction), a feature disconnected from the solid, a no-op dress-up.
+# Rather than special-case each, we snapshot every solid feature's volume
+# contribution and solid count BEFORE a mutating tool runs and diff AFTER, then
+# report -- for every feature the operation created or changed -- how much
+# material it added/removed and how the solid count changed (old -> new). Two
+# specific traps get an escalated, actionable note on top: an empty subtractive
+# cut (with the exact Reversed fix) and a Body that split into >1 disconnected
+# solid.
+
+#: Tools that can mutate document geometry -- the only ones worth snapshotting
+#: for a before/after volume diff (every other tool is read-only, so its diff is
+#: always empty). run_python is the general path; create_box the one shortcut.
+MUTATING_TOOLS = {"run_python", "create_box"}
 
 #: TypeId substrings identifying material-removing PartDesign features. Matched
 #: by substring so the whole family (Pocket/Groove/Hole plus every Subtractive*
 #: primitive/loft/pipe) is covered without enumerating each concrete TypeId.
 _SUBTRACTIVE_MARKERS = ("Pocket", "Groove", "Hole", "Subtractive")
 
-# Volume must drop by at least this fraction of the base for a cut to count as
-# having done something -- purely to absorb float noise; a genuine cut removes a
-# far larger share, an empty one removes exactly zero, so the threshold never
-# straddles a real case.
-_EMPTY_CUT_EPS = 1e-6
-
-#: Names already flagged as ineffective, so a persistently-empty cut isn't
-#: re-announced on every later tool call (mirrors _reported_invalid).
-_reported_ineffective = set()
+# A feature whose |volume contribution| is under this (mm³) is treated as having
+# changed nothing -- a true no-op returns the base shape so the delta is exactly
+# 0.0; this only absorbs float dust. Any real feature contributes far more.
+_NEGLIGIBLE_VOLUME = 1e-3
 
 
 def _is_subtractive_feature(obj):
@@ -2498,39 +2499,58 @@ def _is_subtractive_feature(obj):
     return tid.startswith("PartDesign::") and any(m in tid for m in _SUBTRACTIVE_MARKERS)
 
 
-def _scan_ineffective_cuts(doc):
-    """Subtractive features that removed no material from the solid they cut.
+def _feature_states(doc):
+    """{Name: {label, typeid, contribution, new_solids, old_solids}} for every
+    PartDesign SOLID feature (Pad/Pocket/Revolution/.../Fillet/pattern -- anything
+    derived from PartDesign::Feature, which excludes the Body container, datums
+    and sketches).
 
-    A feature counts as ineffective when its result volume still equals (within
-    float noise) the volume of its BaseFeature -- the feature it subtracts from.
-    Skips: features with no BaseFeature (a subtractive-first feature is a
-    different error, and fails recompute anyway) and features already flagged
-    Invalid/Error (summarize_new_failures reports those). Best-effort per object.
+    ``contribution`` is what the feature itself added (+) or removed (-) from the
+    running solid: its Shape.Volume minus its BaseFeature's (0 for the body's
+    first feature). ``old_solids``/``new_solids`` are the disconnected-solid count
+    before and after it. Best-effort per object; anything unreadable is skipped.
     """
-    bad = []
+    states = {}
     if doc is None:
-        return bad
+        return states
     for obj in doc.Objects:
-        if not _is_subtractive_feature(obj):
-            continue
-        if any(flag in (getattr(obj, "State", None) or []) for flag in _ERROR_FLAGS):
-            continue  # broken recompute -- reported separately, don't double up
-        base = getattr(obj, "BaseFeature", None)
-        if base is None:
-            continue  # first feature in the body: nothing to compare against
-        shape = getattr(obj, "Shape", None)
-        base_shape = getattr(base, "Shape", None)
-        if shape is None or base_shape is None or shape.isNull() or base_shape.isNull():
-            continue
         try:
-            vol, base_vol = shape.Volume, base_shape.Volume
+            if not obj.isDerivedFrom("PartDesign::Feature"):
+                continue
         except Exception:  # noqa: BLE001
             continue
-        if base_vol <= 0:
+        shape = getattr(obj, "Shape", None)
+        if shape is None or shape.isNull():
             continue
-        if vol >= base_vol * (1.0 - _EMPTY_CUT_EPS):
-            bad.append({"name": obj.Name, "label": obj.Label, "type": obj.TypeId})
-    return bad
+        try:
+            new_solids, vol = len(shape.Solids), shape.Volume
+        except Exception:  # noqa: BLE001
+            continue
+        base_shape = getattr(getattr(obj, "BaseFeature", None), "Shape", None)
+        if base_shape is not None and not base_shape.isNull():
+            try:
+                base_vol, old_solids = base_shape.Volume, len(base_shape.Solids)
+            except Exception:  # noqa: BLE001
+                base_vol, old_solids = 0.0, 0
+        else:
+            base_vol, old_solids = 0.0, 0
+        states[obj.Name] = {
+            "label": obj.Label, "typeid": obj.TypeId,
+            "contribution": vol - base_vol,
+            "new_solids": new_solids, "old_solids": old_solids,
+        }
+    return states
+
+
+def feature_snapshot(tool_name):
+    """PartDesign solid-feature states before a mutating tool runs, for
+    post_tool_notes to diff against afterwards -- or None for read-only tools
+    (nothing they do changes geometry, so there's nothing to diff)."""
+    if tool_name not in MUTATING_TOOLS:
+        return None
+    import FreeCAD
+
+    return _feature_states(FreeCAD.ActiveDocument)
 
 
 def _wrong_direction_hint(obj):
@@ -2584,53 +2604,94 @@ def _wrong_direction_hint(obj):
         return None
 
 
-def summarize_ineffective_cuts():
-    """Note about subtractive features that NEWLY cut nothing, or "".
+def _format_feature_change(obj, st):
+    """One report line for a feature the operation created or changed: how much
+    material it added/removed and how the solid count moved -- plus an escalated
+    note for the two silent traps (an empty subtractive cut, or a split into
+    disconnected solids)."""
+    contribution = st["contribution"]
+    old_solids, new_solids = st["old_solids"], st["new_solids"]
+    typ = st["typeid"].split("::")[-1]
+    changed_nothing = abs(contribution) <= _NEGLIGIBLE_VOLUME
+    if contribution > _NEGLIGIBLE_VOLUME:
+        vol_part = f"added {contribution:.1f} mm³"
+    elif contribution < -_NEGLIGIBLE_VOLUME:
+        vol_part = f"removed {-contribution:.1f} mm³"
+    else:
+        vol_part = "no volume change"
+    line = f"{st['label']} ({typ}): {vol_part} · solids {old_solids}→{new_solids}"
 
-    Called alongside summarize_new_failures after each tool call. For each empty
-    cut it works out, where it can, the profile normal, which side the solid is
-    on, and the exact Reversed value to aim the cut into the material -- so Claude
-    corrects the direction in the same turn instead of hunting for a hole that
-    isn't there.
+    escalations = []
+    if changed_nothing and _is_subtractive_feature(obj):
+        hint = _wrong_direction_hint(obj)
+        escalations.append(
+            hint or (
+                "This cut removed nothing -- almost always the wrong direction "
+                "(Pocket/Groove/Hole cut OPPOSITE the sketch normal by default). "
+                "Toggle Reversed, or sketch the cut on the solid's own face, and "
+                "re-check the volume."
+            )
+        )
+    elif changed_nothing:
+        escalations.append(
+            "This feature changed nothing -- check its inputs/references (e.g. an "
+            "empty face/edge selection, or a profile that misses the solid)."
+        )
+    if new_solids > 1:
+        escalations.append(
+            f"The Body is now {new_solids} disconnected solids -- a PartDesign Body "
+            "must be ONE contiguous lump. Make this feature touch/intersect the "
+            "existing solid (or move it to its own Body); a disconnected or split "
+            "solid breaks downstream features."
+        )
+    if escalations:
+        return "⚠ " + line + "\n    " + "\n    ".join(escalations)
+    return line
+
+
+def summarize_feature_changes(before):
+    """Per-operation report of what each PartDesign feature added/removed and how
+    the solid count changed, or "".
+
+    ``before`` is the feature_snapshot() taken before the mutating tool ran; this
+    diffs it against the current state and reports every feature the operation
+    created or changed (a feature whose contribution volume and solid count are
+    both unchanged is skipped). The before/after diff means each note is tied to
+    the operation that caused it -- no cross-call bookkeeping, and read-only tools
+    (before is None) produce nothing.
     """
+    if before is None:
+        return ""
     import FreeCAD
 
-    global _reported_ineffective
+    after = _feature_states(FreeCAD.ActiveDocument)
     doc = FreeCAD.ActiveDocument
-    bad = _scan_ineffective_cuts(doc)
-    names = {b["name"] for b in bad}
-    new = [b for b in bad if b["name"] not in _reported_ineffective]
-    _reported_ineffective = names  # a cut that later works drops out and stays quiet
-    if not new:
-        return ""
     lines = []
-    for b in new:
-        obj = doc.getObject(b["name"]) if doc is not None else None
-        hint = _wrong_direction_hint(obj) if obj is not None else None
-        if hint:
-            lines.append(f"⚠ {b['label']} removed NO material -- the solid is unchanged. {hint}")
-        else:
-            lines.append(
-                f"⚠ {b['label']} removed NO material -- the solid is unchanged, so the "
-                "cut did nothing. PartDesign Pocket/Groove/Hole cut OPPOSITE the sketch "
-                "normal by default, so the cut is on the wrong side of the solid. Flip "
-                f"its direction (toggle Reversed on {b['label']}), or sketch the cut on "
-                "the solid's own face -- a face normal points out of the material, so "
-                "the default cut goes in. Recompute and re-check the volume."
-            )
+    for name, st in after.items():
+        prev = before.get(name)
+        if prev is not None and (
+            round(prev["contribution"], 6) == round(st["contribution"], 6)
+            and prev["new_solids"] == st["new_solids"]
+        ):
+            continue  # untouched by this operation
+        obj = doc.getObject(name) if doc is not None else None
+        lines.append(_format_feature_change(obj, st))
     return "\n".join(lines)
 
 
-def post_tool_notes(tool_name):
+def post_tool_notes(tool_name, before=None):
     """Combined post-call notes to fold into a tool reply: features that newly
-    failed to recompute, and subtractive features that removed no material.
+    failed to recompute, and -- for a mutating tool -- what each PartDesign
+    feature added/removed and how the solid count changed (with the empty-cut and
+    disconnected-solid escalations).
 
-    Skipped for get_diagnostics (it reports failures itself, and shouldn't carry
-    mutation warnings). One place composes both so the bridge stays a one-liner.
+    ``before`` is feature_snapshot(tool_name), taken by the bridge just before the
+    tool ran (None for read-only tools). Skipped entirely for get_diagnostics (it
+    reports failures itself and shouldn't carry mutation notes).
     """
     if tool_name == "get_diagnostics":
         return ""
-    notes = [summarize_new_failures(), summarize_ineffective_cuts()]
+    notes = [summarize_new_failures(), summarize_feature_changes(before)]
     return "\n\n".join(n for n in notes if n)
 
 

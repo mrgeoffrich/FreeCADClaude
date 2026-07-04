@@ -175,15 +175,19 @@ def _dispatch(req, token):
             if not approved:
                 return {"ok": False, "error": "The user declined to run this code."}
         def _call():
+            # Snapshot PartDesign feature volumes/solid-counts BEFORE a mutating
+            # tool runs, so post_tool_notes can diff and report what this operation
+            # added/removed (None for read-only tools -> nothing to diff).
+            before = freecad_tools.feature_snapshot(name)
             out = tool["run"](args)
             # Image tools (view_sketch_svg, capture_view) return (text, png_path);
             # everything else returns a plain string.
             text, png_path = out if isinstance(out, tuple) else (out, None)
             # Fold post-call diagnostics into the reply: features that failed to
-            # recompute, and subtractive features that removed no material (a
-            # wrong-direction cut succeeds silently). get_diagnostics is skipped
-            # (it reports failures itself) -- the composer handles that.
-            note = freecad_tools.post_tool_notes(name)
+            # recompute, plus a per-operation volume/solid-count delta with the
+            # empty-cut and disconnected-solid escalations. get_diagnostics is
+            # skipped (it reports failures itself) -- the composer handles that.
+            note = freecad_tools.post_tool_notes(name, before)
             return text, png_path, note
 
         try:
