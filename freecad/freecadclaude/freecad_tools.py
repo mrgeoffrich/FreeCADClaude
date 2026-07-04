@@ -206,14 +206,19 @@ def _crop_bbox(base_bbox, extents):
 _MAX_SANE_EXTENT = 1e6
 
 
-def _document_bbox(doc):
+def _document_bbox(doc, names=None):
     """Union BoundBox of every real (finite, Shape-bearing) object in `doc`
     -- the same population fitAll() frames -- used to default any crop axis
-    the caller didn't specify for capture_view."""
+    the caller didn't specify for capture_view. Pass `names` (a set/iterable of
+    internal Names) to restrict the union to just those objects, e.g. so a
+    cutaway's default cut bisects the shown objects, not the whole scene."""
     import FreeCAD
 
+    subset = set(names) if names is not None else None
     box = FreeCAD.BoundBox()
     for obj in doc.Objects:
+        if subset is not None and obj.Name not in subset:
+            continue
         shape = getattr(obj, "Shape", None)
         if shape is None or shape.isNull():
             continue
@@ -959,8 +964,8 @@ _CAPTURE_VIEW_SCHEMA = {
         "level: 0 is side-on, +90 looks straight down from the top, -90 "
         "straight up from below. So a 3/4 view from above-front-right is about "
         "azimuth 45, elevation 30; to see a feature from below-left try azimuth "
-        "-45, elevation -30. The whole part is always framed to fit, so "
-        "changing the angle re-frames predictably (part centred) rather than "
+        "-45, elevation -30. The chosen object(s) are always framed to fit, so "
+        "changing the angle re-frames predictably (object centred) rather than "
         "moving the camera nearer/further. "
         "Optionally zoom to a region by giving one or more of x_min/x_max/"
         "y_min/y_max/z_min/z_max (world mm) -- any axis you omit uses the full "
@@ -972,6 +977,19 @@ _CAPTURE_VIEW_SCHEMA = {
     "inputSchema": {
         "type": "object",
         "properties": {
+            "objects": {
+                "type": "array", "items": {"type": "string"}, "minItems": 1,
+                "description": (
+                    "REQUIRED. Internal Names (from get_objects, e.g. 'Body', "
+                    "'Box001' -- NOT Labels) of the object(s) to show. Only these "
+                    "are made visible for the shot and everything else in the "
+                    "document is hidden, so the capture is precisely controlled "
+                    "and auto-framed on exactly them. Naming a container (an "
+                    "App::Part/Group, or a PartDesign Body) shows its contents. "
+                    "The user's real view is left untouched -- prior visibility is "
+                    "restored right after the capture."
+                ),
+            },
             "view": {"type": "string", "description": "Camera preset: iso/front/rear/top/bottom/left/right (default iso). Ignored when azimuth/elevation are given."},
             "azimuth": {"type": "number", "description": "Custom orbit angle around the vertical axis, degrees: 0=front, +90=right, 180=back, -90=left. Use with elevation for an angle no preset covers."},
             "elevation": {"type": "number", "description": "Custom orbit angle above/below eye level, degrees: 0=side-on, +90=straight down (top), -90=straight up (bottom). Use with azimuth."},
@@ -979,7 +997,7 @@ _CAPTURE_VIEW_SCHEMA = {
             "height": {"type": "integer", "description": "Image height px (default 960)"},
             **_EXTENT_SCHEMA_PROPS,
         },
-        "required": [],
+        "required": ["objects"],
         "additionalProperties": False,
     },
 }
@@ -1272,7 +1290,7 @@ def _looks_blank(png_path):
 #: crop_view can reproduce the framing Claude just saw and zoom into a
 #: sub-rectangle of it (see _run_crop_view). Written at the tail of
 #: _run_capture_view while the offscreen view is still alive.
-_last_capture = {"camera": None, "width": None, "height": None, "doc": None}
+_last_capture = {"camera": None, "width": None, "height": None, "doc": None, "keep": None}
 
 
 def _orbit_rotation(azimuth_deg, elevation_deg):
@@ -1406,10 +1424,20 @@ def _apply_camera_plan(view, plan):
 
 def _run_capture_view(args):
     import FreeCAD
+    import FreeCADGui
 
     doc = FreeCAD.ActiveDocument
     if doc is None:
         return "No active document."
+
+    names = args.get("objects")
+    if not names:
+        return ("capture_view requires 'objects': a list of object Names to show "
+                "(everything else is hidden for the shot). Call get_objects first.")
+    for n in names:
+        if doc.getObject(n) is None:
+            return f"No object named '{n}'."
+    keep_set = _visibility_keep_set(doc, names)
 
     plan, err = _resolve_camera_args(args)
     if err:
@@ -1425,6 +1453,11 @@ def _run_capture_view(args):
     if view is None:
         return "Could not create an offscreen view to capture."
 
+    # Toggling Visibility dirties the GUI document; snapshot the flag so we can
+    # restore it (we net-restore the visibility values themselves too).
+    gui_doc = FreeCADGui.getDocument(doc.Name)
+    prev_modified = getattr(gui_doc, "Modified", None)
+
     # 1280x960 (1.23 MP) sits near Claude's image ceiling (~1.15-1.2 MP / 1568px
     # long edge); larger just gets downscaled again, so this is the detail sweet spot.
     width = int(args.get("width", 1280))
@@ -1434,7 +1467,11 @@ def _run_capture_view(args):
 
     warnings = []
     measured = None
+    saved = []
     try:
+        # Show only the requested objects; fitAll (in _apply_camera_plan) then
+        # frames tightly on exactly them. Restored in the finally below.
+        saved = _isolate_visibility(doc, keep_set)
         if subwindow is not None:
             subwindow.resize(width, height)
 
@@ -1494,11 +1531,18 @@ def _run_capture_view(args):
         # setCamera() restores it -- independent of how the frame was set).
         try:
             _last_capture.update(
-                camera=view.getCamera(), width=width, height=height, doc=doc.Name
+                camera=view.getCamera(), width=width, height=height,
+                doc=doc.Name, keep=keep_set,
             )
         except Exception:  # noqa: BLE001 - crop_view just falls back to "capture first"
             _last_capture.update(camera=None)
     finally:
+        _restore_visibility(saved)
+        if prev_modified is not None:
+            try:
+                gui_doc.Modified = prev_modified
+            except Exception:  # noqa: BLE001
+                pass
         _close_offscreen_view(subwindow, prev_view)
 
     # Report the resolved camera angle (measured from the real view direction,
@@ -1636,6 +1680,7 @@ _CROP_VIEW_SCHEMA = {
 
 def _run_crop_view(args):
     import FreeCAD
+    import FreeCADGui
 
     camera = _last_capture.get("camera")
     if not camera:
@@ -1674,11 +1719,19 @@ def _run_crop_view(args):
     if view is None:
         return "Could not create an offscreen view to capture."
 
+    # Re-apply the same object isolation as the capture we're zooming into, so
+    # the crop stays visually consistent with it. Restored in the finally.
+    keep_set = _last_capture.get("keep") or set()
+    gui_doc = FreeCADGui.getDocument(doc.Name)
+    prev_modified = getattr(gui_doc, "Modified", None)
+
     width = int(_last_capture.get("width") or 1280)
     height = int(_last_capture.get("height") or 960)
 
     blank = False
+    saved = []
     try:
+        saved = _isolate_visibility(doc, keep_set)
         if subwindow is not None:
             subwindow.resize(width, height)
         try:
@@ -1696,6 +1749,12 @@ def _run_crop_view(args):
         _save_view_png(view, png_path, width, height)
         blank = _looks_blank(png_path)
     finally:
+        _restore_visibility(saved)
+        if prev_modified is not None:
+            try:
+                gui_doc.Modified = prev_modified
+            except Exception:  # noqa: BLE001
+                pass
         _close_offscreen_view(subwindow, prev_view)
 
     text = (
@@ -1715,15 +1774,16 @@ def _run_crop_view(args):
 _AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
 
 
-def _resolve_clip_plane(args, doc):
+def _resolve_clip_plane(args, doc, keep_names=None):
     """Build a Coin ``SbPlane`` for the cutaway from `args`.
 
     Two ways to specify it:
       - ``point`` [x,y,z] + ``normal`` [x,y,z]: an arbitrary plane; the half
         that is KEPT (drawn) is the side the normal points toward.
       - ``axis`` (x/y/z) + ``position`` (mm) + ``keep`` (low/high): a plane
-        perpendicular to that axis. ``position`` defaults to the document's
-        bbox midpoint on that axis (so a bare ``axis`` just halves the model);
+        perpendicular to that axis. ``position`` defaults to the bbox midpoint
+        on that axis of the SHOWN objects (``keep_names``, so a bare ``axis``
+        just halves what's in the shot), falling back to the whole document;
         ``keep`` (default low) chooses the smaller- or larger-coordinate side.
 
     Returns ``(SbPlane, description, (nx, ny, nz), None)`` on success, or
@@ -1766,7 +1826,7 @@ def _resolve_clip_plane(args, doc):
         except (TypeError, ValueError):
             return None, None, None, "'position' must be a number (mm)."
     else:
-        bbox = _document_bbox(doc)
+        bbox = _document_bbox(doc, keep_names)
         if bbox.XMin > bbox.XMax:
             return None, None, None, "No geometry to pick a default cut position from -- give 'position' (mm)."
         position = ((bbox.XMin + bbox.XMax) / 2, (bbox.YMin + bbox.YMax) / 2,
@@ -1818,36 +1878,6 @@ def _insert_clip_plane(view, clip):
     sg.insertChild(clip, 0)
 
 
-def _frame_on_objects(view, doc, names, width, height):
-    """Zoom `view` to frame just the named objects. Returns a warning string to
-    surface, or None.
-
-    The cutaway clips every visible object regardless; this only tightens the
-    camera onto a subset so a specific part fills the frame. Reuses the same
-    viewport-independent camera framing as capture_view's world crop, so it
-    works under any preset/orbit camera.
-    """
-    import FreeCAD
-
-    box = FreeCAD.BoundBox()
-    missing = []
-    for n in names:
-        obj = doc.getObject(n)
-        if obj is None:
-            missing.append(n)
-            continue
-        shape = getattr(obj, "Shape", None)
-        if shape is not None and not shape.isNull():
-            box.add(shape.BoundBox)
-    if box.XMin > box.XMax:
-        return "Warning: none of the requested 'names' have geometry to frame -- showing the whole model."
-    if not _frame_camera_on_box(view, box, float(width) / float(height)):
-        return "Warning: could not frame the requested objects on this build -- showing the whole model."
-    if missing:
-        return f"Note: no object(s) named {', '.join(missing)} -- framed the rest."
-    return None
-
-
 _CUTAWAY_SCHEMA = {
     "name": "cutaway",
     "description": (
@@ -1864,13 +1894,15 @@ _CUTAWAY_SCHEMA = {
         "(smaller-coordinate) or 'high' side ('keep', default low) -- OR "
         "generally with 'point' [x,y,z] and 'normal' [x,y,z], where the kept "
         "half is the side the normal points toward.\n"
+        "Like capture_view, this takes a REQUIRED 'objects' list of internal "
+        "Names -- only those are shown (everything else is hidden for the shot) "
+        "and the clip applies to just them; the user's real view is restored "
+        "after.\n"
         "Set the camera angle exactly as capture_view does: a 'view' preset "
         "(iso/front/rear/top/bottom/left/right, default iso) OR 'azimuth'+"
-        "'elevation' in degrees for a custom orbit. Optionally pass 'names' "
-        "(object internal Names) to frame the shot on specific objects, or "
+        "'elevation' in degrees for a custom orbit. Optionally pass "
         "x_min/x_max/y_min/y_max/z_min/z_max (mm, same as capture_view) to crop "
-        "the shot to a world-space region; the clip still applies to all visible "
-        "geometry regardless of framing.\n"
+        "the shot to a world-space region.\n"
         "Tip: aim the camera at the cut -- e.g. cut axis=x and view from the "
         "left/right, or cut axis=z and view top/bottom -- so you look squarely "
         "into the opened part. If a cut looks flat/empty/unchanged, change "
@@ -1880,6 +1912,17 @@ _CUTAWAY_SCHEMA = {
     "inputSchema": {
         "type": "object",
         "properties": {
+            "objects": {
+                "type": "array", "items": {"type": "string"}, "minItems": 1,
+                "description": (
+                    "REQUIRED. Internal Names (from get_objects -- NOT Labels) of "
+                    "the object(s) to show and cut. Only these are made visible for "
+                    "the shot; everything else in the document is hidden and the "
+                    "clip applies to just them. Naming a container (App::Part/Group "
+                    "or a PartDesign Body) shows its contents. The user's real view "
+                    "is left untouched -- prior visibility is restored right after."
+                ),
+            },
             "axis": {"type": "string", "description": "Cut perpendicular to this axis: x, y, or z (the simple way to define the plane)."},
             "position": {"type": "number", "description": "Where along 'axis' to cut, in mm (default: the model's midpoint on that axis)."},
             "keep": {"type": "string", "description": "Which half of an 'axis' cut to keep: 'low' (smaller coordinate) or 'high' (default low)."},
@@ -1888,12 +1931,11 @@ _CUTAWAY_SCHEMA = {
             "view": {"type": "string", "description": "Camera preset: iso/front/rear/top/bottom/left/right (default iso). Ignored when azimuth/elevation are given."},
             "azimuth": {"type": "number", "description": "Custom orbit angle around the vertical axis, degrees: 0=front, +90=right, 180=back, -90=left."},
             "elevation": {"type": "number", "description": "Custom orbit angle above/below eye level, degrees: 0=side-on, +90=top-down, -90=bottom-up."},
-            "names": {"type": "array", "items": {"type": "string"}, "description": "Internal Names of objects to frame the shot on (optional; the clip still applies to all visible geometry)."},
             **_EXTENT_SCHEMA_PROPS,
             "width": {"type": "integer", "description": "Image width px (default 1280)"},
             "height": {"type": "integer", "description": "Image height px (default 960)"},
         },
-        "required": [],
+        "required": ["objects"],
         "additionalProperties": False,
     },
 }
@@ -1901,17 +1943,27 @@ _CUTAWAY_SCHEMA = {
 
 def _run_cutaway(args):
     import FreeCAD
+    import FreeCADGui
 
     doc = FreeCAD.ActiveDocument
     if doc is None:
         return "No active document."
+
+    names = args.get("objects")
+    if not names:
+        return ("cutaway requires 'objects': a list of object Names to show "
+                "(everything else is hidden for the shot). Call get_objects first.")
+    for n in names:
+        if doc.getObject(n) is None:
+            return f"No object named '{n}'."
+    keep_set = _visibility_keep_set(doc, names)
 
     plan, err = _resolve_camera_args(args)
     if err:
         return err
 
     try:
-        plane, clip_desc, clip_normal, err = _resolve_clip_plane(args, doc)
+        plane, clip_desc, clip_normal, err = _resolve_clip_plane(args, doc, keep_set)
     except Exception as exc:  # noqa: BLE001 - e.g. pivy/coin unavailable
         return f"Could not build the clip plane: {exc!r}"
     if err:
@@ -1926,17 +1978,23 @@ def _run_cutaway(args):
     if view is None:
         return "Could not create an offscreen view to capture."
 
+    # Toggling Visibility dirties the GUI document; snapshot the flag to restore.
+    gui_doc = FreeCADGui.getDocument(doc.Name)
+    prev_modified = getattr(gui_doc, "Modified", None)
+
     width = int(args.get("width", 1280))
     height = int(args.get("height", 960))
     png_path = _artifact_path("captures", "cutaway", ".png")
-    frame_names = args.get("names")
     extents = _extent_args(args)
 
-    frame_warning = None
     crop_warning = None
     measured = None
     degenerate_warning = None
+    saved = []
     try:
+        # Show only the requested objects; the clip then applies to just them and
+        # fitAll frames them. Restored in the finally below.
+        saved = _isolate_visibility(doc, keep_set)
         if subwindow is not None:
             subwindow.resize(width, height)
 
@@ -1972,9 +2030,6 @@ def _run_cutaway(args):
                     "showing the full extent instead."
                 )
 
-        if frame_names:
-            frame_warning = _frame_on_objects(view, doc, frame_names, width, height)
-
         # Direction is unchanged by fitAll, so this matches the saved image.
         measured = _orbit_angles_from_view(view)
 
@@ -2003,6 +2058,12 @@ def _run_cutaway(args):
 
         _save_view_png(view, png_path, width, height)
     finally:
+        _restore_visibility(saved)
+        if prev_modified is not None:
+            try:
+                gui_doc.Modified = prev_modified
+            except Exception:  # noqa: BLE001
+                pass
         _close_offscreen_view(subwindow, prev_view)
 
     text = f"Cutaway at {clip_desc}, saved to {png_path}."
@@ -2017,8 +2078,6 @@ def _run_cutaway(args):
         text += f"\n\n{degenerate_warning}"
     if crop_warning:
         text += f"\n\n{crop_warning}"
-    if frame_warning:
-        text += f"\n\n{frame_warning}"
     return text, png_path
 
 
@@ -2077,6 +2136,118 @@ def _expand_containers(objs):
             continue
         expanded.append(o)
     return expanded
+
+
+# --- Visibility isolation (capture_view / cutaway / crop_view) --------------
+# The offscreen capture views render the DOCUMENT's own scene graph, and
+# ViewObject.Visibility is document-level (shared by every view), not per-view.
+# So "show only these objects for the shot" means toggling Visibility on the
+# document -- which we save and restore in the tool's finally so the user's real
+# view/document stays untouched (the GUI thread is blocked for the whole call,
+# so nothing repaints mid-call and there's no flicker).
+
+def _descendants(obj):
+    """Everything nested under obj via .Group (Part/Group children, Body
+    features), recursively."""
+    out, seen, stack = [], set(), list(getattr(obj, "Group", None) or [])
+    while stack:
+        o = stack.pop()
+        if o.Name in seen:
+            continue
+        seen.add(o.Name)
+        out.append(o)
+        stack.extend(getattr(o, "Group", None) or [])
+    return out
+
+
+def _ancestor_containers(obj):
+    """The App::Part / Group / Body chain obj sits inside, so their group
+    switches stay ON when a nested object is isolated."""
+    out, cur, seen = [], obj, set()
+    while cur is not None:
+        parent = None
+        for getter in ("getParentGeoFeatureGroup", "getParentGroup"):
+            fn = getattr(cur, getter, None)
+            if fn is not None:
+                try:
+                    parent = fn()
+                except Exception:  # noqa: BLE001
+                    parent = None
+            if parent is not None:
+                break
+        if parent is None or parent.Name in seen:
+            break
+        seen.add(parent.Name)
+        out.append(parent)
+        cur = parent
+    return out
+
+
+def _visibility_keep_set(doc, requested_names):
+    """Names that must end up VISIBLE for the shot: the requested objects, their
+    container ancestors, and their CURRENTLY-visible descendants.
+
+    Keeping only currently-visible descendants is what makes a PartDesign Body
+    render correctly -- its tip feature is the visible one, so it's kept and
+    shown; the intermediate features stay hidden (we don't force them True), so
+    there are no overlapping solids. An App::Part keeps its curated child
+    visibility the same way. (A naive "Visibility = (Name in requested)" would
+    hide a Body's tip feature and render it blank -- hence the descendant walk.)
+    """
+    keep = set()
+    for name in requested_names:
+        obj = doc.getObject(name)
+        if obj is None:
+            continue  # caller has already error-checked; belt-and-suspenders
+        keep.add(obj.Name)
+        for anc in _ancestor_containers(obj):
+            keep.add(anc.Name)
+        for desc in _descendants(obj):
+            vo = getattr(desc, "ViewObject", None)
+            if vo is None:
+                continue
+            try:
+                if bool(vo.Visibility):
+                    keep.add(desc.Name)
+            except Exception:  # noqa: BLE001
+                pass
+    return keep
+
+
+def _isolate_visibility(doc, keep_names):
+    """Force every object's ViewObject.Visibility to (Name in keep_names) and
+    return [(view_object, prior_bool), ...] for _restore_visibility.
+
+    Never raises: guards objects without a usable ViewObject and per-object set
+    failures, and records the prior value BEFORE changing it so the restore is
+    always exact.
+    """
+    keep, saved = set(keep_names), []
+    for obj in doc.Objects:
+        vo = getattr(obj, "ViewObject", None)
+        if vo is None:
+            continue
+        try:
+            prior = bool(vo.Visibility)
+        except Exception:  # noqa: BLE001
+            continue
+        want = obj.Name in keep
+        if prior == want:
+            continue
+        saved.append((vo, prior))
+        try:
+            vo.Visibility = want
+        except Exception:  # noqa: BLE001
+            pass  # couldn't set; prior already recorded so restore is a no-op
+    return saved
+
+
+def _restore_visibility(saved):
+    for vo, prior in reversed(saved):
+        try:
+            vo.Visibility = prior
+        except Exception:  # noqa: BLE001
+            pass
 
 
 _EXPORT_SCHEMA = {
