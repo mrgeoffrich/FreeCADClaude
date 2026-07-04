@@ -187,12 +187,34 @@ pwsh -File eval/run.ps1 -Prompt "Create a cylinder r5 h30 named C" `
 `FREECADCLAUDE_EVAL` environment variable, handled in `InitGui.py` →
 `freecad/freecadclaude/eval_runner.py`.
 
-**Judging *behaviour*, not just the snapshot.** The result JSON only records
-object names, types and dimensions — enough for a regex like "did a Cylinder
-get created", but not for *how* the agent got there. To evaluate a
-behaviour/prompt change (did it cut in the right direction, review the sketch
-before pocketing, recover from a warning, and in how many steps), read the
-run's own session folder under `~/FreeCADClaude/<newest>/`:
-`stream.jsonl` (the tool calls, plus the per-operation volume/solid-count delta
-and `⚠` notes folded into each tool result) and `scripts/` (every approved
-`run_python`, in order). `run.sh` prints that session path when it finishes.
+### Judging *behaviour*, not just the snapshot
+
+The result JSON only records object names, types and dimensions — enough for a
+regex like "did a Cylinder get created", but not for *how* the agent got there.
+For a behaviour or prompt change (did it cut in the right direction, review the
+sketch before pocketing, recover from a warning, and in how many steps), the
+signal is in the run's own session folder — `run.sh` prints its path, and it's
+the newest directory under `~/FreeCADClaude/`:
+
+- **`stream.jsonl`** — the tool calls in order, plus the per-operation
+  volume/solid-count delta and `⚠` notes folded into each tool result. Read it
+  for the *tool-call ordering* (e.g. did it review the sketch before pocketing?),
+  whether a `⚠` note fired, and whether it then recovered.
+- **`scripts/`** — every approved `run_python`, in order. The count and content
+  show whether it went straight to the answer or flailed through dead ends.
+
+Some advice from using it:
+
+- **It's a live agent run**, not a headless unit test — each eval drives the
+  real `claude` CLI on your subscription and briefly opens a FreeCAD window. Keep
+  prompts pointed and use `-Expect`/`-e` so a run is self-checking.
+- **One green run isn't proof.** The agent is non-deterministic, so for a change
+  meant to fix an "always fails this way" behaviour, run it a few times before
+  trusting it.
+- **Reproduce the exact failure *and* a harder variant** that stresses the same
+  weakness — e.g. a hole "through" the part *and* one "in the bottom", which puts
+  the cut on the opposite face. A fix that only passes the easy phrasing isn't
+  really fixed.
+- **Diff against the old behaviour.** The failing run's `stream.jsonl`/`scripts/`
+  are the baseline; compare step count and tool-call order before vs. after (copy
+  the folder out first — session dirs are auto-pruned).
