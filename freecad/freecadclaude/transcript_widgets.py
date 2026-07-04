@@ -14,9 +14,9 @@ from PySide import QtCore, QtGui, QtWidgets
 
 #: Role label colours, reused for both the live widget headers and the
 #: plain-Markdown reconstruction in TranscriptView.to_markdown().
-YOU_COLOR = "#3478c6"      # blue
-CLAUDE_COLOR = "#d97757"   # Claude coral
-MUTED_COLOR = "#888888"    # de-emphasised grey (reasoning)
+YOU_COLOR = "#3478c6"  # blue
+CLAUDE_COLOR = "#d97757"  # Claude coral
+MUTED_COLOR = "#888888"  # de-emphasised grey (reasoning)
 
 
 def _blockquote(text):
@@ -67,9 +67,17 @@ class _AutoHeightTextBrowser(QtWidgets.QTextBrowser):
         self._sync_height()
 
     def _sync_height(self, *_args):
-        h = max(int(self.document().size().height()) + 2 * self.frameWidth(), self._min_height)
+        h = max(
+            int(self.document().size().height()) + 2 * self.frameWidth(),
+            self._min_height,
+        )
         if h != self.height():  # guard against a resize -> layout -> resize loop
             self.setFixedHeight(h)
+
+
+#: Cap capture thumbnails at a modest width so they read as previews, not
+#: full-bleed images -- click opens the full-resolution file anyway.
+_MAX_THUMB_WIDTH = 100
 
 
 class _ThumbnailLabel(QtWidgets.QLabel):
@@ -77,8 +85,9 @@ class _ThumbnailLabel(QtWidgets.QLabel):
 
     Used to show the PNG a capture tool produced inside its transcript entry.
     Scaling happens on every resizeEvent (so it tracks the resizable dock width),
-    capped at the image's natural size so we never upscale; clicking opens the
-    full-resolution file in the OS image viewer.
+    capped at both the image's natural size (never upscale) and _MAX_THUMB_WIDTH
+    (a small preview, not full-bleed); clicking opens the full-resolution file in
+    the OS image viewer.
     """
 
     def __init__(self, path, parent=None):
@@ -98,7 +107,7 @@ class _ThumbnailLabel(QtWidgets.QLabel):
     def _rescale(self, width):
         if self._pixmap.isNull():
             return
-        target = min(self._pixmap.width(), max(1, width))
+        target = min(self._pixmap.width(), max(1, width), _MAX_THUMB_WIDTH)
         if target == self._last_w:
             return  # avoid a resize -> setPixmap -> resize churn
         self._last_w = target
@@ -121,7 +130,7 @@ class CollapsibleSection(QtWidgets.QWidget):
     Markdown content browser."""
 
     _DEFAULT_COLLAPSED = {"thinking": True, "tool": True}  # else expanded
-    _CONTENT_TRANSFORM = {"thinking": _blockquote}          # else identity
+    _CONTENT_TRANSFORM = {"thinking": _blockquote}  # else identity
     #: Shown instead of a blank browser while a section is live but hasn't
     #: received any content yet -- e.g. the eager thinking placeholder created
     #: the moment a turn starts, before Claude has streamed any reasoning (or
@@ -129,17 +138,20 @@ class CollapsibleSection(QtWidgets.QWidget):
     #: of curiosity mid-turn just looks broken.
     _LIVE_PLACEHOLDER = {"thinking": "*(thinking…)*"}
 
-    def __init__(self, kind, text="", *, collapsed=None, live=False,
-                 tool_name="", parent=None):
+    def __init__(
+        self, kind, text="", *, collapsed=None, live=False, tool_name="", parent=None
+    ):
         super().__init__(parent)
         self.kind = kind
         self._tool_name = tool_name
         self._raw_text = ""
         self._live = live
-        self._image = None          # optional _ThumbnailLabel (capture tools)
+        self._image = None  # optional _ThumbnailLabel (capture tools)
         self._image_path = None
         self._build_ui()
-        self.set_collapsed(self._DEFAULT_COLLAPSED.get(kind, False) if collapsed is None else collapsed)
+        self.set_collapsed(
+            self._DEFAULT_COLLAPSED.get(kind, False) if collapsed is None else collapsed
+        )
         self._refresh_header()
         if text:
             self.append_text(text)
@@ -165,7 +177,9 @@ class CollapsibleSection(QtWidgets.QWidget):
 
     def set_collapsed(self, collapsed):
         self._toggle.setChecked(not collapsed)
-        self._toggle.setArrowType(QtCore.Qt.RightArrow if collapsed else QtCore.Qt.DownArrow)
+        self._toggle.setArrowType(
+            QtCore.Qt.RightArrow if collapsed else QtCore.Qt.DownArrow
+        )
         self._browser.setVisible(not collapsed)
         if self._image is not None:
             self._image.setVisible(not collapsed)
@@ -199,7 +213,9 @@ class CollapsibleSection(QtWidgets.QWidget):
             self._browser.setMarkdown(self._LIVE_PLACEHOLDER[self.kind])
             return
         transform = self._CONTENT_TRANSFORM.get(self.kind)
-        self._browser.setMarkdown(transform(self._raw_text) if transform else self._raw_text)
+        self._browser.setMarkdown(
+            transform(self._raw_text) if transform else self._raw_text
+        )
 
     def update_content_markdown(self, text):
         self._raw_text = ""
@@ -227,13 +243,17 @@ class CollapsibleSection(QtWidgets.QWidget):
         color = _header_color(self.kind)
         style = "QToolButton { border: none; font-weight: bold; }"
         if color:
-            style = f"QToolButton {{ border: none; font-weight: bold; color: {color}; }}"
+            style = (
+                f"QToolButton {{ border: none; font-weight: bold; color: {color}; }}"
+            )
         self._toggle.setStyleSheet(style)
 
     def to_markdown_fragment(self):
         """Plain-Markdown reconstruction of this entry, for ChatWidget._md."""
         if self.kind == "you":
-            return f'<span style="color:{YOU_COLOR}"><b>You:</b></span> {self._raw_text}'
+            return (
+                f'<span style="color:{YOU_COLOR}"><b>You:</b></span> {self._raw_text}'
+            )
         if self.kind == "claude":
             return f'<span style="color:{CLAUDE_COLOR}"><b>Claude:</b></span>\n\n{self._raw_text}'
         if self.kind == "thinking":
@@ -266,7 +286,7 @@ class TranscriptView(QtWidgets.QScrollArea):
         self._layout.addStretch(1)  # keeps entries packed at the top
         self.setWidget(body)
 
-        self._entries = []        # ordered CollapsibleSection list (incl. live ones)
+        self._entries = []  # ordered CollapsibleSection list (incl. live ones)
 
         # Auto-follow the bottom while streaming. Driven by the scrollbar's own
         # signals rather than a "check pinned, resize, singleShot(0) rescroll"
@@ -285,8 +305,14 @@ class TranscriptView(QtWidgets.QScrollArea):
     # -- entries -------------------------------------------------------
 
     def add_entry(self, kind, text="", *, collapsed=None, live=False, tool_name=""):
-        entry = CollapsibleSection(kind, text, collapsed=collapsed, live=live,
-                                    tool_name=tool_name, parent=self.widget())
+        entry = CollapsibleSection(
+            kind,
+            text,
+            collapsed=collapsed,
+            live=live,
+            tool_name=tool_name,
+            parent=self.widget(),
+        )
         self._layout.insertWidget(self._layout.count() - 1, entry)  # before the stretch
         self._entries.append(entry)
         return entry
