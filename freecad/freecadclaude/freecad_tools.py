@@ -2465,6 +2465,175 @@ def summarize_new_failures():
             "Call get_diagnostics for details.")
 
 
+# ---- ineffective-cut diagnostics -------------------------------------------
+# A subtractive PartDesign feature that removes NO material still "succeeds":
+# valid shape, no recompute error, nothing flags it -- yet the solid is
+# unchanged. The overwhelmingly common cause is a wrong cut direction: Pocket/
+# Groove/Hole remove material OPPOSITE the sketch normal by default, so a cut
+# sketched on the same base plane a solid was padded UP from cuts DOWNWARD into
+# empty space and takes away nothing (the exact trap behind "make a hole in the
+# bottom of the star" -> no hole). We catch it by comparing the feature's Shape
+# volume to the feature it cuts into (its BaseFeature): unchanged volume == an
+# empty cut.
+
+#: TypeId substrings identifying material-removing PartDesign features. Matched
+#: by substring so the whole family (Pocket/Groove/Hole plus every Subtractive*
+#: primitive/loft/pipe) is covered without enumerating each concrete TypeId.
+_SUBTRACTIVE_MARKERS = ("Pocket", "Groove", "Hole", "Subtractive")
+
+# Volume must drop by at least this fraction of the base for a cut to count as
+# having done something -- purely to absorb float noise; a genuine cut removes a
+# far larger share, an empty one removes exactly zero, so the threshold never
+# straddles a real case.
+_EMPTY_CUT_EPS = 1e-6
+
+#: Names already flagged as ineffective, so a persistently-empty cut isn't
+#: re-announced on every later tool call (mirrors _reported_invalid).
+_reported_ineffective = set()
+
+
+def _is_subtractive_feature(obj):
+    """True iff `obj` is a PartDesign feature whose job is to remove material."""
+    tid = getattr(obj, "TypeId", "") or ""
+    return tid.startswith("PartDesign::") and any(m in tid for m in _SUBTRACTIVE_MARKERS)
+
+
+def _scan_ineffective_cuts(doc):
+    """Subtractive features that removed no material from the solid they cut.
+
+    A feature counts as ineffective when its result volume still equals (within
+    float noise) the volume of its BaseFeature -- the feature it subtracts from.
+    Skips: features with no BaseFeature (a subtractive-first feature is a
+    different error, and fails recompute anyway) and features already flagged
+    Invalid/Error (summarize_new_failures reports those). Best-effort per object.
+    """
+    bad = []
+    if doc is None:
+        return bad
+    for obj in doc.Objects:
+        if not _is_subtractive_feature(obj):
+            continue
+        if any(flag in (getattr(obj, "State", None) or []) for flag in _ERROR_FLAGS):
+            continue  # broken recompute -- reported separately, don't double up
+        base = getattr(obj, "BaseFeature", None)
+        if base is None:
+            continue  # first feature in the body: nothing to compare against
+        shape = getattr(obj, "Shape", None)
+        base_shape = getattr(base, "Shape", None)
+        if shape is None or base_shape is None or shape.isNull() or base_shape.isNull():
+            continue
+        try:
+            vol, base_vol = shape.Volume, base_shape.Volume
+        except Exception:  # noqa: BLE001
+            continue
+        if base_vol <= 0:
+            continue
+        if vol >= base_vol * (1.0 - _EMPTY_CUT_EPS):
+            bad.append({"name": obj.Name, "label": obj.Label, "type": obj.TypeId})
+    return bad
+
+
+def _wrong_direction_hint(obj):
+    """A concrete 'here is the profile normal and which way to cut' sentence for
+    an extrude-based subtractive feature (Pocket/Hole) that removed nothing, or
+    None when the geometry to work it out isn't available (caller falls back to
+    generic wording).
+
+    A Pocket/Hole cuts OPPOSITE the profile's sketch normal by default. Since the
+    feature removed nothing, the solid must sit on the far side of the profile
+    plane from where the cut is heading -- so we report the profile normal, which
+    side the solid is actually on, and the exact Reversed value that aims the cut
+    back into the material. Skipped when a custom cut vector is in play (then the
+    sketch normal no longer decides the direction) or when the solid straddles
+    the plane (no single side to name)."""
+    import FreeCAD
+
+    tid = getattr(obj, "TypeId", "") or ""
+    if "Pocket" not in tid and "Hole" not in tid:
+        return None  # Groove revolves; Subtractive primitives are placed solids
+    if getattr(obj, "UseCustomVector", False):
+        return None  # direction comes from a custom vector, not the sketch normal
+    try:
+        prof = getattr(obj, "Profile", None)
+        sketch = prof[0] if isinstance(prof, (tuple, list)) and prof else prof
+        placement = getattr(sketch, "Placement", None)
+        base_shape = getattr(getattr(obj, "BaseFeature", None), "Shape", None)
+        if placement is None or base_shape is None or base_shape.isNull():
+            return None
+        # The profile plane: a point on it (the sketch origin) and its normal
+        # (the sketch's local +Z rotated into world). Any in-plane point works for
+        # the signed distance below, so the sketch origin is fine.
+        normal = placement.Rotation.multVec(FreeCAD.Vector(0, 0, 1))
+        offset = (base_shape.BoundBox.Center - placement.Base).dot(normal)
+        if abs(offset) < 1e-6:
+            return None  # solid straddles the plane -- can't call one side
+        n = FreeCAD.Vector(round(normal.x, 3), round(normal.y, 3), round(normal.z, 3))
+        side = "+" if offset > 0 else "-"
+        # Default cut runs along -normal; Reversed aims it along +normal. To cut
+        # toward the material, Reversed must be True iff the solid is on +side.
+        want_reversed = offset > 0
+        return (
+            f"Its profile normal is ({n.x:g}, {n.y:g}, {n.z:g}) and the solid is on "
+            f"the {side}normal side of the profile, but a Pocket/Hole cuts the "
+            f"OPPOSITE way by default -- so the cut is heading into empty space. Set "
+            f"Reversed={want_reversed} on {obj.Label} and recompute so it cuts toward "
+            "the solid. (Sketching the cut on the solid's own face avoids this: a "
+            "face normal points out of the material, so the default cut goes in.)"
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def summarize_ineffective_cuts():
+    """Note about subtractive features that NEWLY cut nothing, or "".
+
+    Called alongside summarize_new_failures after each tool call. For each empty
+    cut it works out, where it can, the profile normal, which side the solid is
+    on, and the exact Reversed value to aim the cut into the material -- so Claude
+    corrects the direction in the same turn instead of hunting for a hole that
+    isn't there.
+    """
+    import FreeCAD
+
+    global _reported_ineffective
+    doc = FreeCAD.ActiveDocument
+    bad = _scan_ineffective_cuts(doc)
+    names = {b["name"] for b in bad}
+    new = [b for b in bad if b["name"] not in _reported_ineffective]
+    _reported_ineffective = names  # a cut that later works drops out and stays quiet
+    if not new:
+        return ""
+    lines = []
+    for b in new:
+        obj = doc.getObject(b["name"]) if doc is not None else None
+        hint = _wrong_direction_hint(obj) if obj is not None else None
+        if hint:
+            lines.append(f"⚠ {b['label']} removed NO material -- the solid is unchanged. {hint}")
+        else:
+            lines.append(
+                f"⚠ {b['label']} removed NO material -- the solid is unchanged, so the "
+                "cut did nothing. PartDesign Pocket/Groove/Hole cut OPPOSITE the sketch "
+                "normal by default, so the cut is on the wrong side of the solid. Flip "
+                f"its direction (toggle Reversed on {b['label']}), or sketch the cut on "
+                "the solid's own face -- a face normal points out of the material, so "
+                "the default cut goes in. Recompute and re-check the volume."
+            )
+    return "\n".join(lines)
+
+
+def post_tool_notes(tool_name):
+    """Combined post-call notes to fold into a tool reply: features that newly
+    failed to recompute, and subtractive features that removed no material.
+
+    Skipped for get_diagnostics (it reports failures itself, and shouldn't carry
+    mutation warnings). One place composes both so the bridge stays a one-liner.
+    """
+    if tool_name == "get_diagnostics":
+        return ""
+    notes = [summarize_new_failures(), summarize_ineffective_cuts()]
+    return "\n\n".join(n for n in notes if n)
+
+
 _GET_DIAGNOSTICS_SCHEMA = {
     "name": "get_diagnostics",
     "description": (

@@ -179,9 +179,11 @@ def _dispatch(req, token):
             # Image tools (view_sketch_svg, capture_view) return (text, png_path);
             # everything else returns a plain string.
             text, png_path = out if isinstance(out, tuple) else (out, None)
-            # Scan for features that failed to recompute during this call and fold
-            # a one-line summary into the reply (get_diagnostics reports its own).
-            note = "" if name == "get_diagnostics" else freecad_tools.summarize_new_failures()
+            # Fold post-call diagnostics into the reply: features that failed to
+            # recompute, and subtractive features that removed no material (a
+            # wrong-direction cut succeeds silently). get_diagnostics is skipped
+            # (it reports failures itself) -- the composer handles that.
+            note = freecad_tools.post_tool_notes(name)
             return text, png_path, note
 
         try:
