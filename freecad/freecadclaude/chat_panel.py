@@ -203,6 +203,18 @@ class ChatWidget(QtWidgets.QWidget):
         self.status_label.setStyleSheet("color:#888888")
         button_row.addWidget(self.status_label)
         button_row.addStretch(1)
+        from . import agent_config
+
+        self.model_combo = QtWidgets.QComboBox(self)
+        self.model_combo.setToolTip(
+            "Model for the conversation (locks once a chat starts; use New to change)"
+        )
+        for label, model_id in agent_config.MODELS:
+            self.model_combo.addItem(label, model_id)  # model id stored as itemData
+        idx = self.model_combo.findData(agent_config.get_model())
+        self.model_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.model_combo.currentIndexChanged.connect(self._on_model_changed)
+        button_row.addWidget(self.model_combo)
         self.files_button = QtWidgets.QPushButton("Files", self)
         self.files_button.setToolTip("Open the FreeCADClaude captures/exports folder")
         self.files_button.clicked.connect(self._open_artifacts)
@@ -305,6 +317,14 @@ class ChatWidget(QtWidgets.QWidget):
             return
         if not self._ensure_worker():
             return
+
+        # First message of this conversation: apply the selected model and lock
+        # the selector for the rest of the chat (the CLI ties a resumed session
+        # to its original model, so it can't change mid-conversation). "New"
+        # re-enables it. The combo's enabled state is our "chat has begun" flag.
+        if self.model_combo.isEnabled():
+            self._worker.set_model(self.model_combo.currentData())
+            self.model_combo.setEnabled(False)
 
         self.input.clear()
         self._add_entry("you", html.escape(text))
@@ -490,6 +510,7 @@ class ChatWidget(QtWidgets.QWidget):
 
             freecad_tools.new_session_id()
             self._worker.set_log_dir(freecad_tools.session_dir())
+        self.model_combo.setEnabled(True)  # a fresh conversation can pick a model again
         self.transcript_view.clear()
         self._live_entry = None
         self._live_think_entry = None
@@ -503,6 +524,13 @@ class ChatWidget(QtWidgets.QWidget):
         except Exception:  # noqa: BLE001
             pass
         self._note("*New conversation started.*")
+
+    def _on_model_changed(self, _index):
+        """Persist the selected model (only reachable between conversations, since
+        the combo is disabled for the duration of a chat)."""
+        from . import agent_config
+
+        agent_config.save_model(self.model_combo.currentData())
 
     def _open_artifacts(self):
         """Open the FreeCADClaude captures/exports folder in the file manager."""

@@ -13,6 +13,14 @@ import FreeCAD
 
 DEFAULT_MODEL = "claude-opus-4-8"
 
+#: (label, model-id) pairs offered by the chat panel's model selector. The label
+#: is what the user sees in the dropdown; the id is passed to the CLI's --model.
+MODELS = (
+    ("Opus", "claude-opus-4-8"),
+    ("Sonnet", "claude-sonnet-5"),
+)
+_VALID_MODELS = {mid for _, mid in MODELS}
+
 #: Reasoning effort passed to the CLI as --effort. Pinning it stops the addon
 #: inheriting your global Claude Code effortLevel (which can be xhigh/max and
 #: makes turns think for a long time). Override via the "Effort" preference.
@@ -80,7 +88,14 @@ _SKILL_TOOLS = ["Skill"]
 
 def get_model():
     params = FreeCAD.ParamGet(_PARAM_PATH)
-    return params.GetString("Model", DEFAULT_MODEL) or DEFAULT_MODEL
+    model = params.GetString("Model", DEFAULT_MODEL) or DEFAULT_MODEL
+    return model if model in _VALID_MODELS else DEFAULT_MODEL
+
+
+def save_model(model_id):
+    """Persist the selected model so it's remembered across restarts and picked
+    up by build_config()/get_model() the next time a worker is created."""
+    FreeCAD.ParamGet(_PARAM_PATH).SetString("Model", model_id)
 
 
 def get_effort():

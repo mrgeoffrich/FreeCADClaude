@@ -327,6 +327,12 @@ class AgentWorker(QtCore.QObject):
         (called from the GUI thread alongside reset_session on "New")."""
         self._log_dir = path
 
+    def set_model(self, model):
+        """Set the model for subsequent turns (called from the GUI thread at the
+        start of a conversation, before the model is locked for its duration).
+        Read fresh each turn by _build_argv, so it takes effect on the next turn."""
+        self._config["model"] = model
+
     def cancel(self):
         """Terminate the in-flight CLI turn (safe to call from the GUI thread)."""
         self._cancelled = True
