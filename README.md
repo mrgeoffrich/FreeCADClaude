@@ -47,8 +47,9 @@ git clone https://github.com/mrgeoffrich/FreeCADClaude \
 ```
 
 Then **restart FreeCAD** and choose **Claude Chat** from the workbench selector.
-For Linux, verifying the `Mod` path for your build, or troubleshooting, see
-[Installation](#installation) below.
+Prefer a GUI with automatic updates? Install through FreeCAD's **Addon Manager**
+using this repo's URL instead — see [Installation](#installation) below, which
+also covers Linux and verifying the `Mod` path for your build.
 
 ## What's here
 
@@ -83,6 +84,25 @@ FreeCADClaude/
 - No Python packages.
 
 ## Installation
+
+The easiest way is through FreeCAD's **Addon Manager** — no cloning, and you get
+update checks like any indexed addon. It still needs the
+[prerequisites](#1-prerequisites) below (the `claude` CLI), so set those up
+first, then:
+
+1. In FreeCAD, open **Tools → Addon manager** (accept the third-party notice on
+   first use).
+2. Open its configuration — the **⚙ gear** icon in the Addon Manager window (or
+   **Edit → Preferences → Addon Manager**) — and under **Custom repositories**
+   add a new entry:
+   - **Repository URL:** `https://github.com/mrgeoffrich/FreeCADClaude`
+   - **Branch:** `main`
+3. Close preferences; back in the Addon Manager the addon now appears in the
+   list. Select **FreeCADClaude** and click **Install**.
+4. **Restart FreeCAD**, then pick **Claude Chat** from the workbench selector.
+
+Prefer the command line, or want to hack on the code? The manual steps below
+(clone or copy into the `Mod` dir) still work.
 
 ### 1. Prerequisites
 
