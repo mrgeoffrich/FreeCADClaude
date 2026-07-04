@@ -178,15 +178,3 @@ pwsh -File eval/run.ps1 -Prompt "Create a cylinder r5 h30 named C" `
 `-Expect` is a regex matched against the result JSON; the script exits 0 (PASS),
 1 (FAIL), or 2 (eval didn't complete). The trigger is the `FREECADCLAUDE_EVAL`
 environment variable, handled in `InitGui.py` → `freecad/freecadclaude/eval_runner.py`.
-
-## Roadmap
-
-- **M1 (done):** workbench + right-side dock panel + local echo.
-- **M2 (done):** drives the `claude` CLI (your account) on a worker thread;
-  streamed replies, multi-turn via `--resume`.
-- **M3 (done):** FreeCAD tools exposed to the CLI over a custom MCP bridge,
-  executed on the GUI thread inside undoable transactions.
-- **M4 (done):** curated toolset — read/inspect, view capture & cutaway, export,
-  and confirm-gated `run_python` with an approval dialog; plus a Plan & Tasks
-  panel and an optional skills project.
-```
