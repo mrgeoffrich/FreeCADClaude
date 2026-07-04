@@ -7,6 +7,8 @@
   <maintainer email="geoff.rich@gmail.com">Geoff Rich</maintainer>
   <license file="LICENSE">LGPL-2.1-or-later</license>
   <url type="repository" branch="main">https://github.com/mrgeoffrich/FreeCADClaude</url>
+  <url type="readme">https://raw.githubusercontent.com/mrgeoffrich/FreeCADClaude/main/README.md</url>
+  <url type="bugtracker">https://github.com/mrgeoffrich/FreeCADClaude/issues</url>
   <icon>freecad/freecadclaude/resources/icon.svg</icon>
   <content>
     <workbench>
@@ -18,6 +20,11 @@
       <subdirectory>.</subdirectory>
       <description>Talk to Claude with access to FreeCAD.</description>
       <icon>freecad/freecadclaude/resources/icon.svg</icon>
+      <tag>AI</tag>
+      <tag>assistant</tag>
+      <tag>chat</tag>
+      <tag>automation</tag>
+      <freecadmin>1.1.0</freecadmin>
     </workbench>
   </content>
 </package>
