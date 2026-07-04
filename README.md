@@ -1,28 +1,43 @@
 # FreeCADClaude (FreeCAD addon)
 
 A FreeCAD workbench that docks a **Claude chat panel** on the right-hand side
-of the main window. The long-term goal is to let Claude act on the active
-document through curated FreeCAD tools.
+of the main window and lets Claude act on the active document through a curated
+set of FreeCAD tools.
 
-> **Status: Milestone 2 — live chat.** The panel drives the `claude` CLI as a
-> hidden subprocess, authenticating with your own Claude account (no API key,
-> no cost). Replies stream into the UI from a background thread. Chat only: the
-> CLI is launched with all tools disabled, so it cannot touch your system.
+> **Status: active.** The panel drives the `claude` CLI as a hidden subprocess,
+> authenticating with your own Claude account (no API key, no cost). Replies
+> stream into the UI from a background thread, and Claude can act on the live
+> document through a curated set of tools: it reads objects and selections,
+> *sees* your geometry via screenshots and section (cutaway) views, inspects the
+> API, exports files, and — behind a **per-call confirmation dialog** — runs
+> Python against the document inside an undoable transaction (`run_python`).
+>
+> **What it can touch:** the only path that changes your document is the
+> confirm-gated `run_python` — you approve each call, and on error the
+> transaction is rolled back. `Write` can create or overwrite files on disk (but
+> never the live document); every other tool is read-only. `Bash` and `Edit`
+> are disabled.
 
 ## What's here
 
 ```
 FreeCADClaude/
-├── Init.py                 # App-side init (no-op; no GUI imports)
-├── InitGui.py              # Registers the workbench + toolbar/menu command
+├── Init.py                 # App-side init (no GUI imports)
+├── InitGui.py              # Registers the workbench + command; eval hook
 ├── package.xml             # Addon Manager metadata
+├── mcp_server.py           # Stdlib MCP stdio server the CLI spawns; relays to the bridge
 └── freecad/freecadclaude/
-    ├── __init__.py
-    ├── chat_panel.py       # The QDockWidget + chat widget (singleton)
-    ├── agent_worker.py     # Drives the claude CLI subprocess; parses stream-json
-    ├── agent_config.py     # Model + system prompt
+    ├── chat_panel.py       # The chat dock: streamed transcript, buttons, worker wiring
+    ├── plan_panel.py       # Second dock: Plan (subagent output) + live task checklist
+    ├── transcript_widgets.py  # Chat transcript rendering widgets
+    ├── agent_worker.py     # Drives the claude CLI per turn; parses stream-json → Qt signals
+    ├── agent_config.py     # Model, system prompt, CLI flags (tools/mcp/cwd/skills)
+    ├── system_prompt.md    # The system prompt text
+    ├── gui_bridge.py       # In-FreeCAD socket server; runs tools on the GUI thread
+    ├── freecad_tools.py    # Tool registry + implementations + capture/export helpers
     ├── _deps.py            # Locates the claude CLI
     ├── commands.py         # FreeCADClaude_TogglePanel command
+    ├── eval_runner.py      # Unattended end-to-end eval (env-var triggered)
     └── resources/icon.svg
 ```
 
@@ -116,8 +131,10 @@ environment variable, handled in `InitGui.py` → `freecad/freecadclaude/eval_ru
 
 - **M1 (done):** workbench + right-side dock panel + local echo.
 - **M2 (done):** drives the `claude` CLI (your account) on a worker thread;
-  streamed replies, multi-turn via `--resume`, all tools disabled.
-- **M3:** first FreeCAD tool — expose it to the CLI as a custom MCP/tool the
-  agent can call, executed on the GUI thread inside an undoable transaction.
-- **M4:** expanded toolset / guarded `run_python`, permission UI.
+  streamed replies, multi-turn via `--resume`.
+- **M3 (done):** FreeCAD tools exposed to the CLI over a custom MCP bridge,
+  executed on the GUI thread inside undoable transactions.
+- **M4 (done):** curated toolset — read/inspect, view capture & cutaway, export,
+  and confirm-gated `run_python` with an approval dialog; plus a Plan & Tasks
+  panel and an optional skills project.
 ```
