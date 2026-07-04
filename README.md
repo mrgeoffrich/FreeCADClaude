@@ -165,9 +165,10 @@ When set, the agent runs with that as its working dir and enables the
 
 ## Evaluation
 
-`eval/run.ps1` runs an end-to-end test: it launches FreeCAD, opens the chat
-panel, submits a prompt through the real agent (auto-approving `run_python`),
-waits for the turn, snapshots the resulting document to JSON, and quits.
+`eval/run.ps1` (Windows) and `eval/run.sh` (macOS/Linux) run an end-to-end
+test: launch FreeCAD, open the chat panel, submit a prompt through the real
+agent (auto-approving `run_python`), wait for the turn, snapshot the resulting
+document to JSON, and quit.
 
 ```powershell
 pwsh -File eval/run.ps1                                  # default box prompt
@@ -175,6 +176,23 @@ pwsh -File eval/run.ps1 -Prompt "Create a cylinder r5 h30 named C" `
      -Expect '"type":\s*"Part::Cylinder"'               # with a PASS/FAIL check
 ```
 
-`-Expect` is a regex matched against the result JSON; the script exits 0 (PASS),
-1 (FAIL), or 2 (eval didn't complete). The trigger is the `FREECADCLAUDE_EVAL`
-environment variable, handled in `InitGui.py` → `freecad/freecadclaude/eval_runner.py`.
+```bash
+./eval/run.sh                                            # default box prompt
+./eval/run.sh -p "Create a cylinder r5 h30 named C" \
+              -e '"type":\s*"Part::Cylinder"'            # with a PASS/FAIL check
+```
+
+`-Expect`/`-e` is a regex matched against the result JSON; the script exits
+0 (PASS), 1 (FAIL), or 2 (eval didn't complete). The trigger is the
+`FREECADCLAUDE_EVAL` environment variable, handled in `InitGui.py` →
+`freecad/freecadclaude/eval_runner.py`.
+
+**Judging *behaviour*, not just the snapshot.** The result JSON only records
+object names, types and dimensions — enough for a regex like "did a Cylinder
+get created", but not for *how* the agent got there. To evaluate a
+behaviour/prompt change (did it cut in the right direction, review the sketch
+before pocketing, recover from a warning, and in how many steps), read the
+run's own session folder under `~/FreeCADClaude/<newest>/`:
+`stream.jsonl` (the tool calls, plus the per-operation volume/solid-count delta
+and `⚠` notes folded into each tool result) and `scripts/` (every approved
+`run_python`, in order). `run.sh` prints that session path when it finishes.
