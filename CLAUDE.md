@@ -49,10 +49,10 @@ chat panel (GUI thread)
 ## Tools
 
 Registry: `freecad_tools.TOOLS` = name → `{schema, run, confirm?}`. Current set:
-`create_box`, `get_objects`, `get_selection`, `view_sketch_svg`, `capture_view`,
+`get_objects`, `get_selection`, `view_sketch_svg`, `capture_view`,
 `capture_user_view`, `crop_view`, `cutaway`, `export`, `inspect_api`,
-`get_diagnostics`, `run_python` (confirm-gated; the general Sketcher/PartDesign/
-Part path).
+`get_diagnostics`, `run_python` (confirm-gated; the sole document-mutating tool —
+the general Sketcher/PartDesign/Part path).
 
 **Adding a tool** is purely additive: add a `{schema, run}` entry. `run(args)`
 executes on the GUI thread and returns a string; the MCP allow-list and the
@@ -116,6 +116,13 @@ every conversation gets its own folder; `session_dir()` resolves the active one
 failed runs are archived); the same session folder also holds `stream.jsonl` — the
 raw newline-delimited JSON `agent_worker` reads from the `claude` CLI, appended
 turn-by-turn (`AgentWorker._open_log`) — handy for diagnosing a turn after the fact.
+Optionally, `steps/` holds a numbered `.FCStd` snapshot of the document after each
+successful `run_python` (via `_save_step_snapshot`, using `doc.saveCopy` so the doc's
+own FileName is untouched) — off by default; enabled by the `SaveSteps` FreeCADClaude
+preference, the `FREECADCLAUDE_SAVE_STEPS=1` env var, or `freecad_tools._save_steps["on"]`
+(the eval sets this). Lets you open the model at each build step; parallels `scripts/`
+(one `.FCStd` per successful call ↔ one `.py` per call). The end-to-end eval also drops
+a final `<DocLabel>.FCStd` in the session root (`eval_runner._save_final_documents`).
 `~/FreeCADClaude/sketches` sits outside any session: it holds `freecad-lofi-sketch`'s
 concept SVGs, written directly by Claude via `Write` (not auto-pruned, since they
 bypass `_artifact_path`, and not session-scoped since a sketch can precede any chat

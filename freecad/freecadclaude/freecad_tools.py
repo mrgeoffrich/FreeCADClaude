@@ -160,6 +160,54 @@ def _save_run_python_script(code, description):
         pass
 
 
+#: When on, _run_python saves a numbered .FCStd snapshot of the document after
+#: every successful commit, under <session_dir>/steps/, so the model can be
+#: opened at each step of a build. Off by default; the eval turns it on
+#: (eval_runner), and interactive sessions can enable it via the "SaveSteps"
+#: FreeCADClaude preference or the FREECADCLAUDE_SAVE_STEPS=1 env var.
+_save_steps = {"on": os.environ.get("FREECADCLAUDE_SAVE_STEPS") == "1"}
+
+
+def _save_steps_enabled():
+    """Whether per-step .FCStd snapshots are on (in-process flag OR preference)."""
+    if _save_steps["on"]:
+        return True
+    try:
+        import FreeCAD
+
+        return bool(FreeCAD.ParamGet(_PARAM_PATH).GetBool("SaveSteps", False))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _save_step_snapshot(doc, description):
+    """Save a numbered .FCStd snapshot of `doc` under <session_dir>/steps/.
+
+    Uses doc.saveCopy so the document's own FileName / modified flag is left
+    untouched -- an interactive user's real save location is never hijacked.
+    Named "<NNN>_<description>.FCStd" (zero-padded so a plain listing sorts in
+    build order); the number is max-existing + 1, staying monotonic even after
+    pruning removes early steps. Best effort -- a save failure must not block the
+    run_python result. Returns the path or None.
+    """
+    try:
+        folder = os.path.join(session_dir(), "steps")
+        os.makedirs(folder, exist_ok=True)
+        _prune_folder(folder, keep=60)
+        n = 0
+        for f in os.listdir(folder):
+            head = f.split("_", 1)[0]
+            if head.isdigit():
+                n = max(n, int(head))
+        safe = "".join(c if c.isalnum() or c in "-_" else "_"
+                       for c in (description or "")) or "step"
+        path = os.path.join(folder, f"{n + 1:03d}_{safe}.FCStd")
+        doc.saveCopy(path)
+        return path
+    except Exception:  # noqa: BLE001
+        return None
+
+
 #: Orthographic projection directions for 3D -> SVG views.
 _PROJECTION_DIRS = {
     "front": (0, -1, 0), "rear": (0, 1, 0), "back": (0, 1, 0),
@@ -429,61 +477,6 @@ def _flat_crop_svg(svg_text, obj, crop_box):
     return svg_text
 
 
-#: MCP tool schema for create_box (name/description/inputSchema).
-_CREATE_BOX_SCHEMA = {
-    "name": "create_box",
-    "description": (
-        "Create a rectangular box (Part::Box) in the active FreeCAD document. "
-        "Creates a new document if none is open. Dimensions are in millimetres."
-    ),
-    "inputSchema": {
-        "type": "object",
-        "properties": {
-            "length": {"type": "number", "description": "Length along X in mm"},
-            "width": {"type": "number", "description": "Width along Y in mm"},
-            "height": {"type": "number", "description": "Height along Z in mm"},
-        },
-        "required": ["length", "width", "height"],
-    },
-}
-
-
-def _run_create_box(args):
-    import FreeCAD
-    import Part  # noqa: F401 - ensures Part::Box type is registered
-
-    length = float(args["length"])
-    width = float(args["width"])
-    height = float(args["height"])
-
-    doc = FreeCAD.ActiveDocument or FreeCAD.newDocument()
-    doc.openTransaction("FreeCADClaude: create box")
-    try:
-        box = doc.addObject("Part::Box", "Box")
-        box.Length = length
-        box.Width = width
-        box.Height = height
-        doc.recompute()
-        doc.commitTransaction()
-    except Exception:
-        doc.abortTransaction()
-        raise
-
-    # Best-effort: frame the result in the active view.
-    try:
-        import FreeCADGui
-
-        FreeCADGui.SendMsgToActiveView("ViewFit")
-    except Exception:  # noqa: BLE001
-        pass
-
-    return (
-        f"Created box '{box.Name}' "
-        f"({length:g} x {width:g} x {height:g} mm) "
-        f"in document '{doc.Label}'."
-    )
-
-
 _GET_OBJECTS_SCHEMA = {
     "name": "get_objects",
     "description": (
@@ -663,6 +656,12 @@ def _run_python(args):
         if captured:
             msg += "\n--- stdout before error ---\n" + captured
         return msg
+
+    # Optional: snapshot the committed document so the build can be reviewed step
+    # by step (off by default; see _save_steps_enabled). Kept out of the reply so
+    # it stays a purely on-disk artifact and doesn't nudge the model.
+    if _save_steps_enabled():
+        _save_step_snapshot(doc, args.get("description") or "")
 
     parts = ["OK (committed)."]
     captured = stdout.getvalue()
@@ -2479,8 +2478,8 @@ def summarize_new_failures():
 
 #: Tools that can mutate document geometry -- the only ones worth snapshotting
 #: for a before/after volume diff (every other tool is read-only, so its diff is
-#: always empty). run_python is the general path; create_box the one shortcut.
-MUTATING_TOOLS = {"run_python", "create_box"}
+#: always empty). run_python is the sole document-mutating tool.
+MUTATING_TOOLS = {"run_python"}
 
 #: TypeId substrings identifying material-removing PartDesign features. Matched
 #: by substring so the whole family (Pocket/Groove/Hole plus every Subtractive*
@@ -2729,7 +2728,6 @@ def _run_get_diagnostics(args):
 
 
 TOOLS = {
-    "create_box": {"schema": _CREATE_BOX_SCHEMA, "run": _run_create_box},
     "get_objects": {"schema": _GET_OBJECTS_SCHEMA, "run": _run_get_objects},
     "get_selection": {"schema": _GET_SELECTION_SCHEMA, "run": _run_get_selection},
     "view_sketch_svg": {"schema": _VIEW_SKETCH_SVG_SCHEMA, "run": _run_view_sketch_svg},
