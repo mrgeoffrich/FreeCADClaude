@@ -18,6 +18,33 @@ set of FreeCAD tools.
 > never the live document); every other tool is read-only. `Bash` and `Edit`
 > are disabled.
 
+## Quick install
+
+**Prerequisites:** [FreeCAD 1.1+](https://www.freecad.org/) and
+[Node.js](https://nodejs.org/) (for the Claude Code CLI). You log in once with
+your own Claude account — no API key and no extra cost (it uses your existing
+Pro/Max plan).
+
+**Windows** (PowerShell):
+```powershell
+npm install -g @anthropic-ai/claude-code   # install the Claude Code CLI
+claude                                      # log in once (opens a browser), then exit
+git clone https://github.com/mrgeoffrich/FreeCADClaude `
+  "$env:APPDATA\FreeCAD\v1-1\Mod\FreeCADClaude"
+```
+
+**macOS** (Terminal):
+```bash
+npm install -g @anthropic-ai/claude-code   # install the Claude Code CLI
+claude                                      # log in once (opens a browser), then exit
+git clone https://github.com/mrgeoffrich/FreeCADClaude \
+  "$HOME/Library/Application Support/FreeCAD/v1-1/Mod/FreeCADClaude"
+```
+
+Then **restart FreeCAD** and choose **Claude Chat** from the workbench selector.
+For Linux, verifying the `Mod` path for your build, or troubleshooting, see
+[Installation](#installation) below.
+
 ## What's here
 
 ```
