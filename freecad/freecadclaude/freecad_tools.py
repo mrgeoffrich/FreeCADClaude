@@ -606,6 +606,48 @@ def _precheck_python(args):
     return ""
 
 
+def _doc_alive(doc):
+    """True while `doc` still references a live document. Running code can close
+    the document out from under us (e.g. App.closeDocument); the handle then
+    becomes a deleted C++ object and ANY attribute access on it raises, so this
+    is how we detect that before touching the stale transaction. Checks the
+    handle, not the name -- a closed document's name can be reused by a new one."""
+    try:
+        doc.Name
+        return True
+    except Exception:  # noqa: BLE001 - ReferenceError on a deleted document
+        return False
+
+
+def _document_closed_msg(doc_name, stdout_text, tb=None):
+    """Reply for when run_python code closed the document it was operating on.
+
+    The transaction we opened went with the document, so there's nothing to
+    commit or roll back on our now-deleted handle -- steer back to the supported
+    pattern instead of surfacing a bare 'deleted object' ReferenceError."""
+    import FreeCAD
+
+    active = FreeCAD.ActiveDocument
+    parts = [
+        f"run_python closed the active document '{doc_name}' mid-call. Avoid "
+        "closing or recreating the document from inside run_python: each call "
+        "runs in an undoable transaction on that document, so closing it leaves "
+        "nothing to commit and undo can't cover the change. To redo a document's "
+        "contents, remove the objects with doc.removeObject(name) and rebuild "
+        "them in place instead.",
+        f"The active document is now '{active.Name}'." if active is not None
+        else "There is no active document now.",
+    ]
+    if tb:
+        parts.append(
+            "The code also raised before finishing (no rollback was possible -- "
+            "the document was already gone):\n" + tb
+        )
+    if stdout_text:
+        parts.append("stdout:\n" + stdout_text)
+    return "\n".join(parts)
+
+
 def _run_python(args):
     import contextlib
     import io
@@ -633,16 +675,26 @@ def _run_python(args):
             pass
 
     existing = {obj.Name for obj in doc.Objects}
+    doc_name = doc.Name  # remember it now -- the handle dies if the code closes it
     doc.openTransaction("FreeCADClaude: run_python")
     stdout = io.StringIO()
     try:
         with contextlib.redirect_stdout(stdout):
             exec(code, namespace)  # noqa: S102 - intentional, user-approved
+        if not _doc_alive(doc):
+            # The code closed the document mid-run; the transaction went with it,
+            # so don't touch the stale handle -- report it and bail cleanly.
+            return _document_closed_msg(doc_name, stdout.getvalue())
         doc.recompute()
         doc.commitTransaction()
     except Exception:
-        doc.abortTransaction()
         tb = traceback.format_exc()
+        captured = stdout.getvalue()
+        if not _doc_alive(doc):
+            # Same case, but the code also raised: no rollback is possible on a
+            # document that no longer exists, so don't crash trying to abort it.
+            return _document_closed_msg(doc_name, captured, tb)
+        doc.abortTransaction()
         # Safety net: if undo is disabled (so abort didn't roll back), remove any
         # objects this failed run added. No-op when abort already removed them.
         for obj in list(doc.Objects):
@@ -651,7 +703,6 @@ def _run_python(args):
                     doc.removeObject(obj.Name)
                 except Exception:  # noqa: BLE001
                     pass
-        captured = stdout.getvalue()
         msg = "Execution failed (rolled back):\n" + tb
         if captured:
             msg += "\n--- stdout before error ---\n" + captured
