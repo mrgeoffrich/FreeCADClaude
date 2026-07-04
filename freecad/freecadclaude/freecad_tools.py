@@ -241,6 +241,25 @@ def _bbox_dict(bbox):
     }
 
 
+def _extent_report(bbox):
+    """One-line 'X a..b, Y c..d, Z e..f mm' of a world BoundBox for capture
+    results, or None if the box is empty/degenerate.
+
+    Reported alongside the camera angle so Claude can read off the shown
+    geometry's position and size in world coords -- and, combined with the
+    azimuth/elevation, work out which way X/Y/Z run in the image -- without a
+    follow-up get_objects call. Uses the same axis order as the crop params.
+    """
+    if bbox is None or bbox.XMin > bbox.XMax:
+        return None
+    d = _bbox_dict(bbox)
+    return (
+        f"X {d['x_min']:g}..{d['x_max']:g}, "
+        f"Y {d['y_min']:g}..{d['y_max']:g}, "
+        f"Z {d['z_min']:g}..{d['z_max']:g} mm"
+    )
+
+
 def _svg_fragment_bounds(fragment):
     """(minx, miny, maxx, maxy) spanning every coordinate in `fragment`'s
     path data, or None if it has none.
@@ -1255,11 +1274,22 @@ def _save_view_png(view, png_path, width, height):
 
 
 def _looks_blank(png_path):
-    """True if the saved PNG is essentially just the background (plus the tiny
-    axis gizmo) -- i.e. the framing missed the geometry. Lets the capture tools
-    tell Claude 'that came out empty' instead of silently handing back a black
-    image it can't tell apart from a genuinely wrong/hidden model. Best-effort:
-    any read failure returns False (assume not blank)."""
+    """True if the saved PNG is essentially just the render background (plus the
+    tiny axis gizmo) -- i.e. the framing missed the geometry. Lets the capture
+    tools tell Claude 'that came out empty' instead of silently handing back a
+    background-only image it can't tell apart from a genuinely wrong/hidden model.
+
+    Blank means "predominantly the KNOWN capture background" (`_CAPTURE_BG`), not
+    "predominantly whatever colour the corner pixel happens to be". Sampling the
+    corner as background looks right until a crop (crop_view, or capture_view with
+    x_min..z_max) zooms entirely inside a solid face: then the whole frame -- corner
+    included -- is the object's shaded grey, so a corner-relative test reads a
+    perfectly-framed close-up as uniform "background" and fires a bogus 'came out
+    empty' warning (and, on the capture_view path, throws the crop away for a
+    fitAll fallback). Anchoring to the real background instead means a uniform
+    *non-background* fill correctly counts as content. All three callers render via
+    _save_view_png on _CAPTURE_BG, so this is exact for every one. Best-effort: any
+    read failure returns False (assume not blank)."""
     try:
         from PySide import QtGui
 
@@ -1267,7 +1297,9 @@ def _looks_blank(png_path):
         if img.isNull() or img.width() == 0 or img.height() == 0:
             return False
         w, h = img.width(), img.height()
-        bg = img.pixelColor(0, 0)  # a corner is always background
+        bg = QtGui.QColor(_CAPTURE_BG)  # the background we actually rendered on
+        if not bg.isValid():  # fall back to a corner only if the name won't parse
+            bg = img.pixelColor(0, 0)
         br, bgc, bb = bg.red(), bg.green(), bg.blue()
         step = max(1, min(w, h) // 150)  # subsample to ~30k points
         content = total = 0
@@ -1468,10 +1500,12 @@ def _run_capture_view(args):
     warnings = []
     measured = None
     saved = []
+    saved_sel = []
     try:
         # Show only the requested objects; fitAll (in _apply_camera_plan) then
         # frames tightly on exactly them. Restored in the finally below.
         saved = _isolate_visibility(doc, keep_set)
+        saved_sel = _suspend_selection(doc)  # drop selection highlight for the shot
         if subwindow is not None:
             subwindow.resize(width, height)
 
@@ -1538,6 +1572,7 @@ def _run_capture_view(args):
             _last_capture.update(camera=None)
     finally:
         _restore_visibility(saved)
+        _restore_selection(saved_sel)
         if prev_modified is not None:
             try:
                 gui_doc.Modified = prev_modified
@@ -1565,6 +1600,9 @@ def _run_capture_view(args):
             "elevation (azimuth + swings right / - left; elevation + lifts the "
             "camera for a more top-down look / - drops it to look upward)."
         )
+    framed_extents = _extent_report(_document_bbox(doc, names=keep_set))
+    if framed_extents:
+        text += f" Shown geometry spans {framed_extents} (world coords)."
     if warnings:
         text += "\n\n" + "\n".join(warnings)
     return text, png_path
@@ -1730,8 +1768,10 @@ def _run_crop_view(args):
 
     blank = False
     saved = []
+    saved_sel = []
     try:
         saved = _isolate_visibility(doc, keep_set)
+        saved_sel = _suspend_selection(doc)  # drop selection highlight for the shot
         if subwindow is not None:
             subwindow.resize(width, height)
         try:
@@ -1750,6 +1790,7 @@ def _run_crop_view(args):
         blank = _looks_blank(png_path)
     finally:
         _restore_visibility(saved)
+        _restore_selection(saved_sel)
         if prev_modified is not None:
             try:
                 gui_doc.Modified = prev_modified
@@ -1991,10 +2032,12 @@ def _run_cutaway(args):
     measured = None
     degenerate_warning = None
     saved = []
+    saved_sel = []
     try:
         # Show only the requested objects; the clip then applies to just them and
         # fitAll frames them. Restored in the finally below.
         saved = _isolate_visibility(doc, keep_set)
+        saved_sel = _suspend_selection(doc)  # drop selection highlight for the shot
         if subwindow is not None:
             subwindow.resize(width, height)
 
@@ -2059,6 +2102,7 @@ def _run_cutaway(args):
         _save_view_png(view, png_path, width, height)
     finally:
         _restore_visibility(saved)
+        _restore_selection(saved_sel)
         if prev_modified is not None:
             try:
                 gui_doc.Modified = prev_modified
@@ -2070,6 +2114,9 @@ def _run_cutaway(args):
     if measured is not None:
         meas_az, meas_el = measured
         text += f" Camera angle: azimuth {meas_az:.0f} deg, elevation {meas_el:.0f} deg."
+    framed_extents = _extent_report(_document_bbox(doc, names=keep_set))
+    if framed_extents:
+        text += f" Shown geometry spans {framed_extents} (world coords)."
     text += (
         " The cut is hollow -- you're seeing the interior surfaces the clip "
         "exposed, not a filled cross-section."
@@ -2246,6 +2293,51 @@ def _restore_visibility(saved):
     for vo, prior in reversed(saved):
         try:
             vo.Visibility = prior
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _suspend_selection(doc):
+    """Clear `doc`'s 3D selection for an offscreen capture and return the saved
+    selection for _restore_selection to put back.
+
+    A selected object renders in the highlight colour (green), which would
+    misrepresent its real appearance in the screenshot, so we drop the selection
+    just for the render. Selection is transient Gui state (not a document
+    property), so this doesn't dirty Modified; and because the whole tool call is
+    one blocked GUI-thread event, the user's real view never repaints in between,
+    so restoring it afterwards is invisible to them. Clear is scoped to `doc` so a
+    selection in another open document is left untouched. Mirrors
+    _isolate_visibility/_restore_visibility. Never raises.
+    """
+    import FreeCADGui
+
+    try:
+        saved = list(FreeCADGui.Selection.getSelectionEx(doc.Name))
+    except Exception:  # noqa: BLE001
+        return []
+    if saved:
+        try:
+            FreeCADGui.Selection.clearSelection(doc.Name)
+        except Exception:  # noqa: BLE001
+            return []
+    return saved
+
+
+def _restore_selection(saved):
+    """Re-add the selection cleared by _suspend_selection, sub-elements and all."""
+    if not saved:
+        return
+    import FreeCADGui
+
+    for sel in saved:
+        try:
+            subs = list(getattr(sel, "SubElementNames", None) or [])
+            if subs:
+                for sub in subs:
+                    FreeCADGui.Selection.addSelection(sel.Object, sub)
+            else:
+                FreeCADGui.Selection.addSelection(sel.Object)
         except Exception:  # noqa: BLE001
             pass
 
