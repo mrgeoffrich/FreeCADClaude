@@ -55,10 +55,21 @@ explains why). Not approach/workflow advice — if the user just wants to know
    setup → base feature → each additive/subtractive feature or small group →
    patterns → dress-ups last, mirroring the model-intent order
    `freecad-design-advisor` already advises.
-5. **Verify after each step** with `get_objects`, `get_diagnostics`, or
+5. **For a sketch-based feature, split the sketch from the feature and review
+   the sketch visually in between.** Create and fully constrain the sketch on
+   its plane/face in one call, then `capture_view` the sketch *together with
+   the existing solid* (`objects=[Body, Sketch]`, top or a revealing angle) to
+   confirm it's positioned/sized/oriented as intended — a sketch attached to a
+   face whose local origin isn't where you assumed lands the profile off-centre,
+   and that's invisible until you look. Only then add the Pad/Pocket/etc. in the
+   next call. (`view_sketch_svg` gives exact 2D coordinates but is drawn in the
+   sketch's own frame, so capture it *with* the solid to judge position.)
+6. **Verify after each step** with `get_objects`, `get_diagnostics`, or
    `view_sketch_svg` rather than chaining several blind steps — a clean
-   commit doesn't mean the feature recomputed cleanly.
-6. **On failure, read the traceback, fix, and resend** — the failed call
+   commit doesn't mean the feature recomputed cleanly. The tool result also
+   reports each feature's added/removed volume and solid-count change; read it
+   to confirm the operation did what you intended.
+7. **On failure, read the traceback, fix, and resend** — the failed call
    already rolled back cleanly, so there's no cleanup needed before retrying.
 
 ## Reference files — read the ones you need
@@ -88,7 +99,9 @@ explains why). Not approach/workflow advice — if the user just wants to know
 - **Confirm the plan** (dimensions, which parts/features) before writing
   code if it isn't already pinned down — don't silently invent numbers.
 - **One coherent step per `run_python` call**, in model-intent order (base
-  sketch/feature → additive/subtractive → patterns → dress-ups last).
+  sketch/feature → additive/subtractive → patterns → dress-ups last). For a
+  sketch-based feature, make the sketch its own step and `capture_view` it
+  *with* the solid to check its position before consuming it in the next call.
 - **Look up, don't guess** — reference file or `inspect_api` before any
   unfamiliar property/signature.
 - **Verify between steps** — `get_objects`/`get_diagnostics`/
