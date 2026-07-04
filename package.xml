@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no" ?>
 <package format="1" xmlns="https://wiki.freecad.org/Package_Metadata">
   <name>FreeCADClaude</name>
-  <description>A dockable chat panel that lets you talk to Claude with access to FreeCAD's internals.</description>
+  <description>A dockable chat panel that lets you talk to Claude with access to FreeCAD's internals. Unofficial — not affiliated with or endorsed by Anthropic.</description>
   <version>0.1.0</version>
   <date>2026-06-26</date>
   <maintainer email="geoff.rich@gmail.com">Geoff Rich</maintainer>

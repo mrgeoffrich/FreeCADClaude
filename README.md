@@ -4,6 +4,11 @@ A FreeCAD workbench that docks a **Claude chat panel** on the right-hand side
 of the main window and lets Claude act on the active document through a curated
 set of FreeCAD tools.
 
+*Unofficial community project — not affiliated with, endorsed by, or sponsored
+by Anthropic. "Claude" is a trademark of Anthropic, PBC. It drives your own
+[Claude Code](https://www.anthropic.com/claude-code) CLI and Claude
+subscription; intended for personal use.*
+
 > **Status: active.** The panel drives the `claude` CLI as a hidden subprocess,
 > authenticating with your own Claude account (no API key, no cost). Replies
 > stream into the UI from a background thread, and Claude can act on the live
