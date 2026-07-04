@@ -10,7 +10,7 @@ rendering the whole conversation as one big Markdown string on a single
 QTextBrowser, so any entry can be collapsed independently of the rest.
 """
 
-from PySide import QtCore, QtWidgets
+from PySide import QtCore, QtGui, QtWidgets
 
 #: Role label colours, reused for both the live widget headers and the
 #: plain-Markdown reconstruction in TranscriptView.to_markdown().
@@ -72,6 +72,50 @@ class _AutoHeightTextBrowser(QtWidgets.QTextBrowser):
             self.setFixedHeight(h)
 
 
+class _ThumbnailLabel(QtWidgets.QLabel):
+    """A click-to-open image thumbnail that rescales to fit its current width.
+
+    Used to show the PNG a capture tool produced inside its transcript entry.
+    Scaling happens on every resizeEvent (so it tracks the resizable dock width),
+    capped at the image's natural size so we never upscale; clicking opens the
+    full-resolution file in the OS image viewer.
+    """
+
+    def __init__(self, path, parent=None):
+        super().__init__(parent)
+        self._path = path
+        self._pixmap = QtGui.QPixmap(path)
+        self._last_w = -1
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+        if self._pixmap.isNull():
+            self.setText("*(image unavailable)*")
+        else:
+            self.setCursor(QtCore.Qt.PointingHandCursor)
+            self.setToolTip("Click to open the full-size capture")
+            self._rescale(self.width())
+
+    def _rescale(self, width):
+        if self._pixmap.isNull():
+            return
+        target = min(self._pixmap.width(), max(1, width))
+        if target == self._last_w:
+            return  # avoid a resize -> setPixmap -> resize churn
+        self._last_w = target
+        scaled = self._pixmap.scaledToWidth(target, QtCore.Qt.SmoothTransformation)
+        self.setPixmap(scaled)
+        self.setFixedHeight(scaled.height())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._rescale(self.width())
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton and not self._pixmap.isNull():
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(self._path))
+        super().mousePressEvent(event)
+
+
 class CollapsibleSection(QtWidgets.QWidget):
     """One transcript entry: a checkable header that toggles an auto-height
     Markdown content browser."""
@@ -92,6 +136,8 @@ class CollapsibleSection(QtWidgets.QWidget):
         self._tool_name = tool_name
         self._raw_text = ""
         self._live = live
+        self._image = None          # optional _ThumbnailLabel (capture tools)
+        self._image_path = None
         self._build_ui()
         self.set_collapsed(self._DEFAULT_COLLAPSED.get(kind, False) if collapsed is None else collapsed)
         self._refresh_header()
@@ -105,6 +151,7 @@ class CollapsibleSection(QtWidgets.QWidget):
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+        self._outer = outer
         self._toggle = QtWidgets.QToolButton(self)
         self._toggle.setCheckable(True)
         self._toggle.setAutoRaise(True)
@@ -120,11 +167,26 @@ class CollapsibleSection(QtWidgets.QWidget):
         self._toggle.setChecked(not collapsed)
         self._toggle.setArrowType(QtCore.Qt.RightArrow if collapsed else QtCore.Qt.DownArrow)
         self._browser.setVisible(not collapsed)
+        if self._image is not None:
+            self._image.setVisible(not collapsed)
         if not collapsed:
             self._browser.sync_height()
 
     def is_collapsed(self):
         return not self._toggle.isChecked()
+
+    @property
+    def tool_name(self):
+        return self._tool_name
+
+    def set_image(self, path):
+        """Show `path` as a click-to-open thumbnail below this entry's text.
+        Used for capture tools; the image tracks the entry's collapse state."""
+        self._image_path = path
+        if self._image is None:
+            self._image = _ThumbnailLabel(path, self)
+            self._outer.addWidget(self._image)
+        self._image.setVisible(not self.is_collapsed())
 
     # -- content -------------------------------------------------------
 
@@ -178,7 +240,11 @@ class CollapsibleSection(QtWidgets.QWidget):
             return f'<span style="color:{MUTED_COLOR}">💭 <i>thought</i></span>\n\n{_blockquote(self._raw_text)}'
         if self.kind == "tool":
             header = f"*↪ used tool: {self._tool_name}*"
-            return f"{header}\n\n{self._raw_text}" if self._raw_text.strip() else header
+            body = f"{header}\n\n{self._raw_text}" if self._raw_text.strip() else header
+            if self._image_path:
+                url = QtCore.QUrl.fromLocalFile(self._image_path).toString()
+                body += f"\n\n![capture]({url})"
+            return body
         if self.kind == "warning":
             return f"**⚠ {self._raw_text}**"
         return self._raw_text  # "note" and anything else: already plain Markdown

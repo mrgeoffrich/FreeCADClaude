@@ -14,6 +14,8 @@ re-shown on demand. The agent thread is started lazily on the first send.
 """
 
 import html
+import os
+import re
 
 import FreeCAD
 import FreeCADGui
@@ -87,6 +89,23 @@ def _format_tool_result(text):
     if len(text) > _MAX_TOOL_RESULT_CHARS:
         text = text[:_MAX_TOOL_RESULT_CHARS] + "\n… (truncated)"
     return f"**Result:**\n\n```\n{text}\n```"
+
+
+#: Capture tools whose result carries a PNG we surface as a thumbnail.
+_CAPTURE_TOOLS = {"capture_view", "capture_user_view", "crop_view", "cutaway"}
+#: Pull the saved PNG path out of a capture tool's result text. Non-greedy so it
+#: tolerates spaces in the home path and stops at the first ".png"; "." never
+#: crosses the line, and the path always sits on one line.
+_SAVED_PNG_RE = re.compile(r"saved to (.+?\.png)")
+
+
+def _extract_capture_png(text):
+    """Absolute path of the capture PNG named in `text`, if it exists on disk."""
+    match = _SAVED_PNG_RE.search(text or "")
+    if not match:
+        return None
+    path = match.group(1)
+    return path if os.path.isfile(path) else None
 
 
 _panel_instance = None
@@ -380,6 +399,14 @@ class ChatWidget(QtWidgets.QWidget):
         if body.strip():
             body += "\n\n---\n\n"
         entry.update_content_markdown(body + _format_tool_result(result_text))
+
+        # For a capture tool, show the rendered PNG as a click-to-open thumbnail
+        # and auto-expand the (otherwise collapsed) entry so it's visible.
+        if entry.tool_name in _CAPTURE_TOOLS:
+            png = _extract_capture_png(result_text)
+            if png:
+                entry.set_image(png)
+                entry.set_collapsed(False)
 
     @QtCore.Slot()
     def _on_turn_finished(self):

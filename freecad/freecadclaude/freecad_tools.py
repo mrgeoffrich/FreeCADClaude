@@ -1759,7 +1759,7 @@ def _run_crop_view(args):
 
     text = (
         f"Zoomed into ({x1:.2f},{y1:.2f})-({x2:.2f},{y2:.2f}) of the last view and "
-        "re-rendered that region at full resolution."
+        f"re-rendered that region at full resolution, saved to {png_path}."
     )
     if blank:
         text += (
