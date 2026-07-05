@@ -2592,15 +2592,58 @@ def _feature_states(doc):
     return states
 
 
+def _sketch_states(doc):
+    """{Name: {label, bbox, fully_constrained, closed_wires, open_wires, edges}}
+    for every Sketcher::SketchObject in `doc`. Best-effort; anything unreadable is
+    skipped.
+
+    Lets the reply surface a new or edited sketch's actual extents (bbox, in world
+    coords -- placement applied), whether it's fully constrained, and its wire
+    closure, so a mirrored/mis-placed or unclosed profile is caught at the sketch
+    step -- before it's padded. The bbox is rounded so float dust doesn't read as
+    a change in the before/after diff."""
+    states = {}
+    if doc is None:
+        return states
+    for obj in doc.Objects:
+        try:
+            if obj.TypeId != "Sketcher::SketchObject":
+                continue
+            shape = getattr(obj, "Shape", None)
+            has_shape = shape is not None and not shape.isNull()
+            bbox = None
+            if has_shape and shape.BoundBox.isValid():
+                bb = shape.BoundBox
+                bbox = tuple(round(v, 3) for v in
+                             (bb.XMin, bb.XMax, bb.YMin, bb.YMax, bb.ZMin, bb.ZMax))
+            wires = shape.Wires if has_shape else []
+            closed = sum(1 for w in wires if w.isClosed())
+            states[obj.Name] = {
+                "label": obj.Label,
+                "bbox": bbox,
+                "fully_constrained": bool(getattr(obj, "FullyConstrained", False)),
+                "closed_wires": closed,
+                "open_wires": len(wires) - closed,
+                "edges": len(shape.Edges) if has_shape else 0,
+            }
+        except Exception:  # noqa: BLE001
+            continue
+    return states
+
+
 def feature_snapshot(tool_name):
-    """PartDesign solid-feature states before a mutating tool runs, for
-    post_tool_notes to diff against afterwards -- or None for read-only tools
-    (nothing they do changes geometry, so there's nothing to diff)."""
+    """State before a mutating tool runs, for post_tool_notes to diff against
+    afterwards -- or None for read-only tools (nothing they do changes geometry).
+
+    Bundles PartDesign solid-feature states and Sketcher sketch states so the
+    reply can flag both what the operation added/removed AND what each new or
+    edited sketch actually looks like (extents, constraint state, closure)."""
     if tool_name not in MUTATING_TOOLS:
         return None
     import FreeCAD
 
-    return _feature_states(FreeCAD.ActiveDocument)
+    doc = FreeCAD.ActiveDocument
+    return {"features": _feature_states(doc), "sketches": _sketch_states(doc)}
 
 
 def _wrong_direction_hint(obj):
@@ -2716,9 +2759,10 @@ def summarize_feature_changes(before):
 
     after = _feature_states(FreeCAD.ActiveDocument)
     doc = FreeCAD.ActiveDocument
+    prev_states = before.get("features", {}) if isinstance(before, dict) else {}
     lines = []
     for name, st in after.items():
-        prev = before.get(name)
+        prev = prev_states.get(name)
         if prev is not None and (
             round(prev["contribution"], 6) == round(st["contribution"], 6)
             and prev["new_solids"] == st["new_solids"]
@@ -2729,11 +2773,60 @@ def summarize_feature_changes(before):
     return "\n".join(lines)
 
 
+def _format_sketch_change(st):
+    """One-line report of a new/edited sketch: extents, constraint state, closure.
+    Escalates (⚠) an unclosed profile, which can't pad into a solid."""
+    bbox = st["bbox"]
+    if bbox:
+        span = (f"X {bbox[0]:g}..{bbox[1]:g}, Y {bbox[2]:g}..{bbox[3]:g}, "
+                f"Z {bbox[4]:g}..{bbox[5]:g} mm")
+    else:
+        span = "empty (no geometry)"
+    constraint = "fully constrained" if st["fully_constrained"] else "under-constrained"
+    n = st["closed_wires"]
+    line = (f"{st['label']} (Sketch): {span} · {constraint} · "
+            f"{n} closed wire{'' if n == 1 else 's'}")
+    if st["open_wires"] > 0:
+        return ("⚠ " + line + f"\n    {st['open_wires']} open (unclosed) wire(s) -- "
+                "a Pad/Pocket needs a closed profile; make the endpoints coincident "
+                "or the feature produces no solid.")
+    return line
+
+
+def summarize_sketch_changes(before):
+    """Per-operation report of each sketch the operation created or edited -- its
+    world-space extents, whether it's fully constrained, and its wire closure, or
+    "".
+
+    Same before/after diff as summarize_feature_changes (an unchanged sketch is
+    skipped), so a call that only pads an existing sketch re-reports nothing. Read
+    the extents to confirm the profile landed where and how you intended: a
+    fully-constrained sketch can still be mirrored or mis-placed and neither the
+    volume delta nor a recompute error would catch it."""
+    if before is None:
+        return ""
+    import FreeCAD
+
+    after = _sketch_states(FreeCAD.ActiveDocument)
+    prev_states = before.get("sketches", {}) if isinstance(before, dict) else {}
+    lines = []
+    for name, st in after.items():
+        prev = prev_states.get(name)
+        if prev is not None and all(
+            prev.get(k) == st[k]
+            for k in ("bbox", "fully_constrained", "closed_wires", "open_wires", "edges")
+        ):
+            continue  # untouched by this operation
+        lines.append(_format_sketch_change(st))
+    return "\n".join(lines)
+
+
 def post_tool_notes(tool_name, before=None):
     """Combined post-call notes to fold into a tool reply: features that newly
     failed to recompute, and -- for a mutating tool -- what each PartDesign
     feature added/removed and how the solid count changed (with the empty-cut and
-    disconnected-solid escalations).
+    disconnected-solid escalations), plus each new/edited sketch's extents,
+    constraint state and wire closure.
 
     ``before`` is feature_snapshot(tool_name), taken by the bridge just before the
     tool ran (None for read-only tools). Skipped entirely for get_diagnostics (it
@@ -2741,7 +2834,9 @@ def post_tool_notes(tool_name, before=None):
     """
     if tool_name == "get_diagnostics":
         return ""
-    notes = [summarize_new_failures(), summarize_feature_changes(before)]
+    notes = [summarize_new_failures(),
+             summarize_feature_changes(before),
+             summarize_sketch_changes(before)]
     return "\n\n".join(n for n in notes if n)
 
 
