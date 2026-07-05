@@ -5,7 +5,7 @@ Triggered from InitGui.py when the FREECADCLAUDE_EVAL env var is set. It opens t
 chat panel, submits a prompt (FREECADCLAUDE_EVAL_PROMPT), auto-approves run_python,
 waits for the turn to finish via a nested Qt event loop (so the GUI thread stays
 free to marshal tool calls), writes a JSON report (FREECADCLAUDE_EVAL_RESULT), and
-quits FreeCAD. Launch it with eval/run.ps1.
+quits FreeCAD. Launch it with eval/run.py.
 """
 
 import json

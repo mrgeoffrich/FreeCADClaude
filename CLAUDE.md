@@ -44,7 +44,7 @@ chat panel (GUI thread)
 | `freecad/freecadclaude/_deps.py` | Locates the `claude` CLI. |
 | `freecad/freecadclaude/eval_runner.py` | Unattended end-to-end eval (triggered by env var). |
 | `mcp_server.py` | Stdlib-only MCP stdio server the CLI spawns; relays to the bridge. |
-| `deploy.ps1` / `install_deps.ps1` / `eval/run.ps1` | Dev tooling (not deployed). |
+| `deploy.ps1` / `install_deps.ps1` / `eval/run.py` | Dev tooling (not deployed). |
 
 ## Tools
 
@@ -157,20 +157,22 @@ project dir (so its `.claude/skills` load) else a temp dir.
 - **Headless testing:** `freecadcmd <script.py>` for App-side logic (tool
   functions, parsing). GUI-only bits (FreeCADGui, QApplication) need
   `QT_QPA_PLATFORM=offscreen` and may lack fonts/`activeView`.
-- **End-to-end eval:** `pwsh -File eval/run.ps1 [-Prompt ... -Expect <regex>]`
-  (Windows) or `./eval/run.sh [-p ... -e <regex>]` (macOS/Linux) — launches
-  FreeCAD, runs a prompt through the real agent (auto-approving `run_python`),
-  snapshots the doc to JSON, exits 0/1/2. Both set the `FREECADCLAUDE_EVAL*`
-  env vars that `InitGui.py` → `eval_runner.py` acts on.
+- **End-to-end eval:** `python3 eval/run.py [-p ... -e <regex>]` (cross-platform
+  — one stdlib-only script, no venv needed) — launches FreeCAD, runs a prompt
+  through the real agent (auto-approving `run_python`), snapshots the doc to
+  JSON, exits 0/1/2. Sets the `FREECADCLAUDE_EVAL*` env vars that `InitGui.py` →
+  `eval_runner.py` acts on. On Windows it kills a runaway FreeCAD via
+  `taskkill /IM freecad.exe` (the exe detaches, so there's no PID to track);
+  on macOS/Linux the spawned PID *is* FreeCAD, so it kills only that PID.
   - **The result JSON is a shallow snapshot** (object names/types/dims) — fine
-    for an `-Expect`/`-e` regex ("did object X get made"), but it can't tell you
+    for an `-e`/`--expect` regex ("did object X get made"), but it can't tell you
     *how* the agent behaved. To judge a behaviour/prompt change (tool-call
     order, cut direction, whether a `⚠` note fired, how many steps it took),
     read the run's own session folder — `stream.jsonl` for the tool calls and
     the per-op volume/solid delta + `⚠` notes in each tool result, and
     `scripts/` for the ordered `run_python` calls (see "Diagnosing a past
     conversation" below). That trace, not the snapshot, is the real signal.
-    `run.sh` prints the session path on exit.
+    `run.py` prints the session path on exit.
 - **Diagnosing a past conversation:** everything for it lives in
   `~/FreeCADClaude/<session-id>/` — `stream.jsonl` (the raw JSON the `claude`
   CLI streamed, turn by turn), `scripts/` (every approved `run_python` call,
