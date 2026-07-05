@@ -991,7 +991,20 @@ def _run_view_sketch_svg(args):
         try:
             import importSVG
 
+            # importSVG.export builds its output through a throwaway "hidden"
+            # document (a Part2DObjectPython) and leaves it open, so it piles up
+            # a stray doc per call. Close whatever it opened and restore the
+            # active document it may have stolen.
+            active = FreeCAD.ActiveDocument
+            before_docs = set(FreeCAD.listDocuments())
             importSVG.export([obj], svg_path)
+            for leaked in set(FreeCAD.listDocuments()) - before_docs:
+                try:
+                    FreeCAD.closeDocument(leaked)
+                except Exception:  # noqa: BLE001
+                    pass
+            if active is not None:
+                FreeCAD.setActiveDocument(active.Name)
             svg_text = open(svg_path, encoding="utf-8").read()
             if crop_box:
                 svg_text = _flat_crop_svg(svg_text, obj, crop_box)
