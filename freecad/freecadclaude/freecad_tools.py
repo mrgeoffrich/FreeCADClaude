@@ -2801,8 +2801,9 @@ def _format_sketch_change(st):
             f"{n} closed wire{'' if n == 1 else 's'}")
     if st["open_wires"] > 0:
         return ("⚠ " + line + f"\n    {st['open_wires']} open (unclosed) wire(s) -- "
-                "a Pad/Pocket needs a closed profile; make the endpoints coincident "
-                "or the feature produces no solid.")
+                "a Pad/Pocket/Revolution needs a closed profile; make the endpoints "
+                "coincident (for a revolve, close the wire ALONG the axis -- ends merely "
+                "touching the axis is not enough) or the feature produces no solid.")
     return line
 
 
