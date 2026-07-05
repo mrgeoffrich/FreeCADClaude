@@ -9,6 +9,8 @@
 #   ./eval/run.sh -p "Create a cylinder r5 h30 named C"
 #   ./eval/run.sh -p "..." -e '"type":\s*"Part::Cylinder"'   # PASS/FAIL regex
 #   ./eval/run.sh -p "..." -t 300                            # timeout seconds
+#   ./eval/run.sh -c multifeature                            # a named in-tree case
+#   ./eval/run.sh -l                                         # list named cases
 #
 # Exit: 0 = PASS (an -e regex matched, or no -e given and the run completed),
 #       1 = FAIL (-e given but didn't match), 2 = eval didn't complete.
@@ -26,12 +28,37 @@ set -euo pipefail
 PROMPT="Create a box exactly 20 x 20 x 20 mm. Do not ask questions."
 TIMEOUT=240
 EXPECT=""
+
+# Named, in-tree eval cases so a complex multi-feature prompt is repeatable
+# rather than re-typed. A case sets PROMPT (and may bump TIMEOUT); pass `-c NAME`.
+# Most set no EXPECT: for a creative multi-feature build the shallow snapshot
+# can't prove success, so the real signal is the session trace (see header).
+# `-t`/`-p`/`-e` given AFTER `-c` still override, so keep `-c` first.
+load_case() {
+    case "$1" in
+        box)
+            PROMPT="Create a box exactly 20 x 20 x 20 mm. Do not ask questions." ;;
+        multifeature)
+            PROMPT="Create a 20 x 20 x 20 mm cube, then add exactly one feature per face: \
+on the BOTTOM face, cut a 5 mm radius hemisphere into the cube; \
+on the LEFT face, add a raised 8 x 10 mm rectangular pad standing 4 mm off the face; \
+on the RIGHT face, add a complex revolved shape standing off the face; \
+on the FRONT face, cut 4 small squares into it; \
+on the BACK face, add a small cylinder standing off the face. \
+Work through the faces one at a time and do not ask questions."
+            TIMEOUT=600 ;;
+        *) echo "unknown case: $1 (try: box, multifeature)" >&2; exit 2 ;;
+    esac
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         -p|--prompt)  PROMPT="$2"; shift 2 ;;
         -t|--timeout) TIMEOUT="$2"; shift 2 ;;
         -e|--expect)  EXPECT="$2"; shift 2 ;;
-        -h|--help)    sed -n '2,20p' "$0"; exit 0 ;;
+        -c|--case)    load_case "$2"; shift 2 ;;
+        -l|--list)    echo "cases: box, multifeature"; exit 0 ;;
+        -h|--help)    sed -n '2,22p' "$0"; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -98,7 +125,15 @@ echo
 
 # Point at the freshest session folder -- the real signal for a behaviour change.
 SESSION="$(ls -dt "$HOME/FreeCADClaude"/*/ 2>/dev/null | grep -vE '/(sketches|unsaved)/$' | head -n1 || true)"
-[ -n "$SESSION" ] && echo "Session trace: ${SESSION}stream.jsonl  (and ${SESSION}scripts/)"
+if [ -n "$SESSION" ]; then
+    echo "Session trace: ${SESSION}stream.jsonl  (and ${SESSION}scripts/)"
+    # The eval saves the finished model to the session root and a per-step .FCStd
+    # under steps/ -- open these to inspect the geometry at each build step.
+    for f in "$SESSION"*.FCStd; do
+        [ -e "$f" ] && echo "Saved model:   $f"
+    done
+    [ -d "${SESSION}steps" ] && echo "Step models:   ${SESSION}steps/  ($(ls -1 "${SESSION}steps"/*.FCStd 2>/dev/null | wc -l | tr -d ' ') snapshots)"
+fi
 
 if [ -n "$EXPECT" ]; then
     if grep -Eq "$EXPECT" "$RESULT"; then

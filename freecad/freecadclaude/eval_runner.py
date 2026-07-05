@@ -44,6 +44,33 @@ def _snapshot_document():
     return {"document": doc.Label, "object_count": len(objects), "objects": objects}
 
 
+def _save_final_documents():
+    """Save the active document (the model the agent built) as a .FCStd in the
+    active session folder so the finished model can actually be opened, not just
+    read from the JSON snapshot.
+
+    Only the active document -- not every open document -- so a scratch doc a tool
+    leaves lying around (importSVG's "hidden" doc, etc.) isn't saved alongside it.
+    Uses saveCopy (leaves the doc's own FileName untouched) and names the file
+    after the document label. Returns the written paths (best effort)."""
+    paths = []
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        return paths
+    try:
+        from . import freecad_tools
+
+        folder = freecad_tools.session_dir()
+        safe = "".join(c if c.isalnum() or c in "-_" else "_"
+                       for c in (doc.Label or doc.Name)) or doc.Name
+        path = os.path.join(folder, safe + ".FCStd")
+        doc.saveCopy(path)
+        paths.append(path)
+    except Exception:  # noqa: BLE001
+        pass
+    return paths
+
+
 def run():
     prompt = os.environ.get("FREECADCLAUDE_EVAL_PROMPT", _DEFAULT_PROMPT)
     timeout_ms = int(os.environ.get("FREECADCLAUDE_EVAL_TIMEOUT", "240")) * 1000
@@ -51,10 +78,11 @@ def run():
               "transcript": "", "result": {}}
 
     try:
-        from . import chat_panel, gui_bridge
+        from . import chat_panel, freecad_tools, gui_bridge
 
         gui_bridge.start()
         gui_bridge._auto_approve["on"] = True  # unattended: skip the confirm dialog
+        freecad_tools._save_steps["on"] = True  # snapshot each build step to steps/
 
         if FreeCAD.ActiveDocument is None:
             FreeCAD.newDocument("Eval")
@@ -89,6 +117,7 @@ def run():
         report["error"] = traceback.format_exc()
 
     report["result"] = _snapshot_document()
+    report["saved_documents"] = _save_final_documents()
     try:
         with open(_result_path(), "w", encoding="utf-8") as fh:
             json.dump(report, fh, indent=2)

@@ -160,6 +160,54 @@ def _save_run_python_script(code, description):
         pass
 
 
+#: When on, _run_python saves a numbered .FCStd snapshot of the document after
+#: every successful commit, under <session_dir>/steps/, so the model can be
+#: opened at each step of a build. Off by default; the eval turns it on
+#: (eval_runner), and interactive sessions can enable it via the "SaveSteps"
+#: FreeCADClaude preference or the FREECADCLAUDE_SAVE_STEPS=1 env var.
+_save_steps = {"on": os.environ.get("FREECADCLAUDE_SAVE_STEPS") == "1"}
+
+
+def _save_steps_enabled():
+    """Whether per-step .FCStd snapshots are on (in-process flag OR preference)."""
+    if _save_steps["on"]:
+        return True
+    try:
+        import FreeCAD
+
+        return bool(FreeCAD.ParamGet(_PARAM_PATH).GetBool("SaveSteps", False))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _save_step_snapshot(doc, description):
+    """Save a numbered .FCStd snapshot of `doc` under <session_dir>/steps/.
+
+    Uses doc.saveCopy so the document's own FileName / modified flag is left
+    untouched -- an interactive user's real save location is never hijacked.
+    Named "<NNN>_<description>.FCStd" (zero-padded so a plain listing sorts in
+    build order); the number is max-existing + 1, staying monotonic even after
+    pruning removes early steps. Best effort -- a save failure must not block the
+    run_python result. Returns the path or None.
+    """
+    try:
+        folder = os.path.join(session_dir(), "steps")
+        os.makedirs(folder, exist_ok=True)
+        _prune_folder(folder, keep=60)
+        n = 0
+        for f in os.listdir(folder):
+            head = f.split("_", 1)[0]
+            if head.isdigit():
+                n = max(n, int(head))
+        safe = "".join(c if c.isalnum() or c in "-_" else "_"
+                       for c in (description or "")) or "step"
+        path = os.path.join(folder, f"{n + 1:03d}_{safe}.FCStd")
+        doc.saveCopy(path)
+        return path
+    except Exception:  # noqa: BLE001
+        return None
+
+
 #: Orthographic projection directions for 3D -> SVG views.
 _PROJECTION_DIRS = {
     "front": (0, -1, 0), "rear": (0, 1, 0), "back": (0, 1, 0),
@@ -429,61 +477,6 @@ def _flat_crop_svg(svg_text, obj, crop_box):
     return svg_text
 
 
-#: MCP tool schema for create_box (name/description/inputSchema).
-_CREATE_BOX_SCHEMA = {
-    "name": "create_box",
-    "description": (
-        "Create a rectangular box (Part::Box) in the active FreeCAD document. "
-        "Creates a new document if none is open. Dimensions are in millimetres."
-    ),
-    "inputSchema": {
-        "type": "object",
-        "properties": {
-            "length": {"type": "number", "description": "Length along X in mm"},
-            "width": {"type": "number", "description": "Width along Y in mm"},
-            "height": {"type": "number", "description": "Height along Z in mm"},
-        },
-        "required": ["length", "width", "height"],
-    },
-}
-
-
-def _run_create_box(args):
-    import FreeCAD
-    import Part  # noqa: F401 - ensures Part::Box type is registered
-
-    length = float(args["length"])
-    width = float(args["width"])
-    height = float(args["height"])
-
-    doc = FreeCAD.ActiveDocument or FreeCAD.newDocument()
-    doc.openTransaction("FreeCADClaude: create box")
-    try:
-        box = doc.addObject("Part::Box", "Box")
-        box.Length = length
-        box.Width = width
-        box.Height = height
-        doc.recompute()
-        doc.commitTransaction()
-    except Exception:
-        doc.abortTransaction()
-        raise
-
-    # Best-effort: frame the result in the active view.
-    try:
-        import FreeCADGui
-
-        FreeCADGui.SendMsgToActiveView("ViewFit")
-    except Exception:  # noqa: BLE001
-        pass
-
-    return (
-        f"Created box '{box.Name}' "
-        f"({length:g} x {width:g} x {height:g} mm) "
-        f"in document '{doc.Label}'."
-    )
-
-
 _GET_OBJECTS_SCHEMA = {
     "name": "get_objects",
     "description": (
@@ -613,6 +606,48 @@ def _precheck_python(args):
     return ""
 
 
+def _doc_alive(doc):
+    """True while `doc` still references a live document. Running code can close
+    the document out from under us (e.g. App.closeDocument); the handle then
+    becomes a deleted C++ object and ANY attribute access on it raises, so this
+    is how we detect that before touching the stale transaction. Checks the
+    handle, not the name -- a closed document's name can be reused by a new one."""
+    try:
+        doc.Name
+        return True
+    except Exception:  # noqa: BLE001 - ReferenceError on a deleted document
+        return False
+
+
+def _document_closed_msg(doc_name, stdout_text, tb=None):
+    """Reply for when run_python code closed the document it was operating on.
+
+    The transaction we opened went with the document, so there's nothing to
+    commit or roll back on our now-deleted handle -- steer back to the supported
+    pattern instead of surfacing a bare 'deleted object' ReferenceError."""
+    import FreeCAD
+
+    active = FreeCAD.ActiveDocument
+    parts = [
+        f"run_python closed the active document '{doc_name}' mid-call. Avoid "
+        "closing or recreating the document from inside run_python: each call "
+        "runs in an undoable transaction on that document, so closing it leaves "
+        "nothing to commit and undo can't cover the change. To redo a document's "
+        "contents, remove the objects with doc.removeObject(name) and rebuild "
+        "them in place instead.",
+        f"The active document is now '{active.Name}'." if active is not None
+        else "There is no active document now.",
+    ]
+    if tb:
+        parts.append(
+            "The code also raised before finishing (no rollback was possible -- "
+            "the document was already gone):\n" + tb
+        )
+    if stdout_text:
+        parts.append("stdout:\n" + stdout_text)
+    return "\n".join(parts)
+
+
 def _run_python(args):
     import contextlib
     import io
@@ -640,16 +675,26 @@ def _run_python(args):
             pass
 
     existing = {obj.Name for obj in doc.Objects}
+    doc_name = doc.Name  # remember it now -- the handle dies if the code closes it
     doc.openTransaction("FreeCADClaude: run_python")
     stdout = io.StringIO()
     try:
         with contextlib.redirect_stdout(stdout):
             exec(code, namespace)  # noqa: S102 - intentional, user-approved
+        if not _doc_alive(doc):
+            # The code closed the document mid-run; the transaction went with it,
+            # so don't touch the stale handle -- report it and bail cleanly.
+            return _document_closed_msg(doc_name, stdout.getvalue())
         doc.recompute()
         doc.commitTransaction()
     except Exception:
-        doc.abortTransaction()
         tb = traceback.format_exc()
+        captured = stdout.getvalue()
+        if not _doc_alive(doc):
+            # Same case, but the code also raised: no rollback is possible on a
+            # document that no longer exists, so don't crash trying to abort it.
+            return _document_closed_msg(doc_name, captured, tb)
+        doc.abortTransaction()
         # Safety net: if undo is disabled (so abort didn't roll back), remove any
         # objects this failed run added. No-op when abort already removed them.
         for obj in list(doc.Objects):
@@ -658,11 +703,16 @@ def _run_python(args):
                     doc.removeObject(obj.Name)
                 except Exception:  # noqa: BLE001
                     pass
-        captured = stdout.getvalue()
         msg = "Execution failed (rolled back):\n" + tb
         if captured:
             msg += "\n--- stdout before error ---\n" + captured
         return msg
+
+    # Optional: snapshot the committed document so the build can be reviewed step
+    # by step (off by default; see _save_steps_enabled). Kept out of the reply so
+    # it stays a purely on-disk artifact and doesn't nudge the model.
+    if _save_steps_enabled():
+        _save_step_snapshot(doc, args.get("description") or "")
 
     parts = ["OK (committed)."]
     captured = stdout.getvalue()
@@ -941,7 +991,20 @@ def _run_view_sketch_svg(args):
         try:
             import importSVG
 
+            # importSVG.export builds its output through a throwaway "hidden"
+            # document (a Part2DObjectPython) and leaves it open, so it piles up
+            # a stray doc per call. Close whatever it opened and restore the
+            # active document it may have stolen.
+            active = FreeCAD.ActiveDocument
+            before_docs = set(FreeCAD.listDocuments())
             importSVG.export([obj], svg_path)
+            for leaked in set(FreeCAD.listDocuments()) - before_docs:
+                try:
+                    FreeCAD.closeDocument(leaked)
+                except Exception:  # noqa: BLE001
+                    pass
+            if active is not None:
+                FreeCAD.setActiveDocument(active.Name)
             svg_text = open(svg_path, encoding="utf-8").read()
             if crop_box:
                 svg_text = _flat_crop_svg(svg_text, obj, crop_box)
@@ -2479,8 +2542,8 @@ def summarize_new_failures():
 
 #: Tools that can mutate document geometry -- the only ones worth snapshotting
 #: for a before/after volume diff (every other tool is read-only, so its diff is
-#: always empty). run_python is the general path; create_box the one shortcut.
-MUTATING_TOOLS = {"run_python", "create_box"}
+#: always empty). run_python is the sole document-mutating tool.
+MUTATING_TOOLS = {"run_python"}
 
 #: TypeId substrings identifying material-removing PartDesign features. Matched
 #: by substring so the whole family (Pocket/Groove/Hole plus every Subtractive*
@@ -2542,15 +2605,58 @@ def _feature_states(doc):
     return states
 
 
+def _sketch_states(doc):
+    """{Name: {label, bbox, fully_constrained, closed_wires, open_wires, edges}}
+    for every Sketcher::SketchObject in `doc`. Best-effort; anything unreadable is
+    skipped.
+
+    Lets the reply surface a new or edited sketch's actual extents (bbox, in world
+    coords -- placement applied), whether it's fully constrained, and its wire
+    closure, so a mirrored/mis-placed or unclosed profile is caught at the sketch
+    step -- before it's padded. The bbox is rounded so float dust doesn't read as
+    a change in the before/after diff."""
+    states = {}
+    if doc is None:
+        return states
+    for obj in doc.Objects:
+        try:
+            if obj.TypeId != "Sketcher::SketchObject":
+                continue
+            shape = getattr(obj, "Shape", None)
+            has_shape = shape is not None and not shape.isNull()
+            bbox = None
+            if has_shape and shape.BoundBox.isValid():
+                bb = shape.BoundBox
+                bbox = tuple(round(v, 3) for v in
+                             (bb.XMin, bb.XMax, bb.YMin, bb.YMax, bb.ZMin, bb.ZMax))
+            wires = shape.Wires if has_shape else []
+            closed = sum(1 for w in wires if w.isClosed())
+            states[obj.Name] = {
+                "label": obj.Label,
+                "bbox": bbox,
+                "fully_constrained": bool(getattr(obj, "FullyConstrained", False)),
+                "closed_wires": closed,
+                "open_wires": len(wires) - closed,
+                "edges": len(shape.Edges) if has_shape else 0,
+            }
+        except Exception:  # noqa: BLE001
+            continue
+    return states
+
+
 def feature_snapshot(tool_name):
-    """PartDesign solid-feature states before a mutating tool runs, for
-    post_tool_notes to diff against afterwards -- or None for read-only tools
-    (nothing they do changes geometry, so there's nothing to diff)."""
+    """State before a mutating tool runs, for post_tool_notes to diff against
+    afterwards -- or None for read-only tools (nothing they do changes geometry).
+
+    Bundles PartDesign solid-feature states and Sketcher sketch states so the
+    reply can flag both what the operation added/removed AND what each new or
+    edited sketch actually looks like (extents, constraint state, closure)."""
     if tool_name not in MUTATING_TOOLS:
         return None
     import FreeCAD
 
-    return _feature_states(FreeCAD.ActiveDocument)
+    doc = FreeCAD.ActiveDocument
+    return {"features": _feature_states(doc), "sketches": _sketch_states(doc)}
 
 
 def _wrong_direction_hint(obj):
@@ -2666,9 +2772,10 @@ def summarize_feature_changes(before):
 
     after = _feature_states(FreeCAD.ActiveDocument)
     doc = FreeCAD.ActiveDocument
+    prev_states = before.get("features", {}) if isinstance(before, dict) else {}
     lines = []
     for name, st in after.items():
-        prev = before.get(name)
+        prev = prev_states.get(name)
         if prev is not None and (
             round(prev["contribution"], 6) == round(st["contribution"], 6)
             and prev["new_solids"] == st["new_solids"]
@@ -2679,11 +2786,60 @@ def summarize_feature_changes(before):
     return "\n".join(lines)
 
 
+def _format_sketch_change(st):
+    """One-line report of a new/edited sketch: extents, constraint state, closure.
+    Escalates (⚠) an unclosed profile, which can't pad into a solid."""
+    bbox = st["bbox"]
+    if bbox:
+        span = (f"X {bbox[0]:g}..{bbox[1]:g}, Y {bbox[2]:g}..{bbox[3]:g}, "
+                f"Z {bbox[4]:g}..{bbox[5]:g} mm")
+    else:
+        span = "empty (no geometry)"
+    constraint = "fully constrained" if st["fully_constrained"] else "under-constrained"
+    n = st["closed_wires"]
+    line = (f"{st['label']} (Sketch): {span} · {constraint} · "
+            f"{n} closed wire{'' if n == 1 else 's'}")
+    if st["open_wires"] > 0:
+        return ("⚠ " + line + f"\n    {st['open_wires']} open (unclosed) wire(s) -- "
+                "a Pad/Pocket needs a closed profile; make the endpoints coincident "
+                "or the feature produces no solid.")
+    return line
+
+
+def summarize_sketch_changes(before):
+    """Per-operation report of each sketch the operation created or edited -- its
+    world-space extents, whether it's fully constrained, and its wire closure, or
+    "".
+
+    Same before/after diff as summarize_feature_changes (an unchanged sketch is
+    skipped), so a call that only pads an existing sketch re-reports nothing. Read
+    the extents to confirm the profile landed where and how you intended: a
+    fully-constrained sketch can still be mirrored or mis-placed and neither the
+    volume delta nor a recompute error would catch it."""
+    if before is None:
+        return ""
+    import FreeCAD
+
+    after = _sketch_states(FreeCAD.ActiveDocument)
+    prev_states = before.get("sketches", {}) if isinstance(before, dict) else {}
+    lines = []
+    for name, st in after.items():
+        prev = prev_states.get(name)
+        if prev is not None and all(
+            prev.get(k) == st[k]
+            for k in ("bbox", "fully_constrained", "closed_wires", "open_wires", "edges")
+        ):
+            continue  # untouched by this operation
+        lines.append(_format_sketch_change(st))
+    return "\n".join(lines)
+
+
 def post_tool_notes(tool_name, before=None):
     """Combined post-call notes to fold into a tool reply: features that newly
     failed to recompute, and -- for a mutating tool -- what each PartDesign
     feature added/removed and how the solid count changed (with the empty-cut and
-    disconnected-solid escalations).
+    disconnected-solid escalations), plus each new/edited sketch's extents,
+    constraint state and wire closure.
 
     ``before`` is feature_snapshot(tool_name), taken by the bridge just before the
     tool ran (None for read-only tools). Skipped entirely for get_diagnostics (it
@@ -2691,7 +2847,9 @@ def post_tool_notes(tool_name, before=None):
     """
     if tool_name == "get_diagnostics":
         return ""
-    notes = [summarize_new_failures(), summarize_feature_changes(before)]
+    notes = [summarize_new_failures(),
+             summarize_feature_changes(before),
+             summarize_sketch_changes(before)]
     return "\n\n".join(n for n in notes if n)
 
 
@@ -2729,7 +2887,6 @@ def _run_get_diagnostics(args):
 
 
 TOOLS = {
-    "create_box": {"schema": _CREATE_BOX_SCHEMA, "run": _run_create_box},
     "get_objects": {"schema": _GET_OBJECTS_SCHEMA, "run": _run_get_objects},
     "get_selection": {"schema": _GET_SELECTION_SCHEMA, "run": _run_get_selection},
     "view_sketch_svg": {"schema": _VIEW_SKETCH_SVG_SCHEMA, "run": _run_view_sketch_svg},
