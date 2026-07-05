@@ -5,15 +5,49 @@
 #   pwsh -File eval/run.ps1                       # default prompt
 #   pwsh -File eval/run.ps1 -Prompt "..."         # custom prompt
 #   pwsh -File eval/run.ps1 -Prompt "..." -TimeoutSec 300
+#   pwsh -File eval/run.ps1 -Case multifeature    # a named in-tree case
+#   pwsh -File eval/run.ps1 -ListCases            # list named cases
 
 param(
     [string]$Prompt = "Create a box exactly 20 x 20 x 20 mm. Do not ask questions.",
     [int]$TimeoutSec = 240,
     # Optional pass/fail check: a regex matched against the result JSON.
-    [string]$Expect = ""
+    [string]$Expect = "",
+    # A named, in-tree case (see $cases below) so a complex multi-feature prompt
+    # is repeatable rather than re-typed. Mirrors run.sh's -c/-l.
+    [string]$Case = "",
+    [switch]$ListCases
 )
 
 $ErrorActionPreference = "Stop"
+
+# Named eval cases. A case sets Prompt (and may bump TimeoutSec); an explicit
+# -Prompt / -TimeoutSec still overrides. Most set no Expect: for a creative
+# multi-feature build the real signal is the session trace, not the snapshot.
+$cases = [ordered]@{
+    box          = @{ Prompt = "Create a box exactly 20 x 20 x 20 mm. Do not ask questions." }
+    multifeature = @{
+        Prompt = "Create a 20 x 20 x 20 mm cube, then add exactly one feature per face: " +
+                 "on the BOTTOM face, cut a 5 mm radius hemisphere into the cube; " +
+                 "on the LEFT face, add a raised 8 x 10 mm rectangular pad standing 4 mm off the face; " +
+                 "on the RIGHT face, add a complex revolved shape standing off the face; " +
+                 "on the FRONT face, cut 4 small squares into it; " +
+                 "on the BACK face, add a small cylinder standing off the face. " +
+                 "Work through the faces one at a time and do not ask questions."
+        TimeoutSec = 600
+    }
+}
+
+if ($ListCases) { "cases: $($cases.Keys -join ', ')"; exit 0 }
+if ($Case) {
+    if (-not $cases.ContainsKey($Case)) {
+        throw "unknown case: $Case (try: $($cases.Keys -join ', '))"
+    }
+    $c = $cases[$Case]
+    if (-not $PSBoundParameters.ContainsKey('Prompt'))     { $Prompt = $c.Prompt }
+    if ($c.ContainsKey('TimeoutSec') -and
+        -not $PSBoundParameters.ContainsKey('TimeoutSec')) { $TimeoutSec = $c.TimeoutSec }
+}
 
 $fc = Get-ChildItem -ErrorAction SilentlyContinue @(
     "C:\Program Files\FreeCAD*\bin\freecad.exe",
