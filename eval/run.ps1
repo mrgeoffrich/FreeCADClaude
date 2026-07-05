@@ -90,6 +90,22 @@ $raw = Get-Content $result -Raw
 Write-Host "=== EVAL RESULT ===" -ForegroundColor Green
 $raw
 
+# Point at the run's session folder + saved models -- the real signal for a
+# behaviour change is the session trace, and the eval saves the finished model to
+# the session root plus a per-step .FCStd under steps/. Derived from the result
+# JSON's saved_documents (authoritative), mirroring run.sh's exit printing.
+try { $saved = @(($raw | ConvertFrom-Json).saved_documents | Where-Object { $_ }) } catch { $saved = @() }
+if ($saved.Count -gt 0) {
+    $session = Split-Path -Parent $saved[0]
+    Write-Host "Session trace: $(Join-Path $session 'stream.jsonl')  (and $(Join-Path $session 'scripts'))"
+    foreach ($m in $saved) { Write-Host "Saved model:   $m" }
+    $stepsDir = Join-Path $session 'steps'
+    if (Test-Path $stepsDir) {
+        $n = @(Get-ChildItem $stepsDir -Filter *.FCStd -ErrorAction SilentlyContinue).Count
+        Write-Host "Step models:   $stepsDir  ($n snapshots)"
+    }
+}
+
 if ($Expect) {
     if ($raw -match $Expect) {
         Write-Host "`nPASS - matched /$Expect/" -ForegroundColor Green
