@@ -49,7 +49,7 @@ chat panel (GUI thread)
 ## Tools
 
 Registry: `freecad_tools.TOOLS` = name → `{schema, run, confirm?}`. Current set:
-`get_objects`, `get_selection`, `view_sketch_svg`, `capture_view`,
+`get_objects`, `get_selection`, `get_sketch`, `view_sketch_svg`, `capture_view`,
 `capture_user_view`, `crop_view`, `cutaway`, `export`, `inspect_api`,
 `get_diagnostics`, `run_python` (confirm-gated; the sole document-mutating tool —
 the general Sketcher/PartDesign/Part path).
@@ -78,6 +78,24 @@ authors files on disk but never touches the live document. `Glob`/`Grep` used to
 be gated behind a configured skills project — they're now always-on (decoupled
 from `_SKILL_TOOLS`, which is now just `Skill`), since file search is a general
 capability, not a skill-only one.
+
+**Sketch editing** (`get_sketch`, read-only): every Sketcher mutation is addressed
+by **GeoId** (`moveGeometry`, `addConstraint`) or **constraint index** (`setDatum`,
+`delConstraint`), and nothing else in the tool set exposes either — `get_objects`
+gives a bbox, and `view_sketch_svg`'s exported paths *fuse* connected edges into
+unlabelled wires and omit construction/external geometry entirely. So `get_sketch`
+is the only way to edit an existing sketch without guessing: it returns every
+geometry element with its GeoId/coords/construction flag, every constraint with its
+index/operands/datum, a `constraints_by_geoId` reverse index, the solver state, and
+external geometry. `view_sketch_svg` now overlays GeoId labels + the omitted
+construction/external geometry + the origin on top of importSVG's exact paths
+(`_annotate_sketch_svg`, positioned from the wrapper `<g transform>` it parses out,
+so it composes with `_flat_crop_svg`). Three verified facts the code depends on:
+external geometry starts at GeoId **-4** (not -3 — the origin point holds -3);
+the solver's `ConflictingConstraints`/`RedundantConstraints`/`MalformedConstraints`
+are **1-based** while `setDatum`/`delConstraint` are 0-based (`_solver_constraint_indices`
+normalises them, else a "drop the redundant constraint" fix deletes the wrong one);
+and `DoF`/those conflict lists are plain attributes, **not** in `PropertiesList`.
 
 Visual perception: `capture_view` (raster screenshot, returned inline as an
 image) is the way Claude actually *sees* geometry — reach for it whenever
@@ -214,3 +232,17 @@ project dir (so its `.claude/skills` load) else a temp dir.
   aborts AND removes newly-added objects (undo may be off in some contexts).
 - Box `Length`/etc. are `Quantity` objects (`str` → "20.0 mm"); use the numeric
   input or `.Value`.
+- **Assigning `sketch.Geometry` to move constrained geometry silently mangles it.**
+  It doesn't raise — the solver just drags the geometry back to satisfy the old
+  constraints (overwrite a line to 6mm while a `DistanceX=10` holds it and FreeCAD
+  keeps it 10mm, flinging the start point to -3.08). `moveGeometry` only shifts
+  *underconstrained* geometry, by its own contract. The only correct way to move
+  constrained geometry is `setDatum(constraintIndex, value)`. This burned a whole
+  real session (undo → retry → mangle → undo) before `get_sketch` existed.
+- `inspect_api` on a document-object *instance* used to hide its methods: it took
+  the `PropertiesList` branch and the `elif` meant `dir()` was never walked, so a
+  sketch's 201 methods and its non-property attributes (`DoF`, `ConflictingConstraints`)
+  were undiscoverable — the model could only guess names, and guessed wrong
+  (`movePoint`, `setGeometry`, `getDoF()` — none exist). Both branches now run.
+  `Sketcher.SketchObject` also isn't an importable class; `_describe_by_type_id`
+  resolves that (and any `Type::String`) to a live instance in the document.

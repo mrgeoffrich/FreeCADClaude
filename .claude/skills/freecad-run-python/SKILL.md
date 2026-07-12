@@ -64,10 +64,21 @@ explains why). Not approach/workflow advice — if the user just wants to know
    and that's invisible until you look. Only then add the Pad/Pocket/etc. in the
    next call. (`view_sketch_svg` gives exact 2D coordinates but is drawn in the
    sketch's own frame, so capture it *with* the solid to judge position.)
-6. **Verify after each step** with `get_objects`, `get_diagnostics`, or
-   `view_sketch_svg` rather than chaining several blind steps — a clean
-   commit doesn't mean the feature recomputed cleanly. The tool result also
-   reports each feature's added/removed volume and solid-count change; read it
+6. **To EDIT an existing sketch, call `get_sketch` first — always.** Every
+   Sketcher edit names a GeoId (`moveGeometry`, `addConstraint`) or a constraint
+   index (`setDatum`, `delConstraint`), and `get_sketch` is the only thing that
+   tells you either; it also gives the solver state and a reverse index of what
+   pins each GeoId, in one read-only call. Then change the sketch through its
+   **constraints** (`setDatum`), never by overwriting `sketch.Geometry` — that
+   silently mangles the profile instead of erroring, and `moveGeometry` only
+   shifts *underconstrained* geometry. This is the single biggest trap in the
+   whole skill: see "Modifying an existing sketch" in
+   `references/sketcher-scripting.md` before touching an existing sketch.
+7. **Verify after each step** with `get_objects`, `get_diagnostics`,
+   `get_sketch`, or `view_sketch_svg` rather than chaining several blind steps —
+   a clean commit doesn't mean the feature recomputed cleanly. The tool result
+   also reports each feature's added/removed volume and solid-count change (and,
+   for a sketch, its DoF plus any conflicting/redundant constraints); read it
    to confirm the operation did what you intended.
 7. **On failure, read the traceback, fix, and resend** — the failed call
    already rolled back cleanly, so there's no cleanup needed before retrying.
@@ -81,7 +92,10 @@ explains why). Not approach/workflow advice — if the user just wants to know
 - **`references/sketcher-scripting.md`** — scripting sketch geometry and
   constraints: `addGeometry`, `addConstraint` forms (with the point-position
   addressing scheme), attachment to planes, closed-profile recipes
-  (rectangle/polygon/slot), checking constraint/closure state from code.
+  (rectangle/polygon/slot), checking constraint/solver/closure state from code,
+  the negative-GeoId table, and **modifying an existing sketch** (`setDatum` vs.
+  the silently-destructive `sketch.Geometry` overwrite). **Read this before
+  editing any sketch you didn't just create.**
 - **`references/partdesign-scripting.md`** — scripting a Body's feature
   tree: `body.newObject(...)` for Pad/Pocket/Revolution/Groove/Loft/Pipe/Hole,
   Tip management, datum scripting, patterns (Linear/Polar/Mirrored/

@@ -853,6 +853,32 @@ def _describe_api(obj, name):
             rows.append(f"{prop}={value}")
         if rows:
             lines.append("properties: " + ", ".join(rows[:60]) + (" …" if len(rows) > 60 else ""))
+
+        # PropertiesList covers only the App *properties*. A document object's
+        # METHODS -- and the plain Python attributes that aren't App properties
+        # (a sketch's DoF, ConflictingConstraints, RedundantConstraints ...) --
+        # are invisible in it, which used to make them undiscoverable: the only
+        # way to find moveGeometry/setDatum/DoF was to already know the name and
+        # guess. Walk dir() so they're listed.
+        extras, methods = [], []
+        for member in sorted(dir(obj)):
+            if member.startswith("_") or member in props:
+                continue
+            try:
+                value = getattr(obj, member)
+            except Exception:  # noqa: BLE001
+                continue
+            if callable(value):
+                methods.append(member)
+                continue
+            text = repr(value)
+            if len(text) > 120:
+                text = text[:120] + " […]"
+            extras.append(f"{member}={text}")
+        if extras:
+            lines.append("other attributes (NOT in PropertiesList): " + ", ".join(extras))
+        if methods:
+            lines.append("methods: " + ", ".join(methods))
     elif inspect.ismodule(obj) or inspect.isclass(obj):
         members = [m for m in dir(obj) if not m.startswith("_")]
         if members:
@@ -863,6 +889,49 @@ def _describe_api(obj, name):
         if items:
             lines.append("items: " + ", ".join(items) + (" …" if len(obj) > 60 else ""))
     return "\n".join(lines)
+
+
+def _find_instance_of_type(type_id):
+    """The first object in the active document whose TypeId is (or derives from)
+    `type_id`, e.g. 'Sketcher::SketchObject' -> the document's first sketch."""
+    import FreeCAD
+
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        return None
+    for obj in doc.Objects:
+        try:
+            if obj.TypeId == type_id or obj.isDerivedFrom(type_id):
+                return obj
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def _describe_by_type_id(name):
+    """Describe a FreeCAD *type* by finding a live instance of it.
+
+    The classes document objects actually are ('Sketcher::SketchObject',
+    'PartDesign::Body') are not reachable as module attributes -- 'Sketcher.
+    SketchObject' raises AttributeError -- so asking about one used to return a
+    bare "could not resolve" and nothing else. Since the real API lives on the
+    instance anyway, resolve it to one. Accepts either the 'Module::Type' form or
+    the 'Module.Type' spelling that doesn't resolve as an attribute chain.
+    """
+    type_id = name.replace(".", "::") if "::" not in name else name
+    if "::" not in type_id:
+        return None
+    obj = _find_instance_of_type(type_id)
+    if obj is None:
+        return None
+    described = _describe_api(obj, f"{name}  (via the live instance '{obj.Name}')")
+    return (
+        described
+        + f"\n\n(NOTE: '{name}' is a FreeCAD type name, not an importable class -- "
+        f"'{type_id}' is what you pass to addObject() as a STRING. There is nothing "
+        f"to import, so the above describes '{obj.Name}', an actual "
+        f"{type_id} in this document, which carries the real API.)"
+    )
 
 
 def _run_inspect_api(args):
@@ -876,6 +945,19 @@ def _run_inspect_api(args):
     blocks = []
     for raw in names:
         name = str(raw).strip()
+
+        # 'Sketcher::SketchObject' isn't valid Python, so it never reaches eval --
+        # handle the type-name form before the dotted-name gate rejects it.
+        if "::" in name:
+            described = _describe_by_type_id(name)
+            blocks.append(
+                described
+                or f"## {name}\n(no object of type '{name}' exists in this document "
+                "yet -- create one with addObject('{0}', ...) first, then inspect the "
+                "resulting object by its Name.)".format(name.replace(".", "::"))
+            )
+            continue
+
         if not _is_dotted_name(name):
             blocks.append(
                 f"## {name}\n(skipped: inspect_api only resolves dotted names like "
@@ -885,10 +967,567 @@ def _run_inspect_api(args):
         try:
             obj = eval(name, dict(ns))  # noqa: S307 - validated as a dotted name only
         except Exception as exc:  # noqa: BLE001
-            blocks.append(f"## {name}\n(could not resolve: {exc!r})")
+            # e.g. 'Sketcher.SketchObject' -- a real FreeCAD type, but not a module
+            # attribute. Fall back to a live instance rather than giving up.
+            described = _describe_by_type_id(name)
+            blocks.append(described or f"## {name}\n(could not resolve: {exc!r})")
             continue
         blocks.append(_describe_api(obj, name))
     return "\n\n".join(blocks)
+
+
+# --- Sketch introspection (get_sketch, and the SVG GeoId overlay) -------------
+#
+# Every Sketcher mutation is addressed by GeoId: moveGeometry(geoId, posId, ...),
+# setDatum(constraintIndex, value), Constraint('Symmetric', geoId, posId, ...).
+# Nothing else in this tool set exposes GeoIds -- get_objects gives a bounding box
+# and view_sketch_svg's exported paths are merged, unlabelled wires -- so without
+# get_sketch the only way to learn a sketch's structure is a pile of exploratory
+# run_python dumps, each one a user approval.
+
+#: PosId (the "point" half of a GeoId/PosId pair) as Sketcher numbers them.
+_POS_ID_NAMES = {0: "edge", 1: "start", 2: "end", 3: "mid/center"}
+
+#: Constraint types that carry a driving datum in .Value (everything else's Value
+#: is meaningless). Angle/SnellsLaw are stored in RADIANS -- a classic wrong-units
+#: trap when calling setDatum, so we report degrees alongside.
+_DATUM_CONSTRAINTS = {
+    "Distance", "DistanceX", "DistanceY", "Radius", "Diameter",
+    "Angle", "Weight", "SnellsLaw",
+}
+_ANGULAR_CONSTRAINTS = {"Angle", "SnellsLaw"}
+
+#: Sketcher's sentinel for "this constraint slot is unused".
+_CONSTRAINT_UNUSED = -2000
+
+
+def _solver_constraint_indices(values):
+    """Normalise the solver's constraint indices to 0-based.
+
+    Verified against FreeCAD 1.1: ConflictingConstraints/RedundantConstraints/
+    MalformedConstraints come back 1-BASED (they're what the GUI prints), while
+    sk.Constraints, setDatum() and delConstraint() are all 0-based. Reporting the
+    raw numbers would point at the constraint NEXT TO the broken one -- so a
+    "drop the redundant constraint" fix would silently delete the wrong one.
+    """
+    out = []
+    for value in values or []:
+        try:
+            index = int(value)
+        except (TypeError, ValueError):
+            continue
+        if index >= 1:
+            out.append(index - 1)
+    return out
+
+
+def _xy(vec, places=4):
+    """A sketch-local point as [x, y] -- sketch geometry is always z=0 locally."""
+    return [round(vec.x, places), round(vec.y, places)]
+
+
+def _describe_sketch_geometry(geo):
+    """Compact dict for one piece of sketch geometry (coords in sketch-local mm)."""
+    import Part
+
+    info = {"type": type(geo).__name__}
+    try:
+        if isinstance(geo, Part.LineSegment):
+            info["start"] = _xy(geo.StartPoint)
+            info["end"] = _xy(geo.EndPoint)
+            info["length"] = round(geo.StartPoint.distanceToPoint(geo.EndPoint), 4)
+        elif isinstance(geo, Part.ArcOfCircle):
+            info["center"] = _xy(geo.Center)
+            info["radius"] = round(geo.Radius, 4)
+            info["start"] = _xy(geo.StartPoint)
+            info["end"] = _xy(geo.EndPoint)
+        elif isinstance(geo, Part.Circle):
+            info["center"] = _xy(geo.Center)
+            info["radius"] = round(geo.Radius, 4)
+        elif isinstance(geo, Part.ArcOfEllipse):
+            info["center"] = _xy(geo.Center)
+            info["major_radius"] = round(geo.MajorRadius, 4)
+            info["minor_radius"] = round(geo.MinorRadius, 4)
+            info["start"] = _xy(geo.StartPoint)
+            info["end"] = _xy(geo.EndPoint)
+        elif isinstance(geo, Part.Ellipse):
+            info["center"] = _xy(geo.Center)
+            info["major_radius"] = round(geo.MajorRadius, 4)
+            info["minor_radius"] = round(geo.MinorRadius, 4)
+        elif isinstance(geo, Part.Point):
+            info["at"] = [round(geo.X, 4), round(geo.Y, 4)]
+        elif isinstance(geo, Part.BSplineCurve):
+            info["degree"] = geo.Degree
+            info["poles"] = len(geo.getPoles())
+            info["start"] = _xy(geo.StartPoint)
+            info["end"] = _xy(geo.EndPoint)
+        else:
+            info["repr"] = str(geo)
+    except Exception:  # noqa: BLE001
+        info["repr"] = str(geo)
+    return info
+
+
+def _describe_sketch_constraint(index, con):
+    """Compact dict for one constraint, including the GeoId/PosId pairs it binds
+    and -- for a dimensional constraint -- the datum you'd pass to setDatum."""
+    info = {"index": index, "type": con.Type}
+    if getattr(con, "Name", ""):
+        info["name"] = con.Name
+    info["first"] = [con.First, con.FirstPos]
+    if con.Second != _CONSTRAINT_UNUSED:
+        info["second"] = [con.Second, con.SecondPos]
+    if con.Third != _CONSTRAINT_UNUSED:
+        info["third"] = [con.Third, con.ThirdPos]
+    if con.Type in _DATUM_CONSTRAINTS:
+        value = con.Value
+        info["value"] = round(value, 6)
+        if con.Type in _ANGULAR_CONSTRAINTS:
+            import math
+
+            info["value_units"] = "radians"
+            info["value_degrees"] = round(math.degrees(value), 4)
+        else:
+            info["value_units"] = "mm"
+        # A non-driving ("reference") constraint measures but does not drive --
+        # setDatum on it changes nothing about the geometry.
+        info["driving"] = bool(getattr(con, "Driving", True))
+    return info
+
+
+def _external_geo_role(index, geo):
+    """What negative GeoId `index` actually is.
+
+    Verified against FreeCAD 1.1: sk.ExternalGeo[i] has GeoId -(i+1), and the
+    first three slots are the sketch's own axes and origin -- so real external
+    geometry starts at GeoId -4, NOT -3 as the widely-repeated lore says.
+    """
+    import Part
+
+    if index == 0:
+        return "X axis (H_Axis)"
+    if index == 1:
+        return "Y axis (V_Axis)"
+    if index == 2 and isinstance(geo, Part.Point):
+        return "origin point (RootPoint)"
+    return "external geometry"
+
+
+def _sketch_report(sk):
+    """The full structured picture of a sketch: GeoIds, construction flags,
+    constraints (with their indices and datums), solver state, external geometry.
+
+    This is what makes a sketch *editable* -- an edit has to name a GeoId or a
+    constraint index, and this is the only place either is exposed."""
+    geometry = []
+    for i, geo in enumerate(sk.Geometry):
+        row = {"geoId": i}
+        try:
+            row["construction"] = bool(sk.getConstruction(i))
+        except Exception:  # noqa: BLE001
+            pass
+        row.update(_describe_sketch_geometry(geo))
+        geometry.append(row)
+
+    constraints = []
+    for i, con in enumerate(sk.Constraints):
+        try:
+            constraints.append(_describe_sketch_constraint(i, con))
+        except Exception:  # noqa: BLE001
+            constraints.append({"index": i, "type": "?", "repr": str(con)})
+
+    # Reverse index: which constraints pin a given GeoId. The question you ask
+    # when geometry won't move -- moveGeometry only shifts UNDERCONSTRAINED
+    # geometry, so if a GeoId is held by a datum you must setDatum it instead.
+    by_geo = {}
+    for con in constraints:
+        for key in ("first", "second", "third"):
+            pair = con.get(key)
+            if not pair:
+                continue
+            by_geo.setdefault(str(pair[0]), []).append(con["index"])
+    for key in by_geo:
+        by_geo[key] = sorted(set(by_geo[key]))
+
+    external = []
+    try:
+        for i, geo in enumerate(sk.ExternalGeo):
+            row = {"geoId": -(i + 1), "role": _external_geo_role(i, geo)}
+            row.update(_describe_sketch_geometry(geo))
+            external.append(row)
+    except Exception:  # noqa: BLE001
+        pass
+
+    report = {
+        "name": sk.Name,
+        "label": sk.Label,
+        "geometry_count": len(geometry),
+        "constraint_count": len(constraints),
+    }
+
+    # Solver state. DoF and the conflict/redundancy lists are plain Python
+    # attributes, NOT App properties -- they never show up in PropertiesList, so
+    # nothing else surfaces them. DoF>0 with no conflicts just means "loose".
+    solver = {}
+    for attr, key in (
+        ("DoF", "degrees_of_freedom"),
+        ("FullyConstrained", "fully_constrained"),
+    ):
+        try:
+            solver[key] = getattr(sk, attr)
+        except Exception:  # noqa: BLE001
+            continue
+    # Normalised to 0-based, matching the "index" field above and the argument
+    # setDatum/delConstraint expect (the solver itself reports these 1-based).
+    for attr, key in (
+        ("ConflictingConstraints", "conflicting_constraints"),
+        ("RedundantConstraints", "redundant_constraints"),
+        ("PartiallyRedundantConstraints", "partially_redundant_constraints"),
+        ("MalformedConstraints", "malformed_constraints"),
+    ):
+        try:
+            solver[key] = _solver_constraint_indices(getattr(sk, attr))
+        except Exception:  # noqa: BLE001
+            continue
+    report["solver"] = solver
+
+    shape = getattr(sk, "Shape", None)
+    if shape is not None and not shape.isNull():
+        wires = shape.Wires
+        closed = sum(1 for w in wires if w.isClosed())
+        report["wires"] = {"closed": closed, "open": len(wires) - closed}
+        if shape.BoundBox.isValid():
+            bb = shape.BoundBox
+            report["bounding_box_world"] = {
+                "x": [round(bb.XMin, 4), round(bb.XMax, 4)],
+                "y": [round(bb.YMin, 4), round(bb.YMax, 4)],
+                "z": [round(bb.ZMin, 4), round(bb.ZMax, 4)],
+            }
+
+    attachment = {"map_mode": getattr(sk, "MapMode", None)}
+    try:
+        support = sk.AttachmentSupport
+        if support:
+            attachment["support"] = [
+                f"{o.Name}:{','.join(subs)}" if subs else o.Name for o, subs in support
+            ]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        offset = sk.AttachmentOffset
+        if not offset.isIdentity():
+            attachment["offset"] = str(offset)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        attachment["placement"] = str(sk.Placement)
+    except Exception:  # noqa: BLE001
+        pass
+    report["attachment"] = attachment
+
+    try:
+        refs = []
+        for obj, subs in sk.ExternalGeometry:
+            refs.append(f"{obj.Name} ({obj.Label}): {', '.join(subs)}")
+        if refs:
+            report["external_geometry_sources"] = refs
+    except Exception:  # noqa: BLE001
+        pass
+
+    report["geometry"] = geometry
+    report["constraints"] = constraints
+    report["constraints_by_geoId"] = by_geo
+    if external:
+        report["external_geo"] = external
+
+    report["legend"] = {
+        "posId": _POS_ID_NAMES,
+        "negative_geoIds": (
+            "-1 = X axis, -2 = Y axis, -3 = origin point, -4 and below = external "
+            "geometry (external starts at -4 in FreeCAD 1.1, not -3)"
+        ),
+        "constraint_indices": (
+            "Every constraint index here is 0-based -- exactly what setDatum(i, v) "
+            "and delConstraint(i) take, including the solver's conflicting/redundant/"
+            "malformed lists (already converted from the 1-based numbers FreeCAD "
+            "reports internally)."
+        ),
+        "editing": (
+            "To MOVE geometry that a dimensional constraint holds, call "
+            "setDatum(constraintIndex, newValue) -- do NOT overwrite sk.Geometry "
+            "and do not expect moveGeometry to work (it only shifts "
+            "UNDERCONSTRAINED geometry). Check constraints_by_geoId to see what "
+            "pins a GeoId before trying to move it."
+        ),
+    }
+    return report
+
+
+_GET_SKETCH_SCHEMA = {
+    "name": "get_sketch",
+    "description": (
+        "Read a sketch's full internal structure -- the ONLY way to see the GeoIds "
+        "and constraint indices that every Sketcher edit has to name. Returns JSON: "
+        "every geometry element with its GeoId, type, exact coordinates and "
+        "construction flag; every constraint with its index, type, the GeoId/PosId "
+        "pairs it binds and (for dimensional ones) its datum value -- the value you "
+        "pass to setDatum; a constraints_by_geoId reverse index (what pins a given "
+        "GeoId); the solver state (degrees_of_freedom, plus any conflicting, "
+        "redundant or malformed constraints); external geometry with its negative "
+        "GeoIds; and the sketch's attachment/placement, wire closure and world "
+        "bounding box. "
+        "Call this BEFORE editing any existing sketch -- it replaces the pile of "
+        "exploratory run_python dumps you would otherwise need, and it is the only "
+        "tool that reveals GeoIds (view_sketch_svg's exported paths merge several "
+        "geometries into one unlabelled wire and omit construction geometry "
+        "entirely). Optional 'name' = the sketch's internal Name (e.g. 'Sketch001'); "
+        "defaults to the sketch being edited, else the selected one, else the "
+        "document's only/first sketch. Read-only -- no approval needed."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Internal Name of the sketch, e.g. 'Sketch001'.",
+            },
+        },
+        "required": [],
+    },
+}
+
+
+def _resolve_sketch(doc, name=None):
+    """The sketch to report on: the named one, else the one open in the Sketcher
+    editor, else the selected one, else the document's first."""
+    if name:
+        sk = doc.getObject(str(name))
+        if sk is None:
+            return None, f"No object named '{name}' in the document."
+        if sk.TypeId != "Sketcher::SketchObject":
+            return None, f"'{name}' is a {sk.TypeId}, not a sketch."
+        return sk, None
+
+    # Whatever the user currently has open in the Sketcher editor wins -- if they
+    # are staring at a sketch and ask about "this sketch", that's the one.
+    try:
+        import FreeCADGui
+
+        in_edit = FreeCADGui.ActiveDocument.getInEdit()
+        if in_edit is not None and in_edit.Object.TypeId == "Sketcher::SketchObject":
+            return in_edit.Object, None
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        import FreeCADGui
+
+        for sel in FreeCADGui.Selection.getSelectionEx():
+            if sel.Object.TypeId == "Sketcher::SketchObject":
+                return sel.Object, None
+    except Exception:  # noqa: BLE001
+        pass
+
+    sketches = [o for o in doc.Objects if o.TypeId == "Sketcher::SketchObject"]
+    if not sketches:
+        return None, "This document has no sketches."
+    if len(sketches) > 1:
+        names = ", ".join(f"{s.Name} ({s.Label})" for s in sketches)
+        return sketches[0], (
+            f"(No 'name' given and nothing is open/selected -- reporting the first "
+            f"of {len(sketches)} sketches. All: {names})"
+        )
+    return sketches[0], None
+
+
+def _run_get_sketch(args):
+    import json
+
+    import FreeCAD
+
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        return "No active document."
+
+    sk, note = _resolve_sketch(doc, args.get("name"))
+    if sk is None:
+        return note
+    try:
+        report = _sketch_report(sk)
+    except Exception as exc:  # noqa: BLE001
+        return f"Could not read sketch '{sk.Name}': {exc!r}"
+
+    text = json.dumps(report, indent=2)
+    # `note` is only set for the ambiguous no-argument case, where it disambiguates
+    # which sketch we picked.
+    return f"{note}\n{text}" if note else text
+
+
+def _sketch_anchor(geo):
+    """A sketch-local point to hang a GeoId label on -- the middle of the edge."""
+    import Part
+
+    try:
+        if isinstance(geo, Part.Point):
+            return (geo.X, geo.Y)
+        shape = geo.toShape()
+        mid = shape.valueAt((shape.FirstParameter + shape.LastParameter) / 2.0)
+        return (mid.x, mid.y)
+    except Exception:  # noqa: BLE001
+        try:
+            return (geo.StartPoint.x, geo.StartPoint.y)
+        except Exception:  # noqa: BLE001
+            return None
+
+
+def _sketch_polyline(geo, segments=48):
+    """Sketch-local points tracing `geo` -- for drawing the geometry importSVG
+    leaves out entirely (construction and external geometry)."""
+    import Part
+
+    try:
+        if isinstance(geo, Part.Point):
+            return [(geo.X, geo.Y)]
+        points = geo.toShape().discretize(Number=max(2, segments))
+        return [(p.x, p.y) for p in points]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+#: importSVG's wrapper group: translate(tx,ty) scale(sx,sy) (the CAD Y-up -> SVG
+#: Y-down flip). _flat_crop_svg regenerates this same pair when cropping, so we
+#: parse whatever is actually there rather than assuming the uncropped values.
+_SVG_XFORM_RE = (
+    r'transform="translate\(\s*([-0-9.eE]+)\s*,\s*([-0-9.eE]+)\s*\)'
+    r'\s*scale\(\s*([-0-9.eE]+)\s*,\s*([-0-9.eE]+)\s*\)"'
+)
+_SVG_VIEWBOX_RE = (
+    r'viewBox="\s*([-0-9.eE]+)\s+([-0-9.eE]+)\s+([-0-9.eE]+)\s+([-0-9.eE]+)\s*"'
+)
+
+_OVERLAY_COLOURS = {"geo": "#d24000", "construction": "#1e6fd9", "external": "#0a8f3c"}
+
+
+def _annotate_sketch_svg(svg_text, sk, expand=True):
+    """Overlay GeoId labels, construction/external geometry and the origin axes
+    onto importSVG's export.
+
+    importSVG exports only the real (non-construction) geometry, FUSES connected
+    edges into single unlabelled wire paths, and drops construction and external
+    geometry altogether -- so on its own the file cannot tell you which GeoId is
+    which, the one thing you need in order to edit the sketch. We keep its exact
+    path data untouched and draw a labelled overlay on top, in the same coordinate
+    space (read off the wrapper group's transform, so this works cropped or not).
+
+    `expand` grows the viewBox to fit the added geometry; suppressed when the
+    caller asked for a crop, so the crop still wins.
+    """
+    import re
+
+    xform = re.search(_SVG_XFORM_RE, svg_text)
+    viewbox = re.search(_SVG_VIEWBOX_RE, svg_text)
+    if not xform or not viewbox:
+        return svg_text  # unfamiliar export shape -- leave it exactly as it is
+    tx, ty, sx, sy = (float(g) for g in xform.groups())
+    vx, vy, vw, vh = (float(g) for g in viewbox.groups())
+
+    def to_svg(point):
+        """sketch-local mm -> SVG user units (the wrapper group's own transform)."""
+        return (tx + sx * point[0], ty + sy * point[1])
+
+    labels = []  # (x, y, text, kind)
+    strokes = []  # (kind, [(x, y), ...])
+
+    for geo_id, geo in enumerate(sk.Geometry):
+        try:
+            construction = bool(sk.getConstruction(geo_id))
+        except Exception:  # noqa: BLE001
+            construction = False
+        if construction:  # absent from the export -- draw it ourselves
+            points = [to_svg(p) for p in _sketch_polyline(geo)]
+            if points:
+                strokes.append(("construction", points))
+        anchor = _sketch_anchor(geo)
+        if anchor is not None:
+            x, y = to_svg(anchor)
+            labels.append((x, y, str(geo_id), "construction" if construction else "geo"))
+
+    # External geometry (GeoId -4 and below). Also absent from the export, but it
+    # is what the profile is constrained AGAINST, so it's what makes the sketch's
+    # position readable at all.
+    try:
+        for index, geo in enumerate(sk.ExternalGeo):
+            geo_id = -(index + 1)
+            if geo_id >= -3:
+                continue  # the sketch's own axes/origin -- we draw those below
+            points = [to_svg(p) for p in _sketch_polyline(geo)]
+            if points:
+                strokes.append(("external", points))
+            anchor = _sketch_anchor(geo)
+            if anchor is not None:
+                x, y = to_svg(anchor)
+                labels.append((x, y, str(geo_id), "external"))
+    except Exception:  # noqa: BLE001
+        pass
+
+    origin = to_svg((0.0, 0.0))
+    if expand:
+        xs = [vx, vx + vw, origin[0]]
+        ys = [vy, vy + vh, origin[1]]
+        for _, points in strokes:
+            xs += [p[0] for p in points]
+            ys += [p[1] for p in points]
+        for x, y, _, _ in labels:
+            xs.append(x)
+            ys.append(y)
+        pad = 0.06 * max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+        vx, vy = min(xs) - pad, min(ys) - pad
+        vw, vh = (max(xs) - min(xs)) + 2 * pad, (max(ys) - min(ys)) + 2 * pad
+
+    font = max(max(vw, vh) * 0.028, 0.01)
+    width = max(max(vw, vh) * 0.004, 0.001)
+
+    out = ['<g id="freecadclaude-geoids" font-family="sans-serif">']
+    # Origin + axes: "is this profile actually centred on the origin?" is the
+    # question the raw export can never answer, since it frames to the geometry.
+    out.append(
+        f'<line x1="{vx:.3f}" y1="{origin[1]:.3f}" x2="{vx + vw:.3f}" y2="{origin[1]:.3f}" '
+        f'stroke="#c8102e" stroke-width="{width:.3f}" opacity="0.35"/>'
+    )
+    out.append(
+        f'<line x1="{origin[0]:.3f}" y1="{vy:.3f}" x2="{origin[0]:.3f}" y2="{vy + vh:.3f}" '
+        f'stroke="#c8102e" stroke-width="{width:.3f}" opacity="0.35"/>'
+    )
+    for kind, points in strokes:
+        colour = _OVERLAY_COLOURS[kind]
+        if len(points) == 1:
+            x, y = points[0]
+            out.append(f'<circle cx="{x:.3f}" cy="{y:.3f}" r="{width * 2:.3f}" fill="{colour}"/>')
+            continue
+        data = " ".join(f"{x:.3f},{y:.3f}" for x, y in points)
+        dashes = (
+            f"{font * 0.35:.3f},{font * 0.25:.3f}"
+            if kind == "construction"
+            else f"{font * 0.6:.3f},{font * 0.2:.3f},{font * 0.12:.3f},{font * 0.2:.3f}"
+        )
+        out.append(
+            f'<polyline points="{data}" fill="none" stroke="{colour}" '
+            f'stroke-width="{width:.3f}" stroke-dasharray="{dashes}"/>'
+        )
+    for x, y, text, kind in labels:
+        out.append(
+            f'<text x="{x:.3f}" y="{y:.3f}" font-size="{font:.3f}" '
+            f'fill="{_OVERLAY_COLOURS[kind]}" text-anchor="middle" '
+            f'dominant-baseline="middle">{text}</text>'
+        )
+    out.append("</g>")
+
+    svg_text = re.sub(
+        _SVG_VIEWBOX_RE, f'viewBox="{vx:.3f} {vy:.3f} {vw:.3f} {vh:.3f}"', svg_text, count=1
+    )
+    svg_text = re.sub(r'\swidth="[^"]*"', f' width="{vw:.3f}mm"', svg_text, count=1)
+    svg_text = re.sub(r'\sheight="[^"]*"', f' height="{vh:.3f}mm"', svg_text, count=1)
+    return svg_text.replace("</svg>", "\n".join(out) + "\n</svg>")
 
 
 _VIEW_SKETCH_SVG_SCHEMA = {
@@ -1008,11 +1647,29 @@ def _run_view_sketch_svg(args):
             svg_text = open(svg_path, encoding="utf-8").read()
             if crop_box:
                 svg_text = _flat_crop_svg(svg_text, obj, crop_box)
-                with open(svg_path, "w", encoding="utf-8") as fh:
-                    fh.write(svg_text)
+            # Label GeoIds LAST: _flat_crop_svg regenerates the wrapper group's
+            # transform, and the overlay is positioned from whatever transform
+            # ends up in the file.
+            if obj.TypeId == "Sketcher::SketchObject":
+                try:
+                    svg_text = _annotate_sketch_svg(svg_text, obj, expand=not crop_box)
+                except Exception:  # noqa: BLE001
+                    pass  # never lose the exported geometry over a failed overlay
+            with open(svg_path, "w", encoding="utf-8") as fh:
+                fh.write(svg_text)
         except Exception as exc:  # noqa: BLE001
             return f"SVG export failed for '{obj.Label}': {exc!r}"
         header = f"Exported '{obj.Label}' ({obj.TypeId}) to SVG."
+        if obj.TypeId == "Sketcher::SketchObject":
+            annotations = (
+                "GeoIds are labelled on the overlay: orange = normal geometry, "
+                "blue dashed = construction, green dash-dot = external geometry "
+                "(negative GeoIds); the faint red cross is the sketch origin. "
+                "Note the exported <path> data FUSES connected edges into one wire, "
+                "so a path is not a GeoId -- use get_sketch for the authoritative "
+                "GeoId/constraint listing before editing."
+            )
+            header = f"{header}\n{annotations}"
 
     parts = [header]
     if warning:
@@ -2638,6 +3295,19 @@ def _sketch_states(doc):
                 "closed_wires": closed,
                 "open_wires": len(wires) - closed,
                 "edges": len(shape.Edges) if has_shape else 0,
+                # Solver state. These are plain attributes, not App properties, so
+                # they're easy to miss -- but "under-constrained" alone doesn't say
+                # HOW loose (DoF), and a conflicting/redundant constraint set is a
+                # real breakage that no recompute error and no volume delta catches.
+                # (0-based, like setDatum/delConstraint -- the solver reports them
+                # 1-based; see _solver_constraint_indices.)
+                "dof": int(getattr(obj, "DoF", -1)),
+                "conflicting": _solver_constraint_indices(
+                    getattr(obj, "ConflictingConstraints", [])),
+                "redundant": _solver_constraint_indices(
+                    getattr(obj, "RedundantConstraints", [])),
+                "malformed": _solver_constraint_indices(
+                    getattr(obj, "MalformedConstraints", [])),
             }
         except Exception:  # noqa: BLE001
             continue
@@ -2795,15 +3465,46 @@ def _format_sketch_change(st):
                 f"Z {bbox[4]:g}..{bbox[5]:g} mm")
     else:
         span = "empty (no geometry)"
-    constraint = "fully constrained" if st["fully_constrained"] else "under-constrained"
+    dof = st.get("dof", -1)
+    if st["fully_constrained"]:
+        constraint = "fully constrained"
+    elif dof > 0:
+        # The number matters: it's what tells you whether a moveGeometry will take
+        # (only underconstrained geometry moves) and how much is still free to drift.
+        constraint = f"under-constrained ({dof} DoF)"
+    else:
+        constraint = "under-constrained"
     n = st["closed_wires"]
     line = (f"{st['label']} (Sketch): {span} · {constraint} · "
             f"{n} closed wire{'' if n == 1 else 's'}")
+
+    problems = []
+    if st.get("malformed"):
+        problems.append(
+            f"malformed constraint(s) at index {st['malformed']} -- the solver cannot "
+            "even evaluate them; delete/replace them before doing anything else"
+        )
+    if st.get("conflicting"):
+        problems.append(
+            f"CONFLICTING constraint(s) at index {st['conflicting']} -- they contradict "
+            "each other, so the solver cannot satisfy the sketch and the geometry you "
+            "see is not what the constraints say; remove one side of the conflict"
+        )
+    if st.get("redundant"):
+        problems.append(
+            f"redundant constraint(s) at index {st['redundant']} -- harmless to the "
+            "shape but they make later edits fail unpredictably; drop them "
+            "(delConstraint, or autoRemoveRedundants())"
+        )
     if st["open_wires"] > 0:
-        return ("⚠ " + line + f"\n    {st['open_wires']} open (unclosed) wire(s) -- "
-                "a Pad/Pocket/Revolution needs a closed profile; make the endpoints "
-                "coincident (for a revolve, close the wire ALONG the axis -- ends merely "
-                "touching the axis is not enough) or the feature produces no solid.")
+        problems.append(
+            f"{st['open_wires']} open (unclosed) wire(s) -- a Pad/Pocket/Revolution "
+            "needs a closed profile; make the endpoints coincident (for a revolve, "
+            "close the wire ALONG the axis -- ends merely touching the axis is not "
+            "enough) or the feature produces no solid"
+        )
+    if problems:
+        return "⚠ " + line + "".join(f"\n    {p}." for p in problems)
     return line
 
 
@@ -2828,7 +3529,8 @@ def summarize_sketch_changes(before):
         prev = prev_states.get(name)
         if prev is not None and all(
             prev.get(k) == st[k]
-            for k in ("bbox", "fully_constrained", "closed_wires", "open_wires", "edges")
+            for k in ("bbox", "fully_constrained", "closed_wires", "open_wires", "edges",
+                      "dof", "conflicting", "redundant", "malformed")
         ):
             continue  # untouched by this operation
         lines.append(_format_sketch_change(st))
@@ -2890,6 +3592,7 @@ def _run_get_diagnostics(args):
 TOOLS = {
     "get_objects": {"schema": _GET_OBJECTS_SCHEMA, "run": _run_get_objects},
     "get_selection": {"schema": _GET_SELECTION_SCHEMA, "run": _run_get_selection},
+    "get_sketch": {"schema": _GET_SKETCH_SCHEMA, "run": _run_get_sketch},
     "view_sketch_svg": {"schema": _VIEW_SKETCH_SVG_SCHEMA, "run": _run_view_sketch_svg},
     "capture_view": {"schema": _CAPTURE_VIEW_SCHEMA, "run": _run_capture_view},
     "capture_user_view": {"schema": _CAPTURE_USER_VIEW_SCHEMA, "run": _run_capture_user_view},

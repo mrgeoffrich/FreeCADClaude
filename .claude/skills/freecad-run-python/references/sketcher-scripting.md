@@ -175,11 +175,68 @@ doc.recompute()
 ```python
 doc.recompute()                      # always before reading anything derived
 sketch.FullyConstrained               # bool — all geometry fully determined (DoF == 0)
+sketch.DoF                            # int — HOW loose it still is (0 == fully constrained)
+sketch.ConflictingConstraints         # constraints that contradict each other
+sketch.RedundantConstraints           # harmless to the shape, but they break later edits
+sketch.MalformedConstraints           # the solver can't even evaluate these
 sketch.getOpenVertices()              # list of Base.Vector3d — endpoints NOT closed; [] means closed wire(s)
 len(sketch.Geometry), len(sketch.Constraints)   # sanity counts after a batch of adds
 ```
 
-`getOpenVertices()` is populated by the sketch's internal analyser during recompute, so it's only meaningful after `doc.recompute()` runs clean. `FullyConstrained` is a hidden read-only property but still readable from Python. For "did this feature actually build", prefer this addon's `get_objects`/`get_diagnostics` (see `execution-model.md`) over re-deriving it here.
+`getOpenVertices()` is populated by the sketch's internal analyser during recompute, so it's only meaningful after `doc.recompute()` runs clean. `FullyConstrained` is a hidden read-only property but still readable from Python.
+
+**These are plain Python attributes, not App properties** — they don't appear in `PropertiesList`, and there is no `getDoF()`/`getLastSolverStatus()` method (those don't exist; nor do `setGeometry`, `getGeometry`, `movePoint`, or `rebuildExternalGeometry`). Read the properties above.
+
+**A conflicting or malformed sketch still "recomputes clean."** Nothing raises, `get_diagnostics` reports nothing, and the geometry you read back is *not* what the constraints say. Check these lists explicitly — or just use this addon's **`get_sketch`** tool, which returns all of it (plus every GeoId and constraint index) in one read-only call and is almost always the right first move. Constraint indices in `get_sketch` are 0-based; the raw `ConflictingConstraints`/`RedundantConstraints` properties report them **1-based**, so subtract 1 before passing one to `delConstraint`/`setDatum`.
+
+## Modifying an existing sketch
+
+Editing someone else's sketch is a different job from drawing a new one, and the intuitive approach silently produces garbage.
+
+**In a constrained sketch, the constraints drive the geometry — not the coordinates.** So to change a dimension, change the *datum*:
+
+```python
+sketch.setDatum(constraintIndex, 6.0)                       # mm
+sketch.setDatum(constraintIndex, App.Units.Quantity('45 deg'))   # angles — Value is RADIANS
+sketch.renameConstraint(i, 'Width')                          # then setDatum('Width', 25.0) by name
+```
+
+`setDatum` re-solves the sketch and moves everything the constraint governs, keeping the design intent intact. This is the normal way to resize or reposition anything in a well-constrained sketch.
+
+**Do NOT assign to `sketch.Geometry` to move something.** It does not raise. The solver just drags the geometry back to satisfy the constraints that are still there, and you get a mangled, often self-intersecting profile with no error anywhere:
+
+```python
+# A line held by DistanceX = 10, "shortened" to 6:
+g = sketch.Geometry
+g[0] = Part.LineSegment(App.Vector(0,0,0), App.Vector(6,0,0))
+sketch.Geometry = g
+doc.recompute()
+# -> Line (-3.08, 0, 0) → (6.92, 0, 0):  still 10mm long, and the start point
+#    has been flung off to -3.08. Nothing warned you. Use setDatum instead.
+```
+
+**`moveGeometry` only moves UNDERCONSTRAINED geometry** — that's its documented contract ("it works only for underconstrained portions of the sketch"). Applied to a constrained point it quietly does nothing, or moves it and not its neighbours, which is how you get a sketch that is broken in a *different* way after each attempt.
+
+```python
+sketch.moveGeometry(geoId, pos, App.Vector(x, y, 0), relative=False)
+```
+
+Before trying to move anything, look at what pins it (`get_sketch`'s `constraints_by_geoId`, or scan `sketch.Constraints` for the GeoId). If a datum holds it → `setDatum`. If nothing holds it → moving it is legitimate, but prefer *adding the constraint that should have been there*, since unconstrained geometry is why it drifted in the first place.
+
+**Rescaling a sketch means changing every dimension that drives it.** Scaling only the `Distance` constraints leaves unconstrained geometry exactly where it was, tearing the sketch in half — part at the new size, part at the old. Check `DoF` first: if a sketch is largely unconstrained, say so rather than nudging points one at a time.
+
+Other edit primitives, all GeoId-addressed and 0-based:
+
+```python
+sketch.delConstraint(i)               # drop a constraint (indices SHIFT — delete high→low)
+sketch.delGeometry(geoId)             # drop geometry (its constraints go too; GeoIds shift)
+sketch.toggleConstruction(geoId)      # normal <-> construction
+sketch.setConstruction(geoId, True)
+sketch.autoRemoveRedundants()         # clear the redundant set
+sketch.solve()                         # returns 0 on success
+```
+
+Deleting shifts every later index/GeoId down by one. Delete in **descending** order, or re-read the sketch between deletions.
 
 ## External geometry
 
@@ -188,6 +245,17 @@ geoId = sketch.addExternal(otherSketchOrObject, 'Edge1')   # returns a negative 
 ```
 
 `addExternal(obj, subName, defining=False, intersection=False)` projects an edge/vertex from elsewhere into the sketch so it can be constrained against. Use sparingly and prefer referencing another **sketch's** geometry over a solid's generated face/edge — referencing generated topology ties the sketch to names that can shift under the topological-naming problem (full explanation in the design-advisor's `core-concepts.md`, not repeated here).
+
+**Negative GeoIds** (verified against FreeCAD 1.1): `sketch.ExternalGeo[i]` has GeoId `-(i+1)`, and the first three slots are the sketch's own reference geometry:
+
+| GeoId | What it is |
+|---|---|
+| `-1` | X axis (H_Axis) |
+| `-2` | Y axis (V_Axis) |
+| `-3` | origin point (RootPoint) — `sketch.getPoint(-1, 1)` also returns it |
+| `-4` and below | actual external geometry, in the order added |
+
+So **external geometry starts at `-4`**, not `-3` as widely repeated (the origin point occupies `-3` in 1.x). Don't hardcode either — read the GeoIds from `get_sketch`.
 
 ## Common mistakes
 
@@ -198,6 +266,10 @@ geoId = sketch.addExternal(otherSketchOrObject, 'Edge1')   # returns a negative 
 - **Setting `AttachmentSupport` or `MapMode` alone**: without both set together the sketch is configured but not actually attached — it stays at its prior `Placement`.
 - **GeoId numbering**: scripts are 0-based; the GUI status bar / numbering shown when hovering geometry is 1-based — subtract 1 when translating what you see on screen into code.
 - **Treating `addGeometry`'s batch return as a list** — it's a tuple; index into it (`ids[0]`), don't expect `.append`/list mutation semantics.
+- **Overwriting `sketch.Geometry` to move constrained geometry** — the single most destructive mistake here. It never errors; the solver silently drags everything back and mangles the profile. Use `setDatum`. See "Modifying an existing sketch".
+- **Guessing method names.** `setGeometry`, `getGeometry`, `movePoint`, `getDoF()`, `getLastSolverStatus()`, `rebuildExternalGeometry` **do not exist**. The real ones are `moveGeometry`, the `DoF` *property*, and `sketch.Geometry[i]` for reads. `inspect_api` on a sketch **instance** (e.g. `doc.Sketch001`) lists every real method — `Sketcher.SketchObject` is not an importable class, though `inspect_api` will now resolve it to a live instance for you.
+- **Passing the solver's constraint indices straight to `delConstraint`** — `ConflictingConstraints`/`RedundantConstraints` are 1-based, `delConstraint`/`setDatum` are 0-based. Off by one deletes the wrong constraint. (`get_sketch` already normalises them to 0-based.)
+- **Deleting constraints/geometry in ascending order** — each deletion shifts every later index down. Delete descending.
 
 ## Sources
 - [Sketcher scripting](https://wiki.freecad.org/Sketcher_scripting)
