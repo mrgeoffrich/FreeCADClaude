@@ -41,7 +41,7 @@ chat panel (GUI thread)
 | `freecad/freecadclaude/system_prompt.md` | The system prompt text itself, edited as plain Markdown. Its `{REFS_DIR}` placeholder is replaced by `agent_config` at load with the absolute path of `references/`. |
 | `freecad/freecadclaude/references/` | run_python scripting references (sketcher / partdesign / part-draft) the system prompt tells Claude to `Read` on demand — progressive disclosure without a skill gate (the old `freecad-run-python` skill collapsed into these + the prompt's execution-contract section). |
 | `freecad/freecadclaude/gui_bridge.py` | In-FreeCAD socket server; runs tools on the GUI thread; run_python confirm dialog. |
-| `freecad/freecadclaude/freecad_tools.py` | The tool registry (`TOOLS`) + implementations + SVG/raster/export helpers. |
+| `freecad/freecadclaude/freecad_tools/` | The tools, as a package — see its own map below. `__init__.py` holds the `TOOLS` registry and re-exports the facade the rest of the addon imports (`TOOLS`, `list_schemas`, `feature_snapshot`, `post_tool_notes`, the session-dir helpers), so `from . import freecad_tools` still reaches everything. |
 | `freecad/freecadclaude/_deps.py` | Locates the `claude` CLI. |
 | `freecad/freecadclaude/eval_runner.py` | Unattended end-to-end eval (triggered by env var). |
 | `mcp_server.py` | Stdlib-only MCP stdio server the CLI spawns; relays to the bridge. |
@@ -55,10 +55,38 @@ Registry: `freecad_tools.TOOLS` = name → `{schema, run, confirm?}`. Current se
 `get_diagnostics`, `run_python` (confirm-gated; the sole document-mutating tool —
 the general Sketcher/PartDesign/Part path).
 
-**Adding a tool** is purely additive: add a `{schema, run}` entry. `run(args)`
-executes on the GUI thread and returns a string; the MCP allow-list and the
-bridge wiring derive automatically. Set `"confirm": True` to require user
-approval. `capture_view` returns a `(text, png_path)` tuple instead of a plain
+The package is one `tools_*` module per concern over a base of shared
+infrastructure. Dependencies run **tools → infra only** — keep it that way; the
+infra modules import nothing from `tools_*` (that's why `_ERROR_FLAGS` and
+`_solver_constraint_indices` live in `diagnostics`, not next to their callers).
+
+| Module | Role |
+|---|---|
+| `__init__.py` | The `TOOLS` registry, `list_schemas()`, and the facade re-exports. |
+| `tools_document.py` | `get_objects`, `get_selection`. |
+| `tools_python.py` | `run_python` (+ its syntax precheck). |
+| `tools_inspect.py` | `inspect_api`. |
+| `tools_sketch.py` | `get_sketch`, `view_sketch_svg` (+ the GeoId overlay). |
+| `tools_capture.py` | `capture_view`, `capture_user_view`, `crop_view`. |
+| `tools_cutaway.py` | `cutaway` (+ clip-plane resolution). |
+| `tools_export.py` | `export`. |
+| `session.py` | Artifact folders: the per-conversation session dir, the script/step archives. |
+| `geometry.py` | Bounding boxes, world-space crop extents. |
+| `svg.py` | Framing/cropping an SVG projection. |
+| `gui_state.py` | What the user has open in an editor (`_active_edit_object` & co). |
+| `visibility.py` | Show only the captured objects, then restore. |
+| `render.py` | The offscreen view, its camera, the PNG grab, `_last_capture`. |
+| `diagnostics.py` | What a mutating call changed, and what it broke (`post_tool_notes`). |
+
+Importing the package imports every submodule, so **no submodule may `import
+FreeCAD` at module level** — that would break the "importable from any thread for
+its schema data alone" contract. Keep FreeCAD imports inside the functions.
+
+**Adding a tool** is purely additive: add a `{schema, run}` entry to the registry
+in `__init__.py`, with the implementation in the matching `tools_*` module (a new
+one if it's a new concern). `run(args)` executes on the GUI thread and returns a
+string; the MCP allow-list and the bridge wiring derive automatically. Set
+`"confirm": True` to require user approval. `capture_view` returns a `(text, png_path)` tuple instead of a plain
 string; `gui_bridge` reads and base64-encodes `png_path` and `mcp_server.py`
 ships it back as an inline MCP `image` content block in the same tool result —
 Claude sees the picture directly, no separate file-open step. (The Claude API's
@@ -99,7 +127,7 @@ are **1-based** while `setDatum`/`delConstraint` are 0-based (`_solver_constrain
 normalises them, else a "drop the redundant constraint" fix deletes the wrong one);
 and `DoF`/those conflict lists are plain attributes, **not** in `PropertiesList`.
 
-**GUI edit state** (`_active_edit_object`, near the sketch helpers): what the user
+**GUI edit state** (`_active_edit_object`, in `gui_state.py`): what the user
 has *open in an editor* — as opposed to selected — comes from exactly one place,
 the in-edit ViewProvider (`FreeCADGui.ActiveDocument.getInEdit().Object`). It is
 not derivable from the document, so without it "this sketch" is a guess. Three

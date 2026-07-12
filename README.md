@@ -67,7 +67,9 @@ FreeCADClaude/
     ├── agent_config.py     # Model, system prompt, CLI flags (tools/mcp/cwd/skills)
     ├── system_prompt.md    # The system prompt text
     ├── gui_bridge.py       # In-FreeCAD socket server; runs tools on the GUI thread
-    ├── freecad_tools.py    # Tool registry + implementations + capture/export helpers
+    ├── freecad_tools/      # The tools: registry (__init__.py), one tools_*.py per
+    │                       #   concern, over shared infra (session/geometry/svg/
+    │                       #   gui_state/visibility/render/diagnostics)
     ├── _deps.py            # Locates the claude CLI
     ├── commands.py         # FreeCADClaude_TogglePanel command
     ├── eval_runner.py      # Unattended end-to-end eval (env-var triggered)
