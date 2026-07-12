@@ -1001,6 +1001,58 @@ _ANGULAR_CONSTRAINTS = {"Angle", "SnellsLaw"}
 _CONSTRAINT_UNUSED = -2000
 
 
+# --- GUI edit state --------------------------------------------------------
+# "What does the user currently have OPEN in an editor" -- distinct from what they
+# have selected. The GUI exposes it in exactly one place: the in-edit ViewProvider.
+# It is the strongest signal of what "this sketch" means when the user is sitting
+# inside the Sketcher editor, and it is not derivable from the document alone.
+
+
+def _active_edit_object():
+    """The document object the user has open in an editor right now (the Sketcher
+    editor, a task dialog), or None if they aren't editing anything."""
+    try:
+        import FreeCADGui
+
+        in_edit = FreeCADGui.ActiveDocument.getInEdit()
+        if in_edit is None:
+            return None
+        return in_edit.Object
+    except Exception:  # noqa: BLE001
+        # No GUI, no active GUI document, or a ViewProvider without an Object.
+        return None
+
+
+def _active_edit_summary():
+    """The in-edit object as a JSON-able dict, or None."""
+    obj = _active_edit_object()
+    if obj is None:
+        return None
+    type_id = getattr(obj, "TypeId", "")
+    return {
+        "name": getattr(obj, "Name", "?"),
+        "label": getattr(obj, "Label", "?"),
+        "type": type_id,
+        "is_sketch": type_id == "Sketcher::SketchObject",
+    }
+
+
+def _is_open_in_editor(obj):
+    """Is `obj` the thing the user currently has open in an editor?"""
+    editing = _active_edit_object()
+    if editing is None:
+        return False
+    try:
+        # Compare by name, not identity -- FreeCAD hands back a fresh proxy each
+        # access, so `editing is obj` is not reliable.
+        return (
+            editing.Name == obj.Name
+            and editing.Document.Name == obj.Document.Name
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _solver_constraint_indices(values):
     """Normalise the solver's constraint indices to 0-based.
 
@@ -1161,6 +1213,10 @@ def _sketch_report(sk):
     report = {
         "name": sk.Name,
         "label": sk.Label,
+        # Whether the user is sitting in this sketch right now. Without it, a
+        # no-'name' call can't tell "the user has this open in the Sketcher" from
+        # "the document just happens to have one sketch".
+        "open_in_editor": _is_open_in_editor(sk),
         "geometry_count": len(geometry),
         "constraint_count": len(constraints),
     }
@@ -1310,14 +1366,9 @@ def _resolve_sketch(doc, name=None):
 
     # Whatever the user currently has open in the Sketcher editor wins -- if they
     # are staring at a sketch and ask about "this sketch", that's the one.
-    try:
-        import FreeCADGui
-
-        in_edit = FreeCADGui.ActiveDocument.getInEdit()
-        if in_edit is not None and in_edit.Object.TypeId == "Sketcher::SketchObject":
-            return in_edit.Object, None
-    except Exception:  # noqa: BLE001
-        pass
+    editing = _active_edit_object()
+    if editing is not None and getattr(editing, "TypeId", "") == "Sketcher::SketchObject":
+        return editing, None
 
     try:
         import FreeCADGui
@@ -2851,9 +2902,15 @@ def _run_cutaway(args):
 _GET_SELECTION_SCHEMA = {
     "name": "get_selection",
     "description": (
-        "Return what the user currently has selected in FreeCAD (objects and "
-        "sub-elements like Edge3/Face2/Vertex1) as JSON. Use this to act on "
-        "what the user clicked (e.g. 'fillet this edge')."
+        "The user's current GUI context as JSON -- what they are pointing at. Two "
+        "parts: 'editing' = the object they have OPEN IN AN EDITOR right now, by "
+        "name (e.g. the sketch open in the Sketcher editor), or null if they are "
+        "not editing anything; and 'selection' = what they have SELECTED (objects "
+        "plus sub-elements like Edge3/Face2/Vertex1). Use it to act on what the "
+        "user clicked ('fillet this edge') or on whatever they are currently "
+        "inside ('add a circle here' while a sketch is open). When 'editing' names "
+        "a sketch, that is the sketch the user means -- pass its name to get_sketch "
+        "rather than guessing from the document. Read-only -- no approval needed."
     ),
     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
 }
@@ -2862,23 +2919,30 @@ _GET_SELECTION_SCHEMA = {
 def _run_get_selection(args):
     import json
 
+    # Edit state first: it's the headline, and it's the one signal that survives
+    # the user having clicked nothing at all.
+    out = {"editing": _active_edit_summary()}
+
     try:
         import FreeCADGui
 
         selection = FreeCADGui.Selection.getSelectionEx()
     except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": repr(exc), "selection_count": 0, "selection": []})
+        out.update({"error": repr(exc), "selection_count": 0, "selection": []})
+        return json.dumps(out, indent=2)
 
-    out = []
+    picked = []
     for sel in selection:
         obj = sel.Object
-        out.append({
+        picked.append({
             "name": obj.Name,
             "label": obj.Label,
             "type": obj.TypeId,
             "subelements": list(sel.SubElementNames),
         })
-    return json.dumps({"selection_count": len(out), "selection": out}, indent=2)
+    out["selection_count"] = len(picked)
+    out["selection"] = picked
+    return json.dumps(out, indent=2)
 
 
 #: Plain container types whose own .Shape aggregation can't be trusted (e.g. FreeCAD

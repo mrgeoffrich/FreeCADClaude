@@ -99,6 +99,20 @@ are **1-based** while `setDatum`/`delConstraint` are 0-based (`_solver_constrain
 normalises them, else a "drop the redundant constraint" fix deletes the wrong one);
 and `DoF`/those conflict lists are plain attributes, **not** in `PropertiesList`.
 
+**GUI edit state** (`_active_edit_object`, near the sketch helpers): what the user
+has *open in an editor* — as opposed to selected — comes from exactly one place,
+the in-edit ViewProvider (`FreeCADGui.ActiveDocument.getInEdit().Object`). It is
+not derivable from the document, so without it "this sketch" is a guess. Three
+consumers: `get_selection` reports it as an `editing` field (name/label/type/
+`is_sketch`, else `null`) — that tool is the *current GUI context* probe, not just
+a selection dump, and it's how Claude resolves "this sketch"/"here" without a
+screenshot or a full `get_sketch` dump; `_resolve_sketch` prefers the open sketch
+for a no-`name` `get_sketch`; and `_sketch_report` carries `open_in_editor` so a
+returned sketch says whether the user is actually sitting in it (a no-`name` call
+on a multi-sketch doc with nothing open still falls back to the *first* sketch —
+that flag is what tells you it was a guess). All three degrade to `None`/`False`
+under no GUI, no active GUI document, or a dead ViewProvider.
+
 Visual perception: `capture_view` (raster screenshot, returned inline as an
 image) is the way Claude actually *sees* geometry — reach for it whenever
 shape needs visual inspection, especially 3D. `cutaway` is its sibling: the same
@@ -249,3 +263,17 @@ project dir (so its `.claude/skills` load) else a temp dir.
   (`movePoint`, `setGeometry`, `getDoF()` — none exist). Both branches now run.
   `Sketcher.SketchObject` also isn't an importable class; `_describe_by_type_id`
   resolves that (and any `Type::String`) to a live instance in the document.
+- **Scripted `body.newObject(...)` onto a Body that has a datum feature (e.g. a
+  `PartDesign::Plane`) sitting in `Group` between the current Tip and its
+  predecessor can wire a circular `BaseFeature`.** Adding a `PartDesign::Fillet`
+  this way left the *previous* tip (`MirroredTopCut`) with `BaseFeature` rewired
+  to point at the *new* `Fillet`, while `Fillet.BaseFeature` correctly pointed
+  back at `MirroredTopCut` — a two-node cycle. Symptom: the older feature reports
+  `Invalid` after a successful-looking `run_python` call, and a forced recompute
+  on it throws `RuntimeError: The graph must be a DAG`. Fix by reassigning the
+  older feature's `BaseFeature` directly back to its true predecessor
+  (`doc.MirroredTopCut.BaseFeature = doc.Pocket001`) — do **not** try to fix it via
+  `Body.insertObject`/`Group` reordering, which reproduces the same cycle (and can
+  duplicate the `Group` entry). See
+  `freecad/freecadclaude/references/partdesign-body-tip-cycle-gotcha.md` for the
+  full incident writeup.
