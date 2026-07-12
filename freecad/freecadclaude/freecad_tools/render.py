@@ -3,8 +3,20 @@
 
 Shared by capture_view / crop_view / cutaway. None of this touches the
 user's own view: an offscreen view is created, framed, grabbed, and closed.
+_offscreen_shot wraps that whole setup/teardown -- it's what the three tools
+actually enter; each then does only the part that makes it different (aim the
+camera / insert a clip plane / replay the last camera and zoom).
 """
 
+import contextlib
+
+from .geometry import _EXTENT_KEYS, _crop_bbox, _document_bbox
+from .visibility import (
+    _isolate_visibility,
+    _restore_selection,
+    _restore_visibility,
+    _suspend_selection,
+)
 
 _VIEW_PRESETS = {
     "iso": "viewIsometric", "isometric": "viewIsometric", "axonometric": "viewAxonometric",
@@ -123,6 +135,52 @@ def _close_offscreen_view(subwindow, prev_view=None):
             pass
 
 
+@contextlib.contextmanager
+def _offscreen_shot(doc, keep_names, width, height):
+    """The whole scaffolding around a raster capture, entered by all three
+    tools (capture_view / crop_view / cutaway): yields a throwaway view of
+    `doc` sized to width x height, showing only `keep_names`, with the
+    selection highlight suspended.
+
+    On the way out it puts everything back -- visibility, selection, the GUI
+    document's Modified flag (toggling Visibility dirties it, and a capture
+    must not make the user's document look unsaved), and the view itself. That
+    restore is the invariant that keeps a read-only capture actually read-only,
+    so it lives here once rather than in three hand-copied `finally` blocks; it
+    runs on every exit path, including an early `return` from inside the
+    `with`.
+
+    Yields None if no offscreen view could be created -- callers bail with
+    their own message.
+    """
+    import FreeCADGui
+
+    view, subwindow, prev_view = _offscreen_view(doc)
+    if view is None:
+        yield None
+        return
+
+    gui_doc = FreeCADGui.getDocument(doc.Name)
+    prev_modified = getattr(gui_doc, "Modified", None)
+    saved = []
+    saved_sel = []
+    try:
+        saved = _isolate_visibility(doc, keep_names)
+        saved_sel = _suspend_selection(doc)  # drop selection highlight for the shot
+        if subwindow is not None:
+            subwindow.resize(width, height)
+        yield view
+    finally:
+        _restore_visibility(saved)
+        _restore_selection(saved_sel)
+        if prev_modified is not None:
+            try:
+                gui_doc.Modified = prev_modified
+            except Exception:  # noqa: BLE001
+                pass
+        _close_offscreen_view(subwindow, prev_view)
+
+
 def _camera_basis(cam):
     """(right, up, forward) unit FreeCAD.Vectors of an SoCamera's orientation in
     world coords -- forward is the look-along direction. Derived from the node's
@@ -211,6 +269,32 @@ def _frame_camera_on_box(view, box, aspect, margin=1.06):
         return True
     except Exception:  # noqa: BLE001 - any coin/API hiccup -> keep the fitAll frame
         return False
+
+
+def _apply_extent_crop(view, doc, extents, aspect):
+    """Re-frame `view` on the world-space crop `extents` (from _extent_args),
+    defaulting any axis the caller omitted to the document's own extent --
+    capture_view's and cutaway's shared x_min..z_max handling.
+
+    Returns a warning string if the crop couldn't be honoured (in which case
+    `view` is left on the full fitAll frame, so the caller still gets a usable
+    image), else None.
+    """
+    scene_bbox = _document_bbox(doc)
+    # An empty scene bbox is only fatal if the caller leaned on it for a default:
+    # a fully-specified crop needs nothing from the document.
+    if scene_bbox.XMin > scene_bbox.XMax and not all(k in extents for k in _EXTENT_KEYS):
+        return (
+            "Warning: the document has no real geometry to crop against -- "
+            "showing the full extent instead."
+        )
+    if not _frame_camera_on_box(view, _crop_bbox(scene_bbox, extents), aspect):
+        view.fitAll()
+        return (
+            "Warning: could not frame the requested crop on this build -- "
+            "showing the full extent instead."
+        )
+    return None
 
 
 def _crop_camera_frame(view, x1, y1, x2, y2, aspect):

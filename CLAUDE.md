@@ -75,7 +75,7 @@ infra modules import nothing from `tools_*` (that's why `_ERROR_FLAGS` and
 | `svg.py` | Framing/cropping an SVG projection. |
 | `gui_state.py` | What the user has open in an editor (`_active_edit_object` & co). |
 | `visibility.py` | Show only the captured objects, then restore. |
-| `render.py` | The offscreen view, its camera, the PNG grab, `_last_capture`. |
+| `render.py` | The offscreen view, its camera, the PNG grab, `_last_capture`. `_offscreen_shot` is the context manager all three raster tools enter — it owns the setup/teardown (isolate visibility, suspend selection, size the view; restore all of it plus the GUI doc's `Modified` flag on *every* exit path, early `return` included). That restore is what keeps a capture read-only, so it lives here once rather than in three copied `finally` blocks. |
 | `diagnostics.py` | What a mutating call changed, and what it broke (`post_tool_notes`). |
 
 Importing the package imports every submodule, so **no submodule may `import
@@ -161,7 +161,10 @@ them rather than asking Claude to go find an angle. It temporarily flips the
 widget — only valid because, unlike the other two, this view is actually
 visible) and restores it in a `finally`; no offscreen view, no camera move, no
 draw-style override — genuinely read-only. Fails with a plain-text message if
-the active tab isn't a 3D view.
+the active tab isn't a 3D view. `capture_view`/`cutaway`/`crop_view` all enter
+`render._offscreen_shot` and differ only in what they do inside it (aim the
+camera / insert the clip plane / replay the last camera and zoom); the shared
+`x_min..z_max` framing is `render._apply_extent_crop`.
 `view_sketch_svg` (exact SVG; for
 3D pass `view=front/top/...` → `TechDraw.projectToSVG` orthographic) is for
 reasoning about exact coordinates as text, not for looking at the shape — its

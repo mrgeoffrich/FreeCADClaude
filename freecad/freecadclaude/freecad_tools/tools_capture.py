@@ -7,9 +7,7 @@ own on-screen view exactly as painted.
 """
 
 from .geometry import (
-    _EXTENT_KEYS,
     _EXTENT_SCHEMA_PROPS,
-    _crop_bbox,
     _document_bbox,
     _extent_args,
     _extent_report,
@@ -17,24 +15,17 @@ from .geometry import (
 from .render import (
     _VIEW_PREF_PATH,
     _apply_camera_plan,
-    _close_offscreen_view,
+    _apply_extent_crop,
     _crop_camera_frame,
-    _frame_camera_on_box,
     _last_capture,
     _looks_blank,
-    _offscreen_view,
+    _offscreen_shot,
     _orbit_angles_from_view,
     _resolve_camera_args,
     _save_view_png,
 )
 from .session import _artifact_path
-from .visibility import (
-    _isolate_visibility,
-    _restore_selection,
-    _restore_visibility,
-    _suspend_selection,
-    _visibility_keep_set,
-)
+from .visibility import _visibility_keep_set
 
 _CAPTURE_VIEW_SCHEMA = {
     "name": "capture_view",
@@ -92,7 +83,6 @@ _CAPTURE_VIEW_SCHEMA = {
 
 def _run_capture_view(args):
     import FreeCAD
-    import FreeCADGui
 
     doc = FreeCAD.ActiveDocument
     if doc is None:
@@ -111,60 +101,30 @@ def _run_capture_view(args):
     if err:
         return err
     orbit = plan["orbit"]
-    label = plan["label"]
-    if orbit:
-        azimuth, elevation = plan["azimuth"], plan["elevation"]
-    else:
-        view_arg = plan["view_arg"]
-
-    view, subwindow, prev_view = _offscreen_view(doc)
-    if view is None:
-        return "Could not create an offscreen view to capture."
-
-    # Toggling Visibility dirties the GUI document; snapshot the flag so we can
-    # restore it (we net-restore the visibility values themselves too).
-    gui_doc = FreeCADGui.getDocument(doc.Name)
-    prev_modified = getattr(gui_doc, "Modified", None)
 
     # 1280x960 (1.23 MP) sits near Claude's image ceiling (~1.15-1.2 MP / 1568px
     # long edge); larger just gets downscaled again, so this is the detail sweet spot.
     width = int(args.get("width", 1280))
     height = int(args.get("height", 960))
-    png_path = _artifact_path("captures", label, ".png")
+    png_path = _artifact_path("captures", plan["label"], ".png")
     extents = _extent_args(args)
 
     warnings = []
     measured = None
-    saved = []
-    saved_sel = []
-    try:
-        # Show only the requested objects; fitAll (in _apply_camera_plan) then
-        # frames tightly on exactly them. Restored in the finally below.
-        saved = _isolate_visibility(doc, keep_set)
-        saved_sel = _suspend_selection(doc)  # drop selection highlight for the shot
-        if subwindow is not None:
-            subwindow.resize(width, height)
+    with _offscreen_shot(doc, keep_set, width, height) as view:
+        if view is None:
+            return "Could not create an offscreen view to capture."
 
+        # Only the requested objects are visible in here, so _apply_camera_plan's
+        # fitAll frames tightly on exactly them.
         err = _apply_camera_plan(view, plan)
         if err:
             return err
 
-        aspect = float(width) / float(height)
         if extents:
-            scene_bbox = _document_bbox(doc)
-            if scene_bbox.XMin <= scene_bbox.XMax or all(k in extents for k in _EXTENT_KEYS):
-                crop_box = _crop_bbox(scene_bbox, extents)
-                if not _frame_camera_on_box(view, crop_box, aspect):
-                    warnings.append(
-                        "Warning: could not frame the requested crop on this build -- "
-                        "showing the full extent instead."
-                    )
-                    view.fitAll()
-            else:
-                warnings.append(
-                    "Warning: the document has no real geometry to crop against -- "
-                    "showing the full extent instead."
-                )
+            warning = _apply_extent_crop(view, doc, extents, float(width) / float(height))
+            if warning:
+                warnings.append(warning)
 
         _save_view_png(view, png_path, width, height)
 
@@ -206,29 +166,20 @@ def _run_capture_view(args):
             )
         except Exception:  # noqa: BLE001 - crop_view just falls back to "capture first"
             _last_capture.update(camera=None)
-    finally:
-        _restore_visibility(saved)
-        _restore_selection(saved_sel)
-        if prev_modified is not None:
-            try:
-                gui_doc.Modified = prev_modified
-            except Exception:  # noqa: BLE001
-                pass
-        _close_offscreen_view(subwindow, prev_view)
 
     # Report the resolved camera angle (measured from the real view direction,
     # so presets like iso report their concrete az/el too) and how to nudge it.
     if measured is not None:
         meas_az, meas_el = measured
     elif orbit:
-        meas_az, meas_el = azimuth, elevation
+        meas_az, meas_el = plan["azimuth"], plan["elevation"]
     else:
         meas_az = meas_el = None
 
     if orbit:
         text = f"Captured a custom view of the 3D geometry, saved to {png_path}."
     else:
-        text = f"Captured the {view_arg} view, saved to {png_path}."
+        text = f"Captured the {plan['view_arg']} view, saved to {png_path}."
     if meas_az is not None:
         text += (
             f" Camera angle: azimuth {meas_az:.0f} deg, elevation {meas_el:.0f} deg. "
@@ -354,7 +305,6 @@ _CROP_VIEW_SCHEMA = {
 
 def _run_crop_view(args):
     import FreeCAD
-    import FreeCADGui
 
     camera = _last_capture.get("camera")
     if not camera:
@@ -389,27 +339,17 @@ def _run_crop_view(args):
     if doc is None:
         return "The document from the last capture is no longer open -- capture_view again first."
 
-    view, subwindow, prev_view = _offscreen_view(doc)
-    if view is None:
-        return "Could not create an offscreen view to capture."
-
     # Re-apply the same object isolation as the capture we're zooming into, so
-    # the crop stays visually consistent with it. Restored in the finally.
+    # the crop stays visually consistent with it.
     keep_set = _last_capture.get("keep") or set()
-    gui_doc = FreeCADGui.getDocument(doc.Name)
-    prev_modified = getattr(gui_doc, "Modified", None)
-
     width = int(_last_capture.get("width") or 1280)
     height = int(_last_capture.get("height") or 960)
 
     blank = False
-    saved = []
-    saved_sel = []
-    try:
-        saved = _isolate_visibility(doc, keep_set)
-        saved_sel = _suspend_selection(doc)  # drop selection highlight for the shot
-        if subwindow is not None:
-            subwindow.resize(width, height)
+    with _offscreen_shot(doc, keep_set, width, height) as view:
+        if view is None:
+            return "Could not create an offscreen view to capture."
+
         try:
             view.setCamera(camera)  # reproduce EXACTLY what Claude last saw
         except Exception as exc:  # noqa: BLE001
@@ -424,15 +364,6 @@ def _run_crop_view(args):
         png_path = _artifact_path("captures", "crop", ".png")
         _save_view_png(view, png_path, width, height)
         blank = _looks_blank(png_path)
-    finally:
-        _restore_visibility(saved)
-        _restore_selection(saved_sel)
-        if prev_modified is not None:
-            try:
-                gui_doc.Modified = prev_modified
-            except Exception:  # noqa: BLE001
-                pass
-        _close_offscreen_view(subwindow, prev_view)
 
     text = (
         f"Zoomed into ({x1:.2f},{y1:.2f})-({x2:.2f},{y2:.2f}) of the last view and "

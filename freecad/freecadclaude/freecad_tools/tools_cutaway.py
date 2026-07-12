@@ -6,30 +6,21 @@ The plane lives on a throwaway offscreen view, so the document is untouched.
 """
 
 from .geometry import (
-    _EXTENT_KEYS,
     _EXTENT_SCHEMA_PROPS,
-    _crop_bbox,
     _document_bbox,
     _extent_args,
     _extent_report,
 )
 from .render import (
     _apply_camera_plan,
-    _close_offscreen_view,
-    _frame_camera_on_box,
-    _offscreen_view,
+    _apply_extent_crop,
+    _offscreen_shot,
     _orbit_angles_from_view,
     _resolve_camera_args,
     _save_view_png,
 )
 from .session import _artifact_path
-from .visibility import (
-    _isolate_visibility,
-    _restore_selection,
-    _restore_visibility,
-    _suspend_selection,
-    _visibility_keep_set,
-)
+from .visibility import _visibility_keep_set
 
 #: axis name -> index into (x, y, z), for cutaway's convenience axis mode.
 _AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
@@ -204,7 +195,6 @@ _CUTAWAY_SCHEMA = {
 
 def _run_cutaway(args):
     import FreeCAD
-    import FreeCADGui
 
     doc = FreeCAD.ActiveDocument
     if doc is None:
@@ -235,14 +225,6 @@ def _run_cutaway(args):
     except Exception as exc:  # noqa: BLE001
         return f"Could not load the Coin3D scene-graph library for clipping: {exc!r}"
 
-    view, subwindow, prev_view = _offscreen_view(doc)
-    if view is None:
-        return "Could not create an offscreen view to capture."
-
-    # Toggling Visibility dirties the GUI document; snapshot the flag to restore.
-    gui_doc = FreeCADGui.getDocument(doc.Name)
-    prev_modified = getattr(gui_doc, "Modified", None)
-
     width = int(args.get("width", 1280))
     height = int(args.get("height", 960))
     png_path = _artifact_path("captures", "cutaway", ".png")
@@ -251,15 +233,9 @@ def _run_cutaway(args):
     crop_warning = None
     measured = None
     degenerate_warning = None
-    saved = []
-    saved_sel = []
-    try:
-        # Show only the requested objects; the clip then applies to just them and
-        # fitAll frames them. Restored in the finally below.
-        saved = _isolate_visibility(doc, keep_set)
-        saved_sel = _suspend_selection(doc)  # drop selection highlight for the shot
-        if subwindow is not None:
-            subwindow.resize(width, height)
+    with _offscreen_shot(doc, keep_set, width, height) as view:
+        if view is None:
+            return "Could not create an offscreen view to capture."
 
         # Clip THIS offscreen view's scene graph (world coords -- see
         # _insert_clip_plane for the camera-order nuance). It clips only this
@@ -273,25 +249,14 @@ def _run_cutaway(args):
         except Exception as exc:  # noqa: BLE001
             return f"Could not apply the clip plane to the view: {exc!r}"
 
+        # Only the requested objects are visible in here, so the clip applies to
+        # just them and _apply_camera_plan's fitAll frames them.
         err = _apply_camera_plan(view, plan)
         if err:
             return err
 
         if extents:
-            scene_bbox = _document_bbox(doc)
-            if scene_bbox.XMin <= scene_bbox.XMax or all(k in extents for k in _EXTENT_KEYS):
-                crop_box = _crop_bbox(scene_bbox, extents)
-                if not _frame_camera_on_box(view, crop_box, float(width) / float(height)):
-                    crop_warning = (
-                        "Warning: could not frame the requested crop on this build -- "
-                        "showing the full extent instead."
-                    )
-                    view.fitAll()
-            else:
-                crop_warning = (
-                    "Warning: the document has no real geometry to crop against -- "
-                    "showing the full extent instead."
-                )
+            crop_warning = _apply_extent_crop(view, doc, extents, float(width) / float(height))
 
         # Direction is unchanged by fitAll, so this matches the saved image.
         measured = _orbit_angles_from_view(view)
@@ -320,15 +285,6 @@ def _run_cutaway(args):
             )
 
         _save_view_png(view, png_path, width, height)
-    finally:
-        _restore_visibility(saved)
-        _restore_selection(saved_sel)
-        if prev_modified is not None:
-            try:
-                gui_doc.Modified = prev_modified
-            except Exception:  # noqa: BLE001
-                pass
-        _close_offscreen_view(subwindow, prev_view)
 
     text = f"Cutaway at {clip_desc}, saved to {png_path}."
     if measured is not None:
