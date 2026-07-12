@@ -1,0 +1,15 @@
+{
+  // Point Zed at FreeCAD's bundled interpreter (3.11, conda-forge) rather than a
+  // system/venv Python. Import resolution itself is driven by pyrightconfig.json
+  // in the repo root -- this mainly gets Zed's Python tooling (REPL, venv
+  // detection) pointing at the same environment the addon actually runs in.
+  "lsp": {
+    "pyright": {
+      "settings": {
+        "python": {
+          "pythonPath": "/Applications/FreeCAD.app/Contents/Resources/bin/python"
+        }
+      }
+    }
+  }
+}

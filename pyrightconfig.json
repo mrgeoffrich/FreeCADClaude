@@ -1,0 +1,23 @@
+{
+  "//": "Editor-only config for Pyright (the language server Zed/VS Code run for Python).",
+  "//1": "FreeCAD ships NO type stubs: FreeCAD/Part/Sketcher/... are native .so binaries, and the rest of its Python lives scattered around the app bundle. extraPaths below are the dirs FreeCAD itself puts on sys.path at runtime. These are macOS paths -- adjust the /Applications/FreeCAD.app prefix on another OS.",
+
+  "pythonVersion": "3.11",
+
+  "//2": "'off' still reports genuinely-broken code (see the two rules below) but drops type-inference noise. Worth it here: the codebase has no annotations and the entire FreeCAD API is untyped binary modules, so inference produces ~36 false positives (e.g. `_state = {'port': None}` is inferred dict[str, None], then every real assignment to it errors) and near-zero real signal.",
+  "typeCheckingMode": "off",
+  "reportMissingImports": "error",
+  "reportUndefinedVariable": "error",
+
+  "//3": "Native .so modules resolve, but have no stubs -- don't nag about the missing source.",
+  "reportMissingModuleSource": "none",
+
+  "extraPaths": [
+    "/Applications/FreeCAD.app/Contents/Resources/lib",
+    "/Applications/FreeCAD.app/Contents/Resources/Ext",
+    "/Applications/FreeCAD.app/Contents/Resources/Mod/Draft",
+    "/Applications/FreeCAD.app/Contents/Resources/lib/python3.11/site-packages"
+  ],
+
+  "exclude": ["**/__pycache__", "vendor", ".git", "eval/artifacts"]
+}
