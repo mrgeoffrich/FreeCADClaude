@@ -207,8 +207,9 @@ project dir (so its `.claude/skills` load) else a temp dir.
 - **Lazy GUI imports:** `InitGui.py` and tool `run` functions import
   `FreeCAD`/`FreeCADGui` inside functions where it matters.
 - Keep the App/GUI split clean; tool execution always on the GUI thread.
-- Commits: branch off `main` unless told otherwise; end messages with the
-  `Co-Authored-By` trailer used in this repo's history.
+- Commits: **committing and pushing straight to `main` is fine on this project** —
+  no branch/PR needed unless asked. End messages with the `Co-Authored-By` trailer
+  used in this repo's history.
 
 ## Gotchas (learned the hard way)
 
