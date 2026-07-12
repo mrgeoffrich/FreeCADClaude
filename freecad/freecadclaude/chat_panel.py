@@ -55,10 +55,6 @@ _SKILL_COMMANDS = {
         "freecad-design-advisor",
         "Plan the workbench(es) and feature sequence for a design idea",
     ),
-    "run-python": (
-        "freecad-run-python",
-        "Write/debug the run_python code to build or fix the live document",
-    ),
     "hollow-text": (
         "freecad-hollow-text",
         "Turn font text into hollow channel-letter lettering (e.g. LED signage)",

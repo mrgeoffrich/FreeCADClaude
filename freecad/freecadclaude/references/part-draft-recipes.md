@@ -127,11 +127,6 @@ import Mesh
 Mesh.export([obj1], "/path/to/part.stl")             # tessellates Part solids on the fly, no Mesh::Feature needed
 ```
 
-## Quantity / units
-
-Same rule as everywhere else in this skill: plain numbers in, `Quantity` out —
-see `execution-model.md`'s Quantity section, not repeated here.
-
 ## Recipe translation: archetype to first script
 
 Property-by-property detail (Pad/Pocket/Hole/Revolution/pattern fields) lives
@@ -204,9 +199,6 @@ doc.recompute()
   via `get_objects` can show stale geometry until it runs.
 - **Draft name drift** — old camelCase (`makeRectangle`, `makeArray`, ...)
   still resolves in 1.x but is deprecated; use the snake_case forms here.
-- **Assuming a pip package is available** — this addon ships zero Python
-  dependencies; only FreeCAD's bundled modules (`Part`, `Draft`, `Mesh`,
-  `TechDraw`, ...) and the stdlib exist. `import numpy` will fail.
 
 ## Sources
 

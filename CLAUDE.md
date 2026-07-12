@@ -38,7 +38,8 @@ chat panel (GUI thread)
 | `freecad/freecadclaude/plan_panel.py` | Second dock: Plan (subagent output) + live task checklist. |
 | `freecad/freecadclaude/agent_worker.py` | Drives the `claude` CLI per turn; parses stream-json → Qt signals. |
 | `freecad/freecadclaude/agent_config.py` | Model, system prompt (loaded from `system_prompt.md`), CLI flags (tools/mcp/cwd/skills). |
-| `freecad/freecadclaude/system_prompt.md` | The system prompt text itself, edited as plain Markdown. |
+| `freecad/freecadclaude/system_prompt.md` | The system prompt text itself, edited as plain Markdown. Its `{REFS_DIR}` placeholder is replaced by `agent_config` at load with the absolute path of `references/`. |
+| `freecad/freecadclaude/references/` | run_python scripting references (sketcher / partdesign / part-draft) the system prompt tells Claude to `Read` on demand — progressive disclosure without a skill gate (the old `freecad-run-python` skill collapsed into these + the prompt's execution-contract section). |
 | `freecad/freecadclaude/gui_bridge.py` | In-FreeCAD socket server; runs tools on the GUI thread; run_python confirm dialog. |
 | `freecad/freecadclaude/freecad_tools.py` | The tool registry (`TOOLS`) + implementations + SVG/raster/export helpers. |
 | `freecad/freecadclaude/_deps.py` | Locates the `claude` CLI. |
@@ -69,7 +70,8 @@ reasons about, not something it can visually see.
 
 Besides this MCP registry, a few of the CLI's own built-in tools are always
 enabled (`agent_config.build_config`'s `builtin_tools`): `Read` (the SVG file
-from `view_sketch_svg`, and skill reference files), `Write` (author plain-text
+from `view_sketch_svg`, skill reference files, and the bundled
+`references/*.md` scripting references), `Write` (author plain-text
 files, e.g. `freecad-lofi-sketch`'s SVGs), and `Glob`/`Grep` (file search — find
 files by name/path, search their contents; so Claude can locate a STEP/STL to
 import or a previous export before Reading it). All run inside the `claude` CLI

@@ -161,7 +161,7 @@ print(result)
 
 `is_valid == True` and `len(final.Solids) >= 1` are the two things worth
 checking before calling it done — same as `result` reads back through
-`run_python`'s return channel per `freecad-run-python`'s execution model.
+`run_python`'s return channel per the system prompt's execution contract.
 Don't expect exactly 1: any cluster with a filled counter (SKILL.md step 6)
 contributes its own separate solid island on top of the main tube(s), so a
 healthy result is often several solids, not one.

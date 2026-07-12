@@ -19,9 +19,8 @@ description: >-
   command in the FreeCAD chat panel, or an explicit "use the hollow-text
   skill" request. Do NOT trigger this on topic-matching alone (a request for
   text, a sign, or a nameplate is not, by itself, a reason to invoke it) --
-  wait for the explicit ask. Assumes freecad-run-python's execution model
-  (also explicit-invocation only); read that skill first this session if you
-  haven't.
+  wait for the explicit ask. Assumes the run_python execution contract from
+  the system prompt (pre-bound names, one-call-one-transaction, Quantity).
 ---
 
 # FreeCAD Hollow Text (Channel Letters)
@@ -29,10 +28,10 @@ description: >-
 You turn a text string into hollow outline lettering in the live document —
 a thin wall tracing each letterform, open through its depth, sized so an LED
 strip or wire can thread through it. This is a narrow, specific recipe within
-`freecad-run-python`'s domain: same execution model (pre-bound `doc`/`App`/
-`Part`/`Draft`, one-call-one-transaction, `inspect_api`, Quantity gotcha —
-see that skill's `references/execution-model.md`), just one particular
-geometry technique that's easy to get catastrophically wrong.
+ordinary run_python scripting: the system prompt's execution contract applies
+(pre-bound `doc`/`App`/`Part`/`Draft`, one-call-one-transaction, `inspect_api`,
+Quantity gotcha), just one particular geometry technique that's easy to get
+catastrophically wrong.
 
 **Scope check first:** if the user just wants solid extruded text (a raised
 logo, an embossed label), none of this applies — that's a plain
@@ -170,7 +169,7 @@ before writing the actual call(s); don't reimplement this from scratch.
 
 ## Sizing the run_python call(s)
 
-`freecad-run-python`'s "one call is one rollback unit, keep it under about a
+The system prompt's "one call is one rollback unit, keep it under about a
 second" rule applies here too:
 
 - **Short word/name (a few clusters):** fine as one `run_python` call,
@@ -188,8 +187,8 @@ second" rule applies here too:
   `Grep`/ripgrep. Content-searching a fonts directory with ripgrep times out
   scanning binary font files; this has happened firsthand and wasted 20
   seconds before falling back to the right approach.
-- **Never call `App.newDocument()`** — use the pre-bound `doc`, per
-  `freecad-run-python`'s execution model.
+- **Never call `App.newDocument()`** — use the pre-bound `doc`, per the
+  execution contract.
 - The exterior silhouette ends up `wall` thickness bigger than the true font
   outline (since the wall is added outward, not carved inward) — a minor,
   expected softening of the letterforms, not a bug. Mention it if the user

@@ -13,9 +13,9 @@ description: >-
   skill" request. Do NOT trigger this on topic-matching alone (a new part/
   object idea is not, by itself, a reason to invoke it) -- wait for the
   explicit ask. Touches no FreeCAD document -- it only writes a plain SVG
-  file. Not for workbench/feature workflow (see freecad-design-advisor) or for
-  the actual run_python code (see freecad-run-python), both also
-  explicit-invocation only.
+  file. Not for workbench/feature workflow (see freecad-design-advisor, also
+  explicit-invocation only) or for the actual run_python code (ordinary tool
+  work, covered by the system prompt's scripting references).
 ---
 
 # FreeCAD Low-Fidelity Concept Sketch
@@ -30,8 +30,8 @@ user can eyeball and redirect before anything gets concrete.
 Scope: one SVG file, iterated in place, authored directly with the `Write`
 tool. This is the **first** step of the design arc, ahead of
 `freecad-design-advisor` (which turns a settled idea into a workbench/feature
-workflow) and `freecad-run-python` (which turns a plan into code). It never
-touches the live FreeCAD document -- there's nothing to undo, and no
+workflow) and the `run_python` build itself (which turns the plan into code).
+It never touches the live FreeCAD document -- there's nothing to undo, and no
 `run_python` call is involved.
 
 ## How to sketch
@@ -103,7 +103,7 @@ rasterization tooling to work around this -- it's out of scope here.
   not measurements -- applied to a picture instead of a feature list.
 - **The document stays untouched.** This skill only ever writes a plain file
   with `Write`; if the user wants something built, that's
-  `freecad-design-advisor` then `freecad-run-python`/`run_python`, not here.
+  `freecad-design-advisor` then `run_python`, not here.
 - **Fast iteration over polish.** The sheet is disposable and cheap to
   redraw -- lean into quick revisions over trying to get it right in one
   pass.

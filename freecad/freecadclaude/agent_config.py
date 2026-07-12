@@ -28,10 +28,16 @@ DEFAULT_EFFORT = "medium"
 _VALID_EFFORT = ("low", "medium", "high", "xhigh", "max")
 
 #: The system prompt lives in system_prompt.md alongside this module so it's
-#: easy to read/edit as plain text; loaded once at import time.
-_SYSTEM_PROMPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "system_prompt.md")
+#: easy to read/edit as plain text; loaded once at import time. Its {REFS_DIR}
+#: placeholder becomes the absolute path of the bundled references/ dir (the
+#: run_python scripting references the prompt tells Claude to Read on demand) --
+#: an absolute path, not cwd-relative, because the CLI's cwd falls back to a
+#: temp dir when no skills project is configured.
+_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+_SYSTEM_PROMPT_PATH = os.path.join(_MODULE_DIR, "system_prompt.md")
+_REFS_DIR = os.path.join(_MODULE_DIR, "references")
 with open(_SYSTEM_PROMPT_PATH, "r", encoding="utf-8") as _f:
-    SYSTEM_PROMPT = _f.read().strip()
+    SYSTEM_PROMPT = _f.read().strip().replace("{REFS_DIR}", _REFS_DIR)
 
 _PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/FreeCADClaude"
 

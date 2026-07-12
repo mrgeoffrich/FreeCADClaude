@@ -203,27 +203,13 @@ sketch.renameConstraint(i, 'Width')                          # then setDatum('Wi
 
 `setDatum` re-solves the sketch and moves everything the constraint governs, keeping the design intent intact. This is the normal way to resize or reposition anything in a well-constrained sketch.
 
-**Do NOT assign to `sketch.Geometry` to move something.** It does not raise. The solver just drags the geometry back to satisfy the constraints that are still there, and you get a mangled, often self-intersecting profile with no error anywhere:
+The behavioural rules live in the system prompt's "Editing an existing sketch" section and aren't repeated here (never assign to `sketch.Geometry` — the solver silently drags the geometry back to the old constraints and mangles the profile; `moveGeometry` only moves UNDERCONSTRAINED geometry, by its documented contract; a rescale means changing every driving dimension, or the unconstrained parts tear away at the old size). The API form for the legitimate underconstrained case:
 
 ```python
-# A line held by DistanceX = 10, "shortened" to 6:
-g = sketch.Geometry
-g[0] = Part.LineSegment(App.Vector(0,0,0), App.Vector(6,0,0))
-sketch.Geometry = g
-doc.recompute()
-# -> Line (-3.08, 0, 0) → (6.92, 0, 0):  still 10mm long, and the start point
-#    has been flung off to -3.08. Nothing warned you. Use setDatum instead.
-```
-
-**`moveGeometry` only moves UNDERCONSTRAINED geometry** — that's its documented contract ("it works only for underconstrained portions of the sketch"). Applied to a constrained point it quietly does nothing, or moves it and not its neighbours, which is how you get a sketch that is broken in a *different* way after each attempt.
-
-```python
-sketch.moveGeometry(geoId, pos, App.Vector(x, y, 0), relative=False)
+sketch.moveGeometry(geoId, pos, App.Vector(x, y, 0), relative=False)   # underconstrained geometry only
 ```
 
 Before trying to move anything, look at what pins it (`get_sketch`'s `constraints_by_geoId`, or scan `sketch.Constraints` for the GeoId). If a datum holds it → `setDatum`. If nothing holds it → moving it is legitimate, but prefer *adding the constraint that should have been there*, since unconstrained geometry is why it drifted in the first place.
-
-**Rescaling a sketch means changing every dimension that drives it.** Scaling only the `Distance` constraints leaves unconstrained geometry exactly where it was, tearing the sketch in half — part at the new size, part at the old. Check `DoF` first: if a sketch is largely unconstrained, say so rather than nudging points one at a time.
 
 Other edit primitives, all GeoId-addressed and 0-based:
 

@@ -13,8 +13,8 @@ description: >-
   this on topic-matching alone (an object/part/enclosure/bracket the user wants
   to model is not, by itself, a reason to invoke it) — wait for the explicit
   ask. Covers approach/workflow, not specific dimensions or numeric values, and
-  not the actual code; for writing the run_python implementation see
-  freecad-run-python (also explicit-invocation only).
+  not the actual code; writing the run_python implementation is ordinary tool
+  work, covered by the system prompt's scripting references.
 ---
 
 # FreeCAD Design Advisor
@@ -33,8 +33,8 @@ Scope: mechanical parts and assemblies, tuned for 3D printing. **Workbench and
 feature-level workflow, independent of implementation** — name the
 workbench(es) and the ordered FreeCAD constructs (Sketch, Pad, Pocket, Loft,
 Boolean, …); whether the user builds it by hand in the GUI or has it scripted
-is out of scope here. If they want the actual code, point to the
-`freecad-run-python` skill rather than writing it here.
+is out of scope here. If they want the actual code, that's ordinary
+`run_python` work done after this skill finishes — don't write it here.
 
 ## How to advise
 
@@ -132,8 +132,8 @@ loop in two steps:
    their answers to a **Plan subagent** to turn the workflow into a concrete,
    ordered, build-ready plan — named features in sequence with the now-known
    dimensions and parameters, ready to execute by hand in the GUI or scripted.
-   If they want it scripted, point them to `freecad-run-python` (it covers the
-   actual code) and offer to build it with `run_python`, tracking the steps as
+   If they want it scripted, offer to build it with `run_python` (reading the
+   system prompt's scripting references as needed), tracking the steps as
    tasks so progress is visible.
 
 So the full arc is: **approach → clarifying questions → (user answers) → planning
@@ -156,5 +156,5 @@ agent → build.** Never skip straight from approach to build.
   number.
 - **Construct-level, not implementation.** Name workbenches and features
   (Sketch, Pad, Loft, Boolean…), not GUI clicks or Python — whether the user
-  builds it by hand or has it scripted is their choice. Point to
-  `freecad-run-python` for the actual code; don't write it here.
+  builds it by hand or has it scripted is their choice. The actual code is
+  ordinary `run_python` work done after this skill; don't write it here.
