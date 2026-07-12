@@ -16,9 +16,11 @@ from .geometry import (
     _crop_bbox,
     _extent_args,
 )
-from .gui_state import _active_edit_object, _is_open_in_editor
+from .gui_state import _active_edit_object, _is_open_in_editor, _selected_objects
 from .session import _artifact_path
 from .svg import (
+    _SVG_VIEWBOX_RE,
+    _SVG_XFORM_RE,
     _flat_crop_svg,
     _projected_crop_viewbox,
     _projection_degeneracy_warning,
@@ -339,14 +341,9 @@ def _resolve_sketch(doc, name=None):
     if editing is not None and getattr(editing, "TypeId", "") == "Sketcher::SketchObject":
         return editing, None
 
-    try:
-        import FreeCADGui
-
-        for sel in FreeCADGui.Selection.getSelectionEx():
-            if sel.Object.TypeId == "Sketcher::SketchObject":
-                return sel.Object, None
-    except Exception:  # noqa: BLE001
-        pass
+    for obj in _selected_objects():
+        if obj.TypeId == "Sketcher::SketchObject":
+            return obj, None
 
     sketches = [o for o in doc.Objects if o.TypeId == "Sketcher::SketchObject"]
     if not sketches:
@@ -413,17 +410,6 @@ def _sketch_polyline(geo, segments=48):
     except Exception:  # noqa: BLE001
         return []
 
-
-#: importSVG's wrapper group: translate(tx,ty) scale(sx,sy) (the CAD Y-up -> SVG
-#: Y-down flip). _flat_crop_svg regenerates this same pair when cropping, so we
-#: parse whatever is actually there rather than assuming the uncropped values.
-_SVG_XFORM_RE = (
-    r'transform="translate\(\s*([-0-9.eE]+)\s*,\s*([-0-9.eE]+)\s*\)'
-    r'\s*scale\(\s*([-0-9.eE]+)\s*,\s*([-0-9.eE]+)\s*\)"'
-)
-_SVG_VIEWBOX_RE = (
-    r'viewBox="\s*([-0-9.eE]+)\s+([-0-9.eE]+)\s+([-0-9.eE]+)\s+([-0-9.eE]+)\s*"'
-)
 
 _OVERLAY_COLOURS = {"geo": "#d24000", "construction": "#1e6fd9", "external": "#0a8f3c"}
 
@@ -599,12 +585,7 @@ def _run_view_sketch_svg(args):
         if obj is None:
             return f"No object named '{name}' in the document."
     else:
-        try:
-            import FreeCADGui
-
-            selected = [s.Object for s in FreeCADGui.Selection.getSelectionEx()]
-        except Exception:  # noqa: BLE001
-            selected = []
+        selected = _selected_objects()
         if selected:
             obj = selected[0]
         else:

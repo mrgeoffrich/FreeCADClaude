@@ -36,6 +36,7 @@ chat panel (GUI thread)
 | `Init.py` / `InitGui.py` | Workbench registration (App/GUI). InitGui also has the eval hook. |
 | `freecad/freecadclaude/chat_panel.py` | The dock, Markdown transcript (streamed), buttons, worker wiring. |
 | `freecad/freecadclaude/plan_panel.py` | Second dock: Plan (subagent output) + live task checklist. |
+| `freecad/freecadclaude/dock_panel.py` | The singleton dock shell both panels subclass (`DockPanel`): lazy creation, reuse-by-`objectName` across a workbench reload, `instance()`/`widget`. Subclasses supply the inner widget and, via `_on_created`, what happens to a fresh dock (chat raises itself; the plan dock tabs in behind it). |
 | `freecad/freecadclaude/agent_worker.py` | Drives the `claude` CLI per turn; parses stream-json → Qt signals. |
 | `freecad/freecadclaude/agent_config.py` | Model, system prompt (loaded from `system_prompt.md`), CLI flags (tools/mcp/cwd/skills). |
 | `freecad/freecadclaude/system_prompt.md` | The system prompt text itself, edited as plain Markdown. Its `{REFS_DIR}` placeholder is replaced by `agent_config` at load with the absolute path of `references/`. |
@@ -70,12 +71,13 @@ infra modules import nothing from `tools_*` (that's why `_ERROR_FLAGS` and
 | `tools_capture.py` | `capture_view`, `capture_user_view`, `crop_view`. |
 | `tools_cutaway.py` | `cutaway` (+ clip-plane resolution). |
 | `tools_export.py` | `export`. |
-| `session.py` | Artifact folders: the per-conversation session dir, the script/step archives. |
+| `session.py` | Artifact folders: the per-conversation session dir, the script/step archives (`_session_subdir`/`_safe_name` build every artifact path), and `PARAM_PATH` — the one spelling of the preferences root, which `agent_config` imports rather than re-declaring. |
+| `namespace.py` | `scripting_namespace()` — the names `run_python` binds. `inspect_api` resolves against the *same* function, so the two cannot drift: inspect_api exists to tell Claude what run_python will have bound, and a name resolving in one but not the other is the exact guess it's there to prevent. |
 | `geometry.py` | Bounding boxes, world-space crop extents. |
-| `svg.py` | Framing/cropping an SVG projection. |
-| `gui_state.py` | What the user has open in an editor (`_active_edit_object` & co). |
+| `svg.py` | Framing/cropping an SVG projection; `_SVG_XFORM_RE` — the one pattern for importSVG's wrapper `translate()/scale()` group, shared by its writer (`_flat_crop_svg` regenerates it when cropping) and its reader (`tools_sketch._annotate_sketch_svg` positions the GeoId overlay off whatever ends up in the file). |
+| `gui_state.py` | The user's current GUI context: what they have open in an editor (`_active_edit_object` & co) and what they have selected (`_selected_objects`, used by `get_sketch`/`view_sketch_svg`/`export` for their no-`name` fallback). |
 | `visibility.py` | Show only the captured objects, then restore. |
-| `render.py` | The offscreen view, its camera, the PNG grab, `_last_capture`. `_offscreen_shot` is the context manager all three raster tools enter — it owns the setup/teardown (isolate visibility, suspend selection, size the view; restore all of it plus the GUI doc's `Modified` flag on *every* exit path, early `return` included). That restore is what keeps a capture read-only, so it lives here once rather than in three copied `finally` blocks. |
+| `render.py` | The offscreen view, its camera, the PNG grab, `_last_capture`. `_offscreen_shot` is the context manager all three raster tools enter — it owns the setup/teardown (isolate visibility, suspend selection, size the view; restore all of it plus the GUI doc's `Modified` flag on *every* exit path, early `return` included). That restore is what keeps a capture read-only, so it lives here once rather than in three copied `finally` blocks. It also holds everything `capture_view` and `cutaway` share *around* that view — they differ only in what happens inside it, so their whole front half (`_capture_setup`: active doc, the required `objects` list → visibility keep-set, camera plan, size, crop extents) and back half (`_camera_angle_note`/`_shown_extents_note`) live here, as do the schema properties describing those args (`_objects_schema_prop`, `_CAMERA_SCHEMA_PROPS`, `_SIZE_SCHEMA_PROPS`). Keep it that way: the two tools must not describe or handle the same knob differently. |
 | `diagnostics.py` | What a mutating call changed, and what it broke (`post_tool_notes`). |
 
 Importing the package imports every submodule, so **no submodule may `import

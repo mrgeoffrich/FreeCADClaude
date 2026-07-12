@@ -10,10 +10,9 @@ ChatWidget connects the worker's signals to this panel's slots when it starts
 the agent.
 """
 
-import FreeCAD
-import FreeCADGui
-
 from PySide import QtCore, QtGui, QtWidgets
+
+from . import dock_panel
 
 DOCK_OBJECT_NAME = "FreeCADClaudePlanDock"
 CHAT_DOCK_OBJECT_NAME = "FreeCADClaudeDock"
@@ -26,50 +25,28 @@ _STATUS = {
     "cancelled": ("✗", "#c0392b"),
 }
 
-_panel_instance = None
-
-
 def get_panel():
-    global _panel_instance
-    if _panel_instance is None:
-        _panel_instance = PlanPanel()
-    return _panel_instance
+    return PlanPanel.instance()
 
 
-class PlanPanel:
-    """Owns the QDockWidget for the plan/tasks view."""
+class PlanPanel(dock_panel.DockPanel):
+    """Owns the QDockWidget for the plan/tasks view.
 
-    def __init__(self):
-        self._dock = None
-        self._build_dock()
+    Inherits the base's non-raising show_dock -- this dock is tabbed behind the
+    chat dock and should stay there.
+    """
 
-    def _build_dock(self):
-        main_window = FreeCADGui.getMainWindow()
-        existing = main_window.findChild(QtWidgets.QDockWidget, DOCK_OBJECT_NAME)
-        if existing is not None:
-            self._dock = existing
-            return
+    OBJECT_NAME = DOCK_OBJECT_NAME
+    TITLE = "Claude · Plan & Tasks"
 
-        dock = QtWidgets.QDockWidget(main_window)
-        dock.setObjectName(DOCK_OBJECT_NAME)
-        dock.setWindowTitle("Claude · Plan & Tasks")
-        dock.setWidget(PlanTasksWidget(dock))
-        main_window.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+    def _make_widget(self, dock):
+        return PlanTasksWidget(dock)
 
+    def _on_created(self, dock, main_window):
         # Tab it together with the chat dock if that exists.
         chat = main_window.findChild(QtWidgets.QDockWidget, CHAT_DOCK_OBJECT_NAME)
         if chat is not None:
             main_window.tabifyDockWidget(chat, dock)
-        self._dock = dock
-
-    def show_dock(self):
-        if self._dock is None:
-            self._build_dock()
-        self._dock.show()  # don't raise -- let chat stay in front
-
-    @property
-    def widget(self):
-        return self._dock.widget()
 
 
 class PlanTasksWidget(QtWidgets.QWidget):

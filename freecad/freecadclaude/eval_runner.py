@@ -27,6 +27,13 @@ def _result_path():
 
 
 def _snapshot_document():
+    """The shallow name/type/dimension snapshot the eval's -e regex matches against.
+
+    Reports the same dimension properties get_objects does (_REPORTED_PROPS), so a
+    regex written against what the agent saw also matches what the eval records.
+    """
+    from . import freecad_tools
+
     doc = FreeCAD.ActiveDocument
     if doc is None:
         return {"document": None, "object_count": 0, "objects": []}
@@ -34,10 +41,10 @@ def _snapshot_document():
     for obj in doc.Objects:
         info = {"name": obj.Name, "label": obj.Label, "type": obj.TypeId}
         dims = {}
-        for prop in ("Length", "Width", "Height", "Radius", "Radius1", "Radius2"):
+        for prop in freecad_tools._REPORTED_PROPS:
             if hasattr(obj, prop):
                 value = getattr(obj, prop)
-                dims[prop] = getattr(value, "Value", value)
+                dims[prop] = getattr(value, "Value", value)  # Quantity -> float
         if dims:
             info["dimensions"] = dims
         objects.append(info)
@@ -61,8 +68,7 @@ def _save_final_documents():
         from . import freecad_tools
 
         folder = freecad_tools.session_dir()
-        safe = "".join(c if c.isalnum() or c in "-_" else "_"
-                       for c in (doc.Label or doc.Name)) or doc.Name
+        safe = freecad_tools._safe_name(doc.Label or doc.Name, doc.Name)
         path = os.path.join(folder, safe + ".FCStd")
         doc.saveCopy(path)
         paths.append(path)

@@ -3,6 +3,7 @@
 
 import os
 
+from .gui_state import _selected_objects
 from .session import _artifact_path
 from .visibility import _expand_containers
 
@@ -44,12 +45,7 @@ def _run_export(args):
                 return f"No object named '{n}'."
             objs.append(obj)
     else:
-        try:
-            import FreeCADGui
-
-            objs = [s.Object for s in FreeCADGui.Selection.getSelectionEx()]
-        except Exception:  # noqa: BLE001
-            objs = []
+        objs = _selected_objects()
         if not objs:
             objs = [o for o in doc.Objects
                     if getattr(o, "Shape", None) is not None and not o.Shape.isNull()]

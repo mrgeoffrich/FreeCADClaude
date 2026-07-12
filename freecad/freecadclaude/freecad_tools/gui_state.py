@@ -1,5 +1,22 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""What the user has OPEN IN AN EDITOR right now -- distinct from selected."""
+"""The user's current GUI context: what they have OPEN IN AN EDITOR, and what
+they have SELECTED. Neither is derivable from the document alone."""
+
+
+def _selected_objects():
+    """The document objects the user currently has selected, or [].
+
+    Selection is Gui state, so every caller has to guard the FreeCADGui import
+    and tolerate there being no GUI at all -- done once here. Sub-element picks
+    (Edge3/Face2/...) are dropped; get_selection reads getSelectionEx() directly
+    when it needs those.
+    """
+    try:
+        import FreeCADGui
+
+        return [sel.Object for sel in FreeCADGui.Selection.getSelectionEx()]
+    except Exception:  # noqa: BLE001 - no GUI, or no active GUI document
+        return []
 
 
 # --- GUI edit state --------------------------------------------------------

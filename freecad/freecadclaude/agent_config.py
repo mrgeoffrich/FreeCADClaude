@@ -11,6 +11,8 @@ import os
 
 import FreeCAD
 
+from .freecad_tools import PARAM_PATH
+
 DEFAULT_MODEL = "claude-opus-4-8"
 
 #: (label, model-id) pairs offered by the chat panel's model selector. The label
@@ -38,8 +40,6 @@ _SYSTEM_PROMPT_PATH = os.path.join(_MODULE_DIR, "system_prompt.md")
 _REFS_DIR = os.path.join(_MODULE_DIR, "references")
 with open(_SYSTEM_PROMPT_PATH, "r", encoding="utf-8") as _f:
     SYSTEM_PROMPT = _f.read().strip().replace("{REFS_DIR}", _REFS_DIR)
-
-_PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/FreeCADClaude"
 
 #: Addon root = three levels up from this file (.../FreeCADClaude/freecad/freecadclaude).
 _ADDON_ROOT = os.path.dirname(
@@ -93,7 +93,7 @@ _SKILL_TOOLS = ["Skill"]
 
 
 def get_model():
-    params = FreeCAD.ParamGet(_PARAM_PATH)
+    params = FreeCAD.ParamGet(PARAM_PATH)
     model = params.GetString("Model", DEFAULT_MODEL) or DEFAULT_MODEL
     return model if model in _VALID_MODELS else DEFAULT_MODEL
 
@@ -101,13 +101,13 @@ def get_model():
 def save_model(model_id):
     """Persist the selected model so it's remembered across restarts and picked
     up by build_config()/get_model() the next time a worker is created."""
-    FreeCAD.ParamGet(_PARAM_PATH).SetString("Model", model_id)
+    FreeCAD.ParamGet(PARAM_PATH).SetString("Model", model_id)
 
 
 def get_effort():
     """Reasoning effort (low/medium/high/xhigh/max). Pinned so it doesn't
     inherit the user's global Claude Code effortLevel."""
-    params = FreeCAD.ParamGet(_PARAM_PATH)
+    params = FreeCAD.ParamGet(PARAM_PATH)
     effort = (
         (params.GetString("Effort", DEFAULT_EFFORT) or DEFAULT_EFFORT).strip().lower()
     )
@@ -116,7 +116,7 @@ def get_effort():
 
 def get_skills_dir():
     """Return the configured skills project dir if it has .claude/skills, else None."""
-    params = FreeCAD.ParamGet(_PARAM_PATH)
+    params = FreeCAD.ParamGet(PARAM_PATH)
     path = (
         params.GetString("SkillsProjectDir", DEFAULT_SKILLS_DIR) or DEFAULT_SKILLS_DIR
     )

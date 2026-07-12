@@ -14,7 +14,12 @@ import tempfile
 #: (profile) directory, so captures/exports are easy to find -- not buried in
 #: FreeCAD's hidden app-data dir. Override with the "ArtifactsDir" preference.
 _DEFAULT_ARTIFACTS_DIR = os.path.join(os.path.expanduser("~"), "FreeCADClaude")
-_PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/FreeCADClaude"
+
+#: Root of every FreeCADClaude preference (ArtifactsDir/SaveSteps here,
+#: Model/Effort/SkillsProjectDir in agent_config, which imports this). One
+#: spelling: a typo'd copy would read a silently-empty branch of the parameter
+#: tree, so every preference under it would just look unset.
+PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/FreeCADClaude"
 
 
 def artifacts_dir():
@@ -25,7 +30,7 @@ def artifacts_dir():
     """
     import FreeCAD
 
-    configured = FreeCAD.ParamGet(_PARAM_PATH).GetString("ArtifactsDir", "").strip()
+    configured = FreeCAD.ParamGet(PARAM_PATH).GetString("ArtifactsDir", "").strip()
     path = os.path.expanduser(configured) if configured else _DEFAULT_ARTIFACTS_DIR
     os.makedirs(path, exist_ok=True)
     return path
@@ -97,13 +102,29 @@ def _prune_session_dirs(keep=40):
             pass
 
 
+def _safe_name(text, fallback):
+    """`text` reduced to a filesystem-safe stem, or `fallback` if nothing survives.
+
+    Every artifact name here is built from model-authored text (a run_python
+    description, a document label), so it can hold anything -- path separators
+    included.
+    """
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in (text or "")) or fallback
+
+
+def _session_subdir(name, keep=60):
+    """<session_dir>/<name>/, created and pruned to its most recent `keep` files
+    -- the opening move of every artifact write (captures, exports, scripts, steps)."""
+    folder = os.path.join(session_dir(), name)
+    os.makedirs(folder, exist_ok=True)
+    _prune_folder(folder, keep=keep)
+    return folder
+
+
 def _artifact_path(subdir, base, suffix):
     """A unique, readably-named file under <session_dir>/<subdir>/."""
-    folder = os.path.join(session_dir(), subdir)
-    os.makedirs(folder, exist_ok=True)
-    _prune_folder(folder, keep=60)
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in base) or "item"
-    fd, path = tempfile.mkstemp(prefix=safe + "_", suffix=suffix, dir=folder)
+    folder = _session_subdir(subdir)
+    fd, path = tempfile.mkstemp(prefix=_safe_name(base, "item") + "_", suffix=suffix, dir=folder)
     os.close(fd)
     return path
 
@@ -135,11 +156,8 @@ def _save_run_python_script(code, description):
     import time
 
     try:
-        folder = os.path.join(session_dir(), "scripts")
-        os.makedirs(folder, exist_ok=True)
-        _prune_folder(folder, keep=60)
-        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in description) or "run_python"
-        name = time.strftime("%H%M%S") + "_" + safe
+        folder = _session_subdir("scripts")
+        name = time.strftime("%H%M%S") + "_" + _safe_name(description, "run_python")
         path = os.path.join(folder, name + ".py")
         n = 2
         while os.path.exists(path):  # two runs in the same second
@@ -168,7 +186,7 @@ def _save_steps_enabled():
     try:
         import FreeCAD
 
-        return bool(FreeCAD.ParamGet(_PARAM_PATH).GetBool("SaveSteps", False))
+        return bool(FreeCAD.ParamGet(PARAM_PATH).GetBool("SaveSteps", False))
     except Exception:  # noqa: BLE001
         return False
 
@@ -184,17 +202,13 @@ def _save_step_snapshot(doc, description):
     run_python result. Returns the path or None.
     """
     try:
-        folder = os.path.join(session_dir(), "steps")
-        os.makedirs(folder, exist_ok=True)
-        _prune_folder(folder, keep=60)
+        folder = _session_subdir("steps")
         n = 0
         for f in os.listdir(folder):
             head = f.split("_", 1)[0]
             if head.isdigit():
                 n = max(n, int(head))
-        safe = "".join(c if c.isalnum() or c in "-_" else "_"
-                       for c in (description or "")) or "step"
-        path = os.path.join(folder, f"{n + 1:03d}_{safe}.FCStd")
+        path = os.path.join(folder, f"{n + 1:03d}_{_safe_name(description, 'step')}.FCStd")
         doc.saveCopy(path)
         return path
     except Exception:  # noqa: BLE001

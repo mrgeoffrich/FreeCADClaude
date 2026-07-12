@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """run_python -- the sole document-mutating tool, gated on user approval."""
 
+from .namespace import scripting_namespace
 from .session import _save_run_python_script, _save_step_snapshot, _save_steps_enabled
 
 _RUN_PYTHON_SCHEMA = {
@@ -115,19 +116,7 @@ def _run_python(args):
 
     _save_run_python_script(code, args.get("description") or "")
 
-    namespace = {"FreeCAD": FreeCAD, "App": FreeCAD, "doc": doc}
-    try:
-        import FreeCADGui
-
-        namespace["FreeCADGui"] = FreeCADGui
-        namespace["Gui"] = FreeCADGui
-    except Exception:  # noqa: BLE001
-        pass
-    for mod_name in ("Part", "Sketcher", "PartDesign", "Draft"):
-        try:
-            namespace[mod_name] = __import__(mod_name)
-        except Exception:  # noqa: BLE001
-            pass
+    namespace = scripting_namespace(doc)
 
     existing = {obj.Name for obj in doc.Objects}
     doc_name = doc.Name  # remember it now -- the handle dies if the code closes it

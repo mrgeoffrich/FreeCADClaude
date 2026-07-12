@@ -17,14 +17,11 @@ import html
 import os
 import re
 
-import FreeCAD
-import FreeCADGui
-
 # FreeCAD bundles its own Qt binding under the ``PySide`` name. Always import
 # from ``PySide`` so the addon matches the running FreeCAD.
 from PySide import QtCore, QtWidgets
 
-from . import _deps, transcript_widgets
+from . import _deps, dock_panel, transcript_widgets
 from .agent_worker import AgentWorker
 
 #: Show Claude's reasoning entry. Flip to False to hide it (the agent still
@@ -104,55 +101,23 @@ def _extract_capture_png(text):
     return path if os.path.isfile(path) else None
 
 
-_panel_instance = None
-
-
 def get_panel():
     """Return the singleton :class:`ChatPanel`, creating it on first use."""
-    global _panel_instance
-    if _panel_instance is None:
-        _panel_instance = ChatPanel()
-    return _panel_instance
+    return ChatPanel.instance()
 
 
-class ChatPanel:
+class ChatPanel(dock_panel.DockPanel):
     """Owns the QDockWidget and its inner chat widget."""
 
-    def __init__(self):
-        self._dock = None
-        self._build_dock()
+    OBJECT_NAME = DOCK_OBJECT_NAME
+    TITLE = "Claude"
 
-    def _build_dock(self):
-        main_window = FreeCADGui.getMainWindow()
-
-        # Reuse an existing dock if one survived a workbench reload.
-        existing = main_window.findChild(QtWidgets.QDockWidget, DOCK_OBJECT_NAME)
-        if existing is not None:
-            self._dock = existing
-            return
-
-        dock = QtWidgets.QDockWidget(main_window)
-        dock.setObjectName(DOCK_OBJECT_NAME)
-        dock.setWindowTitle("Claude")
-        dock.setWidget(ChatWidget(dock))
-
-        main_window.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
-        self._dock = dock
+    def _make_widget(self, dock):
+        return ChatWidget(dock)
 
     def show_dock(self):
-        if self._dock is None:
-            self._build_dock()
-        self._dock.show()
-        self._dock.raise_()
-
-    def toggle_dock(self):
-        if self._dock is None:
-            self._build_dock()
-        self._dock.setVisible(not self._dock.isVisible())
-
-    @property
-    def widget(self):
-        return self._dock.widget()
+        super().show_dock()
+        self._dock.raise_()  # chat takes the front tab
 
 
 class ChatWidget(QtWidgets.QWidget):

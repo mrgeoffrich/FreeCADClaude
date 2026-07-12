@@ -6,26 +6,26 @@ re-renders a sub-region of the last one; capture_user_view grabs the user's
 own on-screen view exactly as painted.
 """
 
-from .geometry import (
-    _EXTENT_SCHEMA_PROPS,
-    _document_bbox,
-    _extent_args,
-    _extent_report,
-)
+from .geometry import _EXTENT_SCHEMA_PROPS
 from .render import (
+    _CAMERA_SCHEMA_PROPS,
+    _SIZE_SCHEMA_PROPS,
     _VIEW_PREF_PATH,
     _apply_camera_plan,
     _apply_extent_crop,
+    _camera_angle_note,
+    _capture_setup,
     _crop_camera_frame,
     _last_capture,
     _looks_blank,
+    _measured_angles,
+    _objects_schema_prop,
     _offscreen_shot,
     _orbit_angles_from_view,
-    _resolve_camera_args,
     _save_view_png,
+    _shown_extents_note,
 )
 from .session import _artifact_path
-from .visibility import _visibility_keep_set
 
 _CAPTURE_VIEW_SCHEMA = {
     "name": "capture_view",
@@ -55,24 +55,9 @@ _CAPTURE_VIEW_SCHEMA = {
     "inputSchema": {
         "type": "object",
         "properties": {
-            "objects": {
-                "type": "array", "items": {"type": "string"}, "minItems": 1,
-                "description": (
-                    "REQUIRED. Internal Names (from get_objects, e.g. 'Body', "
-                    "'Box001' -- NOT Labels) of the object(s) to show. Only these "
-                    "are made visible for the shot and everything else in the "
-                    "document is hidden, so the capture is precisely controlled "
-                    "and auto-framed on exactly them. Naming a container (an "
-                    "App::Part/Group, or a PartDesign Body) shows its contents. "
-                    "The user's real view is left untouched -- prior visibility is "
-                    "restored right after the capture."
-                ),
-            },
-            "view": {"type": "string", "description": "Camera preset: iso/front/rear/top/bottom/left/right (default iso). Ignored when azimuth/elevation are given."},
-            "azimuth": {"type": "number", "description": "Custom orbit angle around the vertical axis, degrees: 0=front, +90=right, 180=back, -90=left. Use with elevation for an angle no preset covers."},
-            "elevation": {"type": "number", "description": "Custom orbit angle above/below eye level, degrees: 0=side-on, +90=straight down (top), -90=straight up (bottom). Use with azimuth."},
-            "width": {"type": "integer", "description": "Image width px (default 1280)"},
-            "height": {"type": "integer", "description": "Image height px (default 960)"},
+            "objects": _objects_schema_prop(),
+            **_CAMERA_SCHEMA_PROPS,
+            **_SIZE_SCHEMA_PROPS,
             **_EXTENT_SCHEMA_PROPS,
         },
         "required": ["objects"],
@@ -82,32 +67,12 @@ _CAPTURE_VIEW_SCHEMA = {
 
 
 def _run_capture_view(args):
-    import FreeCAD
-
-    doc = FreeCAD.ActiveDocument
-    if doc is None:
-        return "No active document."
-
-    names = args.get("objects")
-    if not names:
-        return ("capture_view requires 'objects': a list of object Names to show "
-                "(everything else is hidden for the shot). Call get_objects first.")
-    for n in names:
-        if doc.getObject(n) is None:
-            return f"No object named '{n}'."
-    keep_set = _visibility_keep_set(doc, names)
-
-    plan, err = _resolve_camera_args(args)
+    setup, err = _capture_setup(args, "capture_view")
     if err:
         return err
-    orbit = plan["orbit"]
-
-    # 1280x960 (1.23 MP) sits near Claude's image ceiling (~1.15-1.2 MP / 1568px
-    # long edge); larger just gets downscaled again, so this is the detail sweet spot.
-    width = int(args.get("width", 1280))
-    height = int(args.get("height", 960))
+    doc, keep_set, plan = setup["doc"], setup["keep_set"], setup["plan"]
+    width, height, extents = setup["width"], setup["height"], setup["extents"]
     png_path = _artifact_path("captures", plan["label"], ".png")
-    extents = _extent_args(args)
 
     warnings = []
     measured = None
@@ -122,7 +87,7 @@ def _run_capture_view(args):
             return err
 
         if extents:
-            warning = _apply_extent_crop(view, doc, extents, float(width) / float(height))
+            warning = _apply_extent_crop(view, doc, extents, setup["aspect"])
             if warning:
                 warnings.append(warning)
 
@@ -169,27 +134,19 @@ def _run_capture_view(args):
 
     # Report the resolved camera angle (measured from the real view direction,
     # so presets like iso report their concrete az/el too) and how to nudge it.
-    if measured is not None:
-        meas_az, meas_el = measured
-    elif orbit:
-        meas_az, meas_el = plan["azimuth"], plan["elevation"]
-    else:
-        meas_az = meas_el = None
-
-    if orbit:
+    angles = _measured_angles(measured, plan)
+    if plan["orbit"]:
         text = f"Captured a custom view of the 3D geometry, saved to {png_path}."
     else:
         text = f"Captured the {plan['view_arg']} view, saved to {png_path}."
-    if meas_az is not None:
+    text += _camera_angle_note(angles)
+    if angles is not None:
         text += (
-            f" Camera angle: azimuth {meas_az:.0f} deg, elevation {meas_el:.0f} deg. "
-            "To orbit from here, call capture_view again with adjusted azimuth/"
+            " To orbit from here, call capture_view again with adjusted azimuth/"
             "elevation (azimuth + swings right / - left; elevation + lifts the "
             "camera for a more top-down look / - drops it to look upward)."
         )
-    framed_extents = _extent_report(_document_bbox(doc, names=keep_set))
-    if framed_extents:
-        text += f" Shown geometry spans {framed_extents} (world coords)."
+    text += _shown_extents_note(doc, keep_set)
     if warnings:
         text += "\n\n" + "\n".join(warnings)
     return text, png_path

@@ -33,6 +33,8 @@ from .diagnostics import (  # noqa: F401 - re-exported for gui_bridge
 )
 from .diagnostics import _GET_DIAGNOSTICS_SCHEMA, _run_get_diagnostics
 from .session import (  # noqa: F401 - re-exported for chat_panel/agent_config/eval_runner
+    PARAM_PATH,
+    _safe_name,
     _save_steps,
     artifacts_dir,
     ensure_sketches_dir,
@@ -48,9 +50,10 @@ from .tools_capture import (
     _run_crop_view,
 )
 from .tools_cutaway import _CUTAWAY_SCHEMA, _run_cutaway
-from .tools_document import (
+from .tools_document import (  # _REPORTED_PROPS re-exported for eval_runner
     _GET_OBJECTS_SCHEMA,
     _GET_SELECTION_SCHEMA,
+    _REPORTED_PROPS,  # noqa: F401
     _run_get_objects,
     _run_get_selection,
 )

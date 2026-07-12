@@ -4,6 +4,26 @@
 Used by view_sketch_svg (both its flat-sketch and 3D-projection paths).
 """
 
+#: importSVG's wrapper group: translate(tx,ty) scale(sx,sy) -- the CAD Y-up ->
+#: SVG Y-down flip. It is the one coordinate frame the whole flat-sketch path
+#: shares: _flat_crop_svg REGENERATES this pair when cropping, and
+#: _annotate_sketch_svg (tools_sketch) positions its GeoId overlay by reading
+#: back whatever ended up in the file. Both parse it with this one pattern, so
+#: the writer and the reader cannot disagree about its shape.
+#: `+` is in the number class deliberately: a signed exponent (1e+06) is valid SVG,
+#: and _flat_crop_svg is the WRITER of this transform -- a pattern that failed to
+#: match would silently drop the crop rather than raise.
+_SVG_NUM = r"[-+0-9.eE]+"
+_SVG_XFORM_RE = (
+    rf'transform="translate\(\s*({_SVG_NUM})\s*,\s*({_SVG_NUM})\s*\)'
+    rf'\s*scale\(\s*({_SVG_NUM})\s*,\s*({_SVG_NUM})\s*\)"'
+)
+
+#: The outer viewBox, as four numbers.
+_SVG_VIEWBOX_RE = (
+    rf'viewBox="\s*({_SVG_NUM})\s+({_SVG_NUM})\s+({_SVG_NUM})\s+({_SVG_NUM})\s*"'
+)
+
 
 def _svg_fragment_bounds(fragment):
     """(minx, miny, maxx, maxy) spanning every coordinate in `fragment`'s
@@ -139,9 +159,7 @@ def _flat_crop_svg(svg_text, obj, crop_box):
 
     import FreeCAD
 
-    match = re.search(
-        r'transform="translate\(([^,]+),\s*([^)]+)\)\s*scale\(([^,]+),\s*([^)]+)\)"', svg_text
-    )
+    match = re.search(_SVG_XFORM_RE, svg_text)
     if match is None:
         return svg_text
     sx, sy = float(match.group(3)), float(match.group(4))
@@ -166,7 +184,7 @@ def _flat_crop_svg(svg_text, obj, crop_box):
     svg_text = re.sub(r'width="[^"]*mm"', f'width="{w:.4f}mm"', svg_text, count=1)
     svg_text = re.sub(r'height="[^"]*mm"', f'height="{h:.4f}mm"', svg_text, count=1)
     svg_text = re.sub(
-        r'transform="translate\([^,]+,\s*[^)]+\)\s*scale\([^,]+,\s*[^)]+\)"',
+        _SVG_XFORM_RE,
         f'transform="translate({tx:.4f},{ty:.4f}) scale({sx:g},{sy:g})"',
         svg_text,
         count=1,

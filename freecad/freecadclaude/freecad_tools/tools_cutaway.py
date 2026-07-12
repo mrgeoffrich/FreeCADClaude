@@ -5,22 +5,22 @@ The cut is hollow (clipping exposes interior surfaces; it doesn't cap them).
 The plane lives on a throwaway offscreen view, so the document is untouched.
 """
 
-from .geometry import (
-    _EXTENT_SCHEMA_PROPS,
-    _document_bbox,
-    _extent_args,
-    _extent_report,
-)
+from .geometry import _EXTENT_SCHEMA_PROPS, _document_bbox
 from .render import (
+    _CAMERA_SCHEMA_PROPS,
+    _SIZE_SCHEMA_PROPS,
     _apply_camera_plan,
     _apply_extent_crop,
+    _camera_angle_note,
+    _capture_setup,
+    _measured_angles,
+    _objects_schema_prop,
     _offscreen_shot,
     _orbit_angles_from_view,
-    _resolve_camera_args,
     _save_view_png,
+    _shown_extents_note,
 )
 from .session import _artifact_path
-from .visibility import _visibility_keep_set
 
 #: axis name -> index into (x, y, z), for cutaway's convenience axis mode.
 _AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
@@ -164,28 +164,17 @@ _CUTAWAY_SCHEMA = {
     "inputSchema": {
         "type": "object",
         "properties": {
-            "objects": {
-                "type": "array", "items": {"type": "string"}, "minItems": 1,
-                "description": (
-                    "REQUIRED. Internal Names (from get_objects -- NOT Labels) of "
-                    "the object(s) to show and cut. Only these are made visible for "
-                    "the shot; everything else in the document is hidden and the "
-                    "clip applies to just them. Naming a container (App::Part/Group "
-                    "or a PartDesign Body) shows its contents. The user's real view "
-                    "is left untouched -- prior visibility is restored right after."
-                ),
-            },
+            "objects": _objects_schema_prop(
+                "to show and cut", "The clip plane applies to just them."
+            ),
             "axis": {"type": "string", "description": "Cut perpendicular to this axis: x, y, or z (the simple way to define the plane)."},
             "position": {"type": "number", "description": "Where along 'axis' to cut, in mm (default: the model's midpoint on that axis)."},
             "keep": {"type": "string", "description": "Which half of an 'axis' cut to keep: 'low' (smaller coordinate) or 'high' (default low)."},
             "point": {"type": "array", "items": {"type": "number"}, "description": "A point on the clip plane [x,y,z] in mm. Use with 'normal' for an arbitrary plane instead of 'axis'."},
             "normal": {"type": "array", "items": {"type": "number"}, "description": "Clip plane normal [x,y,z]; the kept (visible) half is the side it points toward. Use with 'point'."},
-            "view": {"type": "string", "description": "Camera preset: iso/front/rear/top/bottom/left/right (default iso). Ignored when azimuth/elevation are given."},
-            "azimuth": {"type": "number", "description": "Custom orbit angle around the vertical axis, degrees: 0=front, +90=right, 180=back, -90=left."},
-            "elevation": {"type": "number", "description": "Custom orbit angle above/below eye level, degrees: 0=side-on, +90=top-down, -90=bottom-up."},
+            **_CAMERA_SCHEMA_PROPS,
             **_EXTENT_SCHEMA_PROPS,
-            "width": {"type": "integer", "description": "Image width px (default 1280)"},
-            "height": {"type": "integer", "description": "Image height px (default 960)"},
+            **_SIZE_SCHEMA_PROPS,
         },
         "required": ["objects"],
         "additionalProperties": False,
@@ -194,24 +183,11 @@ _CUTAWAY_SCHEMA = {
 
 
 def _run_cutaway(args):
-    import FreeCAD
-
-    doc = FreeCAD.ActiveDocument
-    if doc is None:
-        return "No active document."
-
-    names = args.get("objects")
-    if not names:
-        return ("cutaway requires 'objects': a list of object Names to show "
-                "(everything else is hidden for the shot). Call get_objects first.")
-    for n in names:
-        if doc.getObject(n) is None:
-            return f"No object named '{n}'."
-    keep_set = _visibility_keep_set(doc, names)
-
-    plan, err = _resolve_camera_args(args)
+    setup, err = _capture_setup(args, "cutaway")
     if err:
         return err
+    doc, keep_set, plan = setup["doc"], setup["keep_set"], setup["plan"]
+    width, height, extents = setup["width"], setup["height"], setup["extents"]
 
     try:
         plane, clip_desc, clip_normal, err = _resolve_clip_plane(args, doc, keep_set)
@@ -225,10 +201,7 @@ def _run_cutaway(args):
     except Exception as exc:  # noqa: BLE001
         return f"Could not load the Coin3D scene-graph library for clipping: {exc!r}"
 
-    width = int(args.get("width", 1280))
-    height = int(args.get("height", 960))
     png_path = _artifact_path("captures", "cutaway", ".png")
-    extents = _extent_args(args)
 
     crop_warning = None
     measured = None
@@ -256,7 +229,7 @@ def _run_cutaway(args):
             return err
 
         if extents:
-            crop_warning = _apply_extent_crop(view, doc, extents, float(width) / float(height))
+            crop_warning = _apply_extent_crop(view, doc, extents, setup["aspect"])
 
         # Direction is unchanged by fitAll, so this matches the saved image.
         measured = _orbit_angles_from_view(view)
@@ -287,12 +260,8 @@ def _run_cutaway(args):
         _save_view_png(view, png_path, width, height)
 
     text = f"Cutaway at {clip_desc}, saved to {png_path}."
-    if measured is not None:
-        meas_az, meas_el = measured
-        text += f" Camera angle: azimuth {meas_az:.0f} deg, elevation {meas_el:.0f} deg."
-    framed_extents = _extent_report(_document_bbox(doc, names=keep_set))
-    if framed_extents:
-        text += f" Shown geometry spans {framed_extents} (world coords)."
+    text += _camera_angle_note(_measured_angles(measured, plan))
+    text += _shown_extents_note(doc, keep_set)
     text += (
         " The cut is hollow -- you're seeing the interior surfaces the clip "
         "exposed, not a filled cross-section."

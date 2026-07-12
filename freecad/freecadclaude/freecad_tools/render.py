@@ -6,16 +6,29 @@ user's own view: an offscreen view is created, framed, grabbed, and closed.
 _offscreen_shot wraps that whole setup/teardown -- it's what the three tools
 actually enter; each then does only the part that makes it different (aim the
 camera / insert a clip plane / replay the last camera and zoom).
+
+capture_view and cutaway also share their whole front and back half -- the
+argument validation (_capture_setup) and the result sentences
+(_camera_angle_note / _shown_extents_note) -- plus the schema properties that
+describe those arguments to Claude. Those live here too, so the two tools
+cannot describe or handle the same knob differently.
 """
 
 import contextlib
 
-from .geometry import _EXTENT_KEYS, _crop_bbox, _document_bbox
+from .geometry import (
+    _EXTENT_KEYS,
+    _crop_bbox,
+    _document_bbox,
+    _extent_args,
+    _extent_report,
+)
 from .visibility import (
     _isolate_visibility,
     _restore_selection,
     _restore_visibility,
     _suspend_selection,
+    _visibility_keep_set,
 )
 
 _VIEW_PRESETS = {
@@ -521,3 +534,137 @@ def _apply_camera_plan(view, plan):
     except Exception:  # noqa: BLE001
         pass
     return None
+
+
+# ---- the capture_view / cutaway common half --------------------------------
+# The two tools differ only in what happens INSIDE the offscreen view (aim the
+# camera vs. also insert a clip plane). Everything around that -- which objects
+# to show, which camera angle, how big, which crop, and the sentences describing
+# the result -- is identical, and so are the schema properties that ask Claude
+# for it. Both halves live here so the pair cannot drift apart.
+
+
+def _objects_schema_prop(what="to show", extra=""):
+    """The REQUIRED 'objects' property of capture_view/cutaway."""
+    description = (
+        f"REQUIRED. Internal Names (from get_objects, e.g. 'Body', 'Box001' -- NOT "
+        f"Labels) of the object(s) {what}. Only these are made visible for the shot "
+        "and everything else in the document is hidden, so the shot is precisely "
+        "controlled and auto-framed on exactly them. Naming a container (an "
+        "App::Part/Group, or a PartDesign Body) shows its contents. The user's real "
+        "view is left untouched -- prior visibility is restored right afterwards."
+    )
+    return {
+        "type": "array", "items": {"type": "string"}, "minItems": 1,
+        "description": description + (f" {extra}" if extra else ""),
+    }
+
+
+#: The camera-angle arguments, shared verbatim by capture_view and cutaway (see
+#: _resolve_camera_args, which parses them).
+_CAMERA_SCHEMA_PROPS = {
+    "view": {
+        "type": "string",
+        "description": (
+            "Camera preset: iso/front/rear/top/bottom/left/right (default iso). "
+            "Ignored when azimuth/elevation are given."
+        ),
+    },
+    "azimuth": {
+        "type": "number",
+        "description": (
+            "Custom orbit angle around the vertical axis, degrees: 0=front, +90=right, "
+            "180=back, -90=left. Use with elevation for an angle no preset covers."
+        ),
+    },
+    "elevation": {
+        "type": "number",
+        "description": (
+            "Custom orbit angle above/below eye level, degrees: 0=side-on, +90=straight "
+            "down (top), -90=straight up (bottom). Use with azimuth."
+        ),
+    },
+}
+
+#: The render-size arguments, shared by capture_view and cutaway.
+_SIZE_SCHEMA_PROPS = {
+    "width": {"type": "integer", "description": "Image width px (default 1280)"},
+    "height": {"type": "integer", "description": "Image height px (default 960)"},
+}
+
+#: 1280x960 (1.23 MP) sits near Claude's image ceiling (~1.15-1.2 MP / 1568px long
+#: edge); larger just gets downscaled again, so this is the detail sweet spot.
+_DEFAULT_WIDTH, _DEFAULT_HEIGHT = 1280, 960
+
+
+def _capture_setup(args, tool_name):
+    """Validate and resolve everything capture_view and cutaway need before they
+    open an offscreen view: the active document, the required 'objects' list (and
+    the visibility keep-set it expands to), the camera plan, the render size and
+    the crop extents.
+
+    Returns ``(setup, None)`` or ``(None, error_string)``. setup keys: ``doc``,
+    ``keep_set``, ``plan``, ``width``, ``height``, ``extents``, ``aspect``.
+    """
+    import FreeCAD
+
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        return None, "No active document."
+
+    names = args.get("objects")
+    if not names:
+        return None, (
+            f"{tool_name} requires 'objects': a list of object Names to show "
+            "(everything else is hidden for the shot). Call get_objects first."
+        )
+    for n in names:
+        if doc.getObject(n) is None:
+            return None, f"No object named '{n}'."
+
+    plan, err = _resolve_camera_args(args)
+    if err:
+        return None, err
+
+    width = int(args.get("width", _DEFAULT_WIDTH))
+    height = int(args.get("height", _DEFAULT_HEIGHT))
+    return {
+        "doc": doc,
+        "keep_set": _visibility_keep_set(doc, names),
+        "plan": plan,
+        "width": width,
+        "height": height,
+        "extents": _extent_args(args),
+        "aspect": float(width) / float(height),
+    }, None
+
+
+def _measured_angles(measured, plan):
+    """The (azimuth, elevation) a capture should report: what the view actually
+    resolved to (_orbit_angles_from_view, read back from the real view direction
+    -- so a preset like iso reports its concrete angle), falling back to the orbit
+    angles the caller asked for, else None."""
+    if measured is not None:
+        return measured
+    if plan["orbit"]:
+        return plan["azimuth"], plan["elevation"]
+    return None
+
+
+def _camera_angle_note(angles):
+    """The ' Camera angle: ...' sentence of a capture result, or ""."""
+    if angles is None:
+        return ""
+    azimuth, elevation = angles
+    return f" Camera angle: azimuth {azimuth:.0f} deg, elevation {elevation:.0f} deg."
+
+
+def _shown_extents_note(doc, keep_set):
+    """The ' Shown geometry spans ...' sentence of a capture result, or "".
+
+    Lets Claude read the shown geometry's position and size in world coords --
+    and, with the camera angle, work out which way X/Y/Z run in the image --
+    without a follow-up get_objects call.
+    """
+    framed = _extent_report(_document_bbox(doc, names=keep_set))
+    return f" Shown geometry spans {framed} (world coords)." if framed else ""

@@ -2,6 +2,7 @@
 """inspect_api -- resolve real FreeCAD signatures/docstrings so the model
 doesn't have to guess them."""
 
+from .namespace import scripting_namespace
 
 _INSPECT_API_SCHEMA = {
     "name": "inspect_api",
@@ -56,28 +57,6 @@ _INSPECT_API_SCHEMA = {
         "required": ["names"],
     },
 }
-
-
-def _inspect_namespace():
-    """The names run_python binds, for read-only API lookups (doc may be absent)."""
-    import FreeCAD
-
-    ns = {"FreeCAD": FreeCAD, "App": FreeCAD}
-    if FreeCAD.ActiveDocument is not None:
-        ns["doc"] = FreeCAD.ActiveDocument
-    try:
-        import FreeCADGui
-
-        ns["FreeCADGui"] = FreeCADGui
-        ns["Gui"] = FreeCADGui
-    except Exception:  # noqa: BLE001
-        pass
-    for mod_name in ("Part", "Sketcher", "PartDesign", "Draft"):
-        try:
-            ns[mod_name] = __import__(mod_name)
-        except Exception:  # noqa: BLE001
-            pass
-    return ns
 
 
 def _is_dotted_name(expr):
@@ -221,7 +200,7 @@ def _run_inspect_api(args):
     if not names:
         return "Pass 'names': a list of dotted API names to look up (e.g. ['Sketcher.Constraint'])."
 
-    ns = _inspect_namespace()
+    ns = scripting_namespace()  # exactly what run_python will bind
     blocks = []
     for raw in names:
         name = str(raw).strip()
