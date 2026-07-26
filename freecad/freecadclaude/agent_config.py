@@ -13,12 +13,12 @@ import FreeCAD
 
 from .freecad_tools import PARAM_PATH
 
-DEFAULT_MODEL = "claude-opus-4-8"
+DEFAULT_MODEL = "claude-opus-5"
 
 #: (label, model-id) pairs offered by the chat panel's model selector. The label
 #: is what the user sees in the dropdown; the id is passed to the CLI's --model.
 MODELS = (
-    ("Opus", "claude-opus-4-8"),
+    ("Opus", "claude-opus-5"),
     ("Sonnet", "claude-sonnet-5"),
 )
 _VALID_MODELS = {mid for _, mid in MODELS}
