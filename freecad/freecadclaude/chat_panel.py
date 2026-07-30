@@ -19,9 +19,9 @@ import re
 
 # FreeCAD bundles its own Qt binding under the ``PySide`` name. Always import
 # from ``PySide`` so the addon matches the running FreeCAD.
-from PySide import QtCore, QtWidgets
+from PySide import QtCore, QtGui, QtWidgets
 
-from . import _deps, dock_panel, transcript_widgets
+from . import _deps, dock_panel, flow_layout, transcript_widgets
 from .agent_worker import AgentWorker
 
 #: Show Claude's reasoning entry. Flip to False to hide it (the agent still
@@ -159,14 +159,19 @@ class ChatWidget(QtWidgets.QWidget):
         self.input.submitted.connect(self.on_send)
         layout.addWidget(self.input)
 
+        # Status on the left, controls flush right. The controls live in a
+        # FlowLayout so they wrap onto a second line in a narrow dock instead of
+        # summing into a ~430px floor the dock can't be dragged below (a
+        # QPushButton's own minimum is ~80px whatever its label reads).
         button_row = QtWidgets.QHBoxLayout()
-        self.status_label = QtWidgets.QLabel("", self)
-        self.status_label.setStyleSheet("color:#888888")
-        button_row.addWidget(self.status_label)
-        button_row.addStretch(1)
+        self.status_label = _StatusLabel(self)
+        button_row.addWidget(self.status_label, stretch=1)
+
+        controls = QtWidgets.QWidget(self)
+        control_row = flow_layout.FlowLayout(controls, spacing=layout.spacing())
         from . import agent_config
 
-        self.model_combo = QtWidgets.QComboBox(self)
+        self.model_combo = QtWidgets.QComboBox(controls)
         self.model_combo.setToolTip(
             "Model for the conversation (locks once a chat starts; use New to change)"
         )
@@ -175,23 +180,24 @@ class ChatWidget(QtWidgets.QWidget):
         idx = self.model_combo.findData(agent_config.get_model())
         self.model_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
-        button_row.addWidget(self.model_combo)
-        self.files_button = QtWidgets.QPushButton("Files", self)
+        control_row.addWidget(self.model_combo)
+        self.files_button = QtWidgets.QPushButton("Files", controls)
         self.files_button.setToolTip("Open the FreeCADClaude captures/exports folder")
         self.files_button.clicked.connect(self._open_artifacts)
-        button_row.addWidget(self.files_button)
-        self.new_button = QtWidgets.QPushButton("New", self)
+        control_row.addWidget(self.files_button)
+        self.new_button = QtWidgets.QPushButton("New", controls)
         self.new_button.setToolTip("Start a new conversation (clears history and the agent's memory)")
         self.new_button.clicked.connect(self._on_new)
-        button_row.addWidget(self.new_button)
-        self.stop_button = QtWidgets.QPushButton("Stop", self)
+        control_row.addWidget(self.new_button)
+        self.stop_button = QtWidgets.QPushButton("Stop", controls)
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self._on_stop)
-        button_row.addWidget(self.stop_button)
-        self.send_button = QtWidgets.QPushButton("Send", self)
+        control_row.addWidget(self.stop_button)
+        self.send_button = QtWidgets.QPushButton("Send", controls)
         self.send_button.setDefault(True)
         self.send_button.clicked.connect(self.on_send)
-        button_row.addWidget(self.send_button)
+        control_row.addWidget(self.send_button)
+        button_row.addWidget(controls)
         layout.addLayout(button_row)
 
         self._note('*Type a message to start a Claude session. '
@@ -398,7 +404,7 @@ class ChatWidget(QtWidgets.QWidget):
     def _on_status(self, status):
         self._status_text = status
         if not self._busy:
-            self.status_label.setText(status)
+            self.status_label.set_status(status)
 
     @QtCore.Slot(str)
     def _on_failed(self, message):
@@ -496,7 +502,6 @@ class ChatWidget(QtWidgets.QWidget):
     def _open_artifacts(self):
         """Open the FreeCADClaude captures/exports folder in the file manager."""
         from . import freecad_tools
-        from PySide import QtGui
 
         QtGui.QDesktopServices.openUrl(
             QtCore.QUrl.fromLocalFile(freecad_tools.artifacts_dir())
@@ -515,9 +520,67 @@ class ChatWidget(QtWidgets.QWidget):
         self.stop_button.setEnabled(busy)
         if busy:
             color = transcript_widgets.CLAUDE_COLOR
-            self.status_label.setText(f'<span style="color:{color}">Processing</span>')
+            self.status_label.set_status(f'<span style="color:{color}">Processing</span>')
         else:
-            self.status_label.setText(self._status_text)
+            self.status_label.set_status(self._status_text)
+
+
+class _StatusLabel(QtWidgets.QLabel):
+    """The worker-status text -- the one thing in the control row that gives up
+    its width rather than claiming any.
+
+    Horizontally ``Ignored``, so it adds nothing to the panel's minimum width
+    (that floor is what lets the dock be dragged narrow at all -- see
+    :mod:`flow_layout`) and so the controls beside it still reach the right
+    edge. When the row does squeeze it below the width its text needs, it blanks
+    itself instead of painting a clipped fragment ("re" for "ready", which reads
+    as a bug); the status stays available as the tooltip, and a busy turn is
+    also visible in the Send button's "…".
+    """
+
+    def __init__(self, parent=None):
+        super().__init__("", parent)
+        self.setStyleSheet("color:#888888")
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred
+        )
+        self._status = ""
+
+    def set_status(self, text):
+        """Set the status (plain or rich text). Shown only if it fits."""
+        self._status = text
+        self.setToolTip(_plain_text(text))
+        self._sync()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._sync()
+
+    def _sync(self):
+        # Measure the *full* status, not what's currently displayed (sizeHint
+        # would report the latter, so a blanked label would measure as empty
+        # and never come back).
+        fits = self.width() >= _text_width(self._status, self.font())
+        self.setText(self._status if fits else "")
+
+
+def _plain_text(markup):
+    """`markup` -- which may be rich text, as the busy status is -- as plain text."""
+    if not markup:
+        return ""
+    doc = QtGui.QTextDocument()
+    doc.setHtml(markup)
+    return doc.toPlainText()
+
+
+def _text_width(markup, font):
+    """Width `markup` needs on one line in `font` (rich text included)."""
+    if not markup:
+        return 0
+    doc = QtGui.QTextDocument()
+    doc.setDefaultFont(font)
+    doc.setHtml(markup)
+    return int(doc.idealWidth()) + 2
 
 
 class _InputBox(QtWidgets.QPlainTextEdit):
