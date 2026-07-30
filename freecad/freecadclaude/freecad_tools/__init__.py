@@ -34,6 +34,7 @@ from .diagnostics import (  # noqa: F401 - re-exported for gui_bridge
 from .diagnostics import _GET_DIAGNOSTICS_SCHEMA, _run_get_diagnostics
 from .session import (  # noqa: F401 - re-exported for chat_panel/agent_config/eval_runner
     PARAM_PATH,
+    REFS_DIR,
     _safe_name,
     _save_steps,
     artifacts_dir,

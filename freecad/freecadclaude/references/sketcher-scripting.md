@@ -203,7 +203,13 @@ sketch.renameConstraint(i, 'Width')                          # then setDatum('Wi
 
 `setDatum` re-solves the sketch and moves everything the constraint governs, keeping the design intent intact. This is the normal way to resize or reposition anything in a well-constrained sketch.
 
-The behavioural rules live in the system prompt's "Editing an existing sketch" section and aren't repeated here (never assign to `sketch.Geometry` — the solver silently drags the geometry back to the old constraints and mangles the profile; `moveGeometry` only moves UNDERCONSTRAINED geometry, by its documented contract; a rescale means changing every driving dimension, or the unconstrained parts tear away at the old size). The API form for the legitimate underconstrained case:
+Three behavioural rules follow from that, and each one fails silently if you break it:
+
+- **Never assign to `sketch.Geometry` to move something.** It doesn't raise — the solver just drags the geometry back to satisfy the old constraints, so you get mangled, self-intersecting profiles instead of an error. Concretely: overwrite a line to be 6mm long while a `DistanceX=10` still holds it, and FreeCAD keeps it 10mm and flings its start point off to -3.08. Nothing warns you. Use `setDatum`.
+- **`moveGeometry` only shifts UNDERCONSTRAINED geometry**, by its own documented contract. On a constrained point it quietly does nothing or half-moves it — which is how you end up with a sketch that's wrong in a different way after every attempt. Check `constraints_by_geoId` and the DoF before assuming a move will take.
+- **A scale or resize means changing every dimension that drives it.** Scaling the few Distance constraints leaves any unconstrained geometry exactly where it was, and the sketch tears apart — half at the new size, half at the old. `get_sketch`'s DoF and `constraints_by_geoId` tell you up front whether a sketch is parametric enough to rescale that way; if large parts of it are unconstrained, say so rather than nudging points one at a time.
+
+The API form for the legitimate underconstrained case:
 
 ```python
 sketch.moveGeometry(geoId, pos, App.Vector(x, y, 0), relative=False)   # underconstrained geometry only

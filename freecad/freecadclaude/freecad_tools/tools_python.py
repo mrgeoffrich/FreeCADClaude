@@ -18,9 +18,11 @@ _RUN_PYTHON_SCHEMA = {
         "(both are returned to you). On error you get the full traceback and the "
         "transaction is rolled back -- fix it and try again. If you're unsure of "
         "a method's parameters, call inspect_api first rather than guessing. "
-        "Work in small steps and verify with get_objects. For PartDesign, create "
-        "a PartDesign::Body first and add features inside it. The user is shown "
-        "your code and must approve it before it runs."
+        "Size each call to one coherent step, since the whole call is the "
+        "rollback unit. The result reports what each feature added or removed, "
+        "so you don't need a separate get_objects call to check it. For "
+        "PartDesign, create a PartDesign::Body first and add features inside "
+        "it. The user is shown your code and must approve it before it runs."
     ),
     "inputSchema": {
         "type": "object",

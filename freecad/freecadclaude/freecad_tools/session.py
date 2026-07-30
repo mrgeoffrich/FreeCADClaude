@@ -4,6 +4,10 @@
 Everything a chat writes to disk lands under ``<artifacts_dir>/<session-id>/``
 -- captures, exports, the run_python script archive, optional per-step .FCStd
 snapshots, and (written by agent_worker, not here) the CLI's raw JSON stream.
+
+Also the one spelling of the two paths that aren't artifacts but that several
+modules need to agree on: ``PARAM_PATH`` (the preferences root) and ``REFS_DIR``
+(the bundled scripting references).
 """
 
 import os
@@ -20,6 +24,15 @@ _DEFAULT_ARTIFACTS_DIR = os.path.join(os.path.expanduser("~"), "FreeCADClaude")
 #: spelling: a typo'd copy would read a silently-empty branch of the parameter
 #: tree, so every preference under it would just look unset.
 PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/FreeCADClaude"
+
+#: The bundled run_python scripting references (read-only assets, not artifacts) --
+#: absolute, since the CLI's cwd is a temp dir when no skills project is set. One
+#: spelling again: agent_config substitutes it into the system prompt's {REFS_DIR}
+#: and the tools cite paths under it in their just-in-time notes, so a second copy
+#: could drift and hand Claude a path that doesn't resolve.
+REFS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "references"
+)
 
 
 def artifacts_dir():
@@ -70,6 +83,16 @@ def new_session_id():
     session_id = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
     _active_session["id"] = session_id
     return session_id
+
+
+def active_session_id():
+    """The active conversation's id, or None before new_session_id() has run.
+
+    Lets a tool remember "already said this in this conversation" without keeping
+    its own notion of when a conversation starts: "New" in the chat panel mints a
+    fresh id, so anything keyed on this resets with it.
+    """
+    return _active_session["id"]
 
 
 def session_dir():

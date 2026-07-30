@@ -4,8 +4,16 @@
 A failed recompute flags a feature Invalid WITHOUT raising, so a tool can
 "succeed" while the model is broken. These snapshot/compare passes run around
 every mutating tool call (see gui_bridge) and append a note to its result.
+
+A note is also where a scripting reference gets cited, when the condition it
+documents is the one we just detected: a pointer that arrives with the evidence
+is read, whereas the same pointer sitting in the system prompt asks Claude to
+remember it at a moment it has no reason to notice.
 """
 
+import os
+
+from .session import REFS_DIR, active_session_id
 
 # A failed recompute flags the object Invalid/Error (the red marks in the tree)
 # WITHOUT raising, so a tool can "succeed" while a feature is broken.
@@ -50,12 +58,20 @@ def _scan_invalid(doc):
     return bad
 
 
-def summarize_new_failures():
+def summarize_new_failures(before=None):
     """One-line note about features that NEWLY failed to recompute, or "".
 
     Called by the bridge on the GUI thread after each tool call. Console warning
     *text* isn't capturable in FreeCAD 1.1, so this reports failed-recompute
     state -- the substance of the red errors -- not raw warning messages.
+
+    ``before`` (feature_snapshot's dict, None for a read-only tool) is used only
+    to recognise ONE specific failure: a feature that already existed and was
+    fine before this call has now gone Invalid. That is the symptom of the
+    BaseFeature cycle documented in references/partdesign-body-tip-cycle-gotcha.md,
+    and it's worth naming the file here rather than leaving the system prompt to
+    ask Claude to remember it -- this note fires at exactly the moment the
+    reference becomes relevant, which is the only moment it gets read.
     """
     import FreeCAD
 
@@ -67,8 +83,31 @@ def summarize_new_failures():
     if not new:
         return ""
     labels = ", ".join(b["label"] for b in new)
-    return (f"⚠ {len(new)} feature(s) failed to recompute: {labels}. "
+    note = (f"⚠ {len(new)} feature(s) failed to recompute: {labels}. "
             "Call get_diagnostics for details.")
+    if _broke_an_existing_feature(new, before):
+        note += (
+            "\n    A feature that was FINE BEFORE this call is now Invalid -- not "
+            "just the one you added. That is the BaseFeature cycle (a scripted "
+            "newObject rewiring the previous Tip): read "
+            f"{os.path.join(REFS_DIR, 'partdesign-body-tip-cycle-gotcha.md')} for "
+            "the diagnosis and the fix before trying anything else, since "
+            "reordering Body.Group reproduces the cycle."
+        )
+    return note
+
+
+def _broke_an_existing_feature(new, before):
+    """True when any newly-Invalid feature already existed before this call.
+
+    A feature the call itself created failing is ordinary (bad parameters, empty
+    profile) and the traceback or the volume note covers it. A PREVIOUSLY-FINE
+    feature failing is the DAG-cycle signature, which nothing else surfaces.
+    """
+    if not before:
+        return False
+    existed = (before.get("features") or {}) if isinstance(before, dict) else {}
+    return any(b["name"] in existed for b in new)
 
 
 # ---- per-operation feature-change report -----------------------------------
@@ -423,6 +462,50 @@ def summarize_sketch_changes(before):
     return "\n".join(lines)
 
 
+#: Session id this process last cited the PartDesign reference for, so the pointer
+#: lands once per conversation instead of on every feature. Keyed on the id (not a
+#: bool) so "New" in the chat panel re-arms it -- same pattern as the sketch rules
+#: in tools_sketch.
+_pd_ref_shown_for = {"session": None}
+
+
+def _partdesign_reference_note(before):
+    """Cite partdesign-scripting.md the first time a conversation touches a Body.
+
+    Measured over the logged sessions, this is where the guessing actually costs
+    something: run_python calls that create a PartDesign feature fail at 17%
+    against a 9% baseline across all calls. The trigger is "a Body now exists"
+    rather than "a feature was created" because a Body is usually made in its own
+    call, which puts the pointer in front of the FIRST feature; and when Body and
+    first feature arrive together it still front-runs the rest, since 11 of the 14
+    sessions that created one feature went on to create more.
+
+    Deliberately no equivalent for part-draft-recipes.md: Part-primitive/Draft
+    calls errored at 1/37 (below baseline) and in 7 of 10 sessions nothing
+    followed the first one, so a pointer there would be noise.
+    """
+    if before is None:  # read-only tool
+        return ""
+    import FreeCAD
+
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        return ""
+    if not any((getattr(o, "TypeId", "") or "") == "PartDesign::Body" for o in doc.Objects):
+        return ""
+    current = active_session_id()
+    if _pd_ref_shown_for["session"] == current:
+        return ""
+    _pd_ref_shown_for["session"] = current
+    return (
+        "This document now has a PartDesign Body. The exact property sets per "
+        "feature type (Pad/Pocket/Revolution/Groove/Loft/Pipe/Hole), Tip and "
+        "newObject mechanics, datum attachment and the pattern features are in "
+        f"{os.path.join(REFS_DIR, 'partdesign-scripting.md')} -- read it before "
+        "the next feature type you haven't used yet in this conversation."
+    )
+
+
 def post_tool_notes(tool_name, before=None):
     """Combined post-call notes to fold into a tool reply: features that newly
     failed to recompute, and -- for a mutating tool -- what each PartDesign
@@ -436,9 +519,10 @@ def post_tool_notes(tool_name, before=None):
     """
     if tool_name == "get_diagnostics":
         return ""
-    notes = [summarize_new_failures(),
+    notes = [summarize_new_failures(before),
              summarize_feature_changes(before),
-             summarize_sketch_changes(before)]
+             summarize_sketch_changes(before),
+             _partdesign_reference_note(before)]
     return "\n\n".join(n for n in notes if n)
 
 

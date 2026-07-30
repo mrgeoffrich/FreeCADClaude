@@ -4,17 +4,14 @@ description: >-
   Advises how to approach building a design in FreeCAD 1.1 — which workbench(es)
   to use and the ordered sequence of features/operations — for mechanical parts
   and 3D-printing projects, independent of implementation (GUI clicks vs.
-  scripted code). Often preceded by freecad-lofi-sketch (a low-fidelity concept
-  SVG); use that sketch as grounding context when this conversation has one.
-  EXPLICIT INVOCATION ONLY: invoke this skill only when the
-  user (or a direct instruction earlier in the prompt) explicitly asks for it
-  by name — e.g. via the /design-advisor slash command in the FreeCAD chat
-  panel, or an explicit "use the design advisor skill" request. Do NOT trigger
-  this on topic-matching alone (an object/part/enclosure/bracket the user wants
-  to model is not, by itself, a reason to invoke it) — wait for the explicit
-  ask. Covers approach/workflow, not specific dimensions or numeric values, and
-  not the actual code; writing the run_python implementation is ordinary tool
-  work, covered by the system prompt's scripting references.
+  scripted code). Covers approach and workflow, not dimensions or numeric
+  values, and not the actual run_python code. Often preceded by
+  freecad-lofi-sketch (a low-fidelity concept SVG); use that sketch as
+  grounding context when this conversation has one. EXPLICIT INVOCATION ONLY —
+  invoke only when a message directly asks for this skill by name (the
+  /design-advisor slash command in the FreeCAD chat panel, or "use the design
+  advisor skill"). A user wanting a part modelled is not, by itself, a reason
+  to invoke it.
 ---
 
 # FreeCAD Design Advisor
@@ -109,8 +106,10 @@ Adapt to the question, but a strong recommendation usually has:
   nothing is trapped, which joint is the demountable one). Mirror this order
   when verifying in the Assembly workbench.
 
-Keep it skimmable. The user wants a map they can follow inside FreeCAD, not an
-essay.
+Keep it skimmable, and match the length to what this design actually needs —
+cover the substance, but drop the sections that don't apply to this part rather
+than padding them out. The user wants a map they can follow inside FreeCAD, in
+a narrow panel, not an essay.
 
 ## After advising: clarify, then hand off to planning
 
@@ -129,9 +128,10 @@ loop in two steps:
 2. **Stop and wait for the answers.** Don't assume them and don't start building
    — gathering these is the whole point of this step.
 3. **Once the user answers, start the planning agent.** Hand the approach plus
-   their answers to a **Plan subagent** to turn the workflow into a concrete,
-   ordered, build-ready plan — named features in sequence with the now-known
-   dimensions and parameters, ready to execute by hand in the GUI or scripted.
+   their answers to a **single Plan subagent** to turn the workflow into a
+   concrete, ordered, build-ready plan — named features in sequence with the
+   now-known dimensions and parameters, ready to execute by hand in the GUI or
+   scripted. One subagent is the whole handoff; don't fan out across several.
    If they want it scripted, offer to build it with `run_python` (reading the
    system prompt's scripting references as needed), tracking the steps as
    tasks so progress is visible.

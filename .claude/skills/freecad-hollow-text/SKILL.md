@@ -11,16 +11,12 @@ description: >-
   and can segfault deep inside OCCT's offset code, taking the whole FreeCAD
   process down with any unsaved work. This skill's technique grows the wall
   OUTWARD instead (the robust direction) and hollows per touching
-  letter-cluster rather than per glyph, so letters that visually connect
-  (cursive joins, italic ligatures) share one continuous channel instead of
-  getting pinched shut where they meet. EXPLICIT INVOCATION ONLY: invoke this
-  skill only when the user (or a direct instruction earlier in the prompt)
-  explicitly asks for it by name -- e.g. via the /freecad-hollow-text slash
-  command in the FreeCAD chat panel, or an explicit "use the hollow-text
-  skill" request. Do NOT trigger this on topic-matching alone (a request for
-  text, a sign, or a nameplate is not, by itself, a reason to invoke it) --
-  wait for the explicit ask. Assumes the run_python execution contract from
-  the system prompt (pre-bound names, one-call-one-transaction, Quantity).
+  letter-cluster rather than per glyph. Assumes the run_python execution
+  contract from the system prompt (pre-bound names, one-call-one-transaction,
+  Quantity). EXPLICIT INVOCATION ONLY -- invoke only when a message directly
+  asks for this skill by name (the /hollow-text slash command in the FreeCAD
+  chat panel, or "use the hollow-text skill"). A request for text, a sign, or
+  a nameplate is not, by itself, a reason to invoke it.
 ---
 
 # FreeCAD Hollow Text (Channel Letters)
@@ -193,11 +189,9 @@ second" rule applies here too:
   outline (since the wall is added outward, not carved inward) — a minor,
   expected softening of the letterforms, not a bug. Mention it if the user
   seems to expect an exact silhouette match.
-- **Verify afterward**, same discipline as any `run_python` step:
-  `get_objects`/`get_diagnostics` for a valid shape (one or more solids — more
-  than one is expected once any cluster has a filled counter, see step 6), and
-  sanity-check that `Volume / (bbox height)` roughly matches the sum of the
-  flat end-cap face areas — a segfault-free run doesn't guarantee the geometry
-  is actually hollow rather than a solid blob. Also `capture_view` from an
-  angled/shaded 3D view, not just a flat top-down one — a wrongly-open counter
-  (step 6) is invisible from directly above.
+- **Look at the result from an angle.** `capture_view` from an angled/shaded 3D
+  view, never just a flat top-down one: a wrongly-open counter (step 6) is
+  invisible from directly above, and a run that finished without a segfault
+  still doesn't tell you the geometry came out hollow rather than a solid blob.
+  Expect more than one solid once any cluster has a filled counter (step 6), so
+  don't read a solid count above 1 as a failure.

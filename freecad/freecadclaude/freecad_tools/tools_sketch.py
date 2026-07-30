@@ -9,6 +9,8 @@ get_sketch the only way to learn a sketch's structure is a pile of exploratory
 run_python dumps, each one a user approval.
 """
 
+import os
+
 from .diagnostics import _solver_constraint_indices
 from .geometry import (
     _EXTENT_SCHEMA_PROPS,
@@ -17,7 +19,7 @@ from .geometry import (
     _extent_args,
 )
 from .gui_state import _active_edit_object, _is_open_in_editor, _selected_objects
-from .session import _artifact_path
+from .session import REFS_DIR, _artifact_path, active_session_id
 from .svg import (
     _SVG_VIEWBOX_RE,
     _SVG_XFORM_RE,
@@ -377,7 +379,46 @@ def _run_get_sketch(args):
     text = json.dumps(report, indent=2)
     # `note` is only set for the ambiguous no-argument case, where it disambiguates
     # which sketch we picked.
-    return f"{note}\n{text}" if note else text
+    head = f"{note}\n" if note else ""
+    return f"{head}{text}{_editing_rules_note()}"
+
+
+#: The rules for changing an existing sketch, appended to the FIRST get_sketch of
+#: each conversation. They live here rather than in the system prompt because this
+#: is the moment they apply -- a get_sketch call IS "I am about to edit a sketch",
+#: the one condition that makes them relevant. In the prompt they were 700 words
+#: every conversation paid for; as a reference file they were measured at zero
+#: reads across every logged session. Each rule below fails SILENTLY, so nothing
+#: downstream (no traceback, no volume delta, no recompute error) would catch it.
+_EDITING_RULES = (
+    "\n\nEditing rules for this sketch (each of these fails silently):\n"
+    "- setDatum(constraintIndex, value) is the only correct way to move or resize "
+    "CONSTRAINED geometry. Assigning to sk.Geometry does not raise -- the solver "
+    "drags the geometry back to the old constraints and mangles the profile.\n"
+    "- moveGeometry only shifts UNDERCONSTRAINED geometry, by its own contract. On "
+    "a pinned point it quietly does nothing or half-moves it. Check "
+    "constraints_by_geoId above for what actually pins a GeoId.\n"
+    "- Rescaling means changing EVERY dimension that drives the sketch. Scale a few "
+    "Distance constraints and any unconstrained geometry stays at the old size, "
+    "tearing the profile in half. degrees_of_freedom above says whether this sketch "
+    "is parametric enough to rescale at all.\n"
+    "- API forms, external geometry and the solver-state checks: read "
+    f"{os.path.join(REFS_DIR, 'sketcher-scripting.md')}"
+)
+
+#: Session id this process last appended _EDITING_RULES for -- so the rules land
+#: once per conversation, not on all 41 get_sketch calls of a long one. Keyed on
+#: the session id (not a bare bool) so "New" in the chat panel mints a new id and
+#: the next conversation gets them again.
+_rules_shown_for = {"session": None}
+
+
+def _editing_rules_note():
+    current = active_session_id()
+    if _rules_shown_for["session"] == current:
+        return ""
+    _rules_shown_for["session"] = current
+    return _EDITING_RULES
 
 
 def _sketch_anchor(geo):

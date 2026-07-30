@@ -6,16 +6,13 @@ description: >-
   before any dimensions, workbench choices, or code are decided. Runs BEFORE
   freecad-design-advisor in the design arc: draft and iterate on rough
   proportions and feature layout visually, then hand off to
-  freecad-design-advisor for the workbench/feature plan. EXPLICIT INVOCATION
-  ONLY: invoke this skill only when the user (or a direct instruction earlier
-  in the prompt) explicitly asks for it by name -- e.g. via the /lofi-sketch
-  slash command in the FreeCAD chat panel, or an explicit "use the lofi-sketch
-  skill" request. Do NOT trigger this on topic-matching alone (a new part/
-  object idea is not, by itself, a reason to invoke it) -- wait for the
-  explicit ask. Touches no FreeCAD document -- it only writes a plain SVG
-  file. Not for workbench/feature workflow (see freecad-design-advisor, also
-  explicit-invocation only) or for the actual run_python code (ordinary tool
-  work, covered by the system prompt's scripting references).
+  freecad-design-advisor for the workbench/feature plan. Touches no FreeCAD
+  document -- it only writes a plain SVG file. Not for workbench/feature
+  workflow (see freecad-design-advisor) or for the actual run_python code.
+  EXPLICIT INVOCATION ONLY -- invoke only when a message directly asks for
+  this skill by name (the /lofi-sketch slash command in the FreeCAD chat
+  panel, or "use the lofi-sketch skill"). A new part or object idea is not, by
+  itself, a reason to invoke it.
 ---
 
 # FreeCAD Low-Fidelity Concept Sketch
@@ -74,14 +71,12 @@ It never touches the live FreeCAD document -- there's nothing to undo, and no
 
 ## Limitation: you can't see your own sketch
 
-Raw SVG likely isn't renderable by your `Read` tool in this environment --
-`view_sketch_svg` (the FreeCAD tool used elsewhere in this addon) always
-rasterizes SVG to PNG before handing it to `Read`, which is a strong signal
-that viewing raw SVG directly wasn't verified to work. Treat this as a
-**human-reviews-the-file loop**, not a loop where you check your own output:
-draw carefully from the template's formulas, describe what you drew in
-chat, and let the user's eyes catch misalignment. Don't build or reach for
-rasterization tooling to work around this -- it's out of scope here.
+SVG is not one of the raster image types (png/jpeg/gif/webp) that can be
+returned to you as a picture, so `Read` on your own sheet gives you back the
+markup you just wrote, not the drawing. This is a **human-reviews-the-file
+loop**: draw carefully from the template's formulas, describe what you drew in
+chat, and let the user's eyes catch misalignment. Don't reach for
+rasterization tooling to work around it -- that's out of scope here.
 
 ## Shape of a good sketch
 

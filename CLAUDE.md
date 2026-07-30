@@ -71,14 +71,14 @@ infra modules import nothing from `tools_*` (that's why `_ERROR_FLAGS` and
 | `tools_capture.py` | `capture_view`, `capture_user_view`, `crop_view`. |
 | `tools_cutaway.py` | `cutaway` (+ clip-plane resolution). |
 | `tools_export.py` | `export`. |
-| `session.py` | Artifact folders: the per-conversation session dir, the script/step archives (`_session_subdir`/`_safe_name` build every artifact path), and `PARAM_PATH` — the one spelling of the preferences root, which `agent_config` imports rather than re-declaring. |
+| `session.py` | Artifact folders: the per-conversation session dir, the script/step archives (`_session_subdir`/`_safe_name` build every artifact path), plus the two paths that aren't artifacts but that several modules must agree on: `PARAM_PATH` (the preferences root) and `REFS_DIR` (the bundled `references/`). Both are single-spelled here and imported by `agent_config` rather than re-declared — `agent_config` substitutes `REFS_DIR` into the prompt's `{REFS_DIR}` while the tools cite paths under it in their notes, so a second copy could drift and hand Claude a path that doesn't resolve. `active_session_id()` is how a tool remembers "already said this in this conversation" without inventing its own notion of when one starts. |
 | `namespace.py` | `scripting_namespace()` — the names `run_python` binds. `inspect_api` resolves against the *same* function, so the two cannot drift: inspect_api exists to tell Claude what run_python will have bound, and a name resolving in one but not the other is the exact guess it's there to prevent. |
 | `geometry.py` | Bounding boxes, world-space crop extents. |
 | `svg.py` | Framing/cropping an SVG projection; `_SVG_XFORM_RE` — the one pattern for importSVG's wrapper `translate()/scale()` group, shared by its writer (`_flat_crop_svg` regenerates it when cropping) and its reader (`tools_sketch._annotate_sketch_svg` positions the GeoId overlay off whatever ends up in the file). |
 | `gui_state.py` | The user's current GUI context: what they have open in an editor (`_active_edit_object` & co) and what they have selected (`_selected_objects`, used by `get_sketch`/`view_sketch_svg`/`export` for their no-`name` fallback). |
 | `visibility.py` | Show only the captured objects, then restore. |
 | `render.py` | The offscreen view, its camera, the PNG grab, `_last_capture`. `_offscreen_shot` is the context manager all three raster tools enter — it owns the setup/teardown (isolate visibility, suspend selection, size the view; restore all of it plus the GUI doc's `Modified` flag on *every* exit path, early `return` included). That restore is what keeps a capture read-only, so it lives here once rather than in three copied `finally` blocks. It also holds everything `capture_view` and `cutaway` share *around* that view — they differ only in what happens inside it, so their whole front half (`_capture_setup`: active doc, the required `objects` list → visibility keep-set, camera plan, size, crop extents) and back half (`_camera_angle_note`/`_shown_extents_note`) live here, as do the schema properties describing those args (`_objects_schema_prop`, `_CAMERA_SCHEMA_PROPS`, `_SIZE_SCHEMA_PROPS`). Keep it that way: the two tools must not describe or handle the same knob differently. |
-| `diagnostics.py` | What a mutating call changed, and what it broke (`post_tool_notes`). |
+| `diagnostics.py` | What a mutating call changed, and what it broke (`post_tool_notes`). Also where a scripting reference gets **cited**, when the condition it documents is the one just detected — see "Just-in-time reference pointers" below. `_broke_an_existing_feature` is that trigger for the tip-cycle gotcha: a newly-Invalid feature that already existed in the `before` snapshot (a feature the call *created* failing is ordinary and the traceback covers it). |
 
 Importing the package imports every submodule, so **no submodule may `import
 FreeCAD` at module level** — that would break the "importable from any thread for
@@ -259,6 +259,63 @@ project dir (so its `.claude/skills` load) else a temp dir.
 - Commits: **committing and pushing straight to `main` is fine on this project** —
   no branch/PR needed unless asked. End messages with the `Co-Authored-By` trailer
   used in this repo's history.
+
+## Just-in-time reference pointers
+
+**A "read this file before you do X" instruction in the system prompt is close to
+a no-op, and this was measured, not assumed.** Across the 33 logged sessions that
+ran `run_python` since the `references/` files landed (12 Jul 2026 — the same
+commit that told Claude to read them), `sketcher-scripting.md` was read **zero
+times** despite ~16 of those sessions doing sketch work, `part-draft-recipes.md`
+zero times, and `partdesign-scripting.md` 4 times against ~14 sessions doing
+PartDesign work. `inspect_api` was called 46 times over the same period. Two
+reasons, and only one is a wording problem:
+
+1. The trigger fires on a moment the model can't observe — "before writing
+   unfamiliar code" asks it to notice it's about to do something it doesn't know
+   well, which is exactly the judgement an over-confident model skips.
+2. `inspect_api` is a genuinely better answer for a signature (ground truth from
+   the running install, and it can't drift), so it wins. That means a reference
+   only earns its keep for what `inspect_api` *can't* return — pitfalls, the
+   both-required property pairs, the recipes. Chasing a 100% read rate would be
+   chasing the wrong number.
+
+So the pointer is attached to a **detected condition** instead, arriving with the
+evidence in a tool result — the same channel that makes the `⚠` notes work:
+
+- `diagnostics.summarize_new_failures(before)` cites
+  `partdesign-body-tip-cycle-gotcha.md` only when `_broke_an_existing_feature`
+  holds (a previously-fine feature went Invalid) — the documented symptom.
+- `tools_sketch._editing_rules_note()` appends the rules for changing an existing
+  sketch to the **first `get_sketch` of each conversation** (keyed on
+  `active_session_id()`, so "New" re-arms it). A `get_sketch` call *is* "I am
+  about to edit a sketch", so it's the one moment those rules are relevant; they
+  used to cost 700 always-loaded words in the prompt and then, briefly, sat in the
+  file with the 0% read rate.
+- `diagnostics._partdesign_reference_note(before)` cites `partdesign-scripting.md`
+  the first time a conversation leaves a `PartDesign::Body` in the document. The
+  trigger is the **Body**, not a feature, because a Body is usually created in its
+  own call — which puts the pointer ahead of the first feature rather than after
+  it.
+
+**Both the trigger and the decision not to add one were measured**, over the same
+logged sessions (33 with `run_python`, 325 calls, 9% of calls hitting a traceback):
+
+| Reference | Sessions | First call at | More followed | Error rate |
+|---|---|---|---|---|
+| `partdesign-scripting.md` | 14/33 | run_python #2 (median) | 11/14 sessions | **17%** — ~2× baseline |
+| `part-draft-recipes.md` | 10/33 | #4 (median) | 3/10 sessions | **3%** — below baseline |
+
+So PartDesign work is where wrong-property guesses actually cost something, and a
+pointer there front-runs more work in 11 of 14 sessions. Part-primitive/Draft work
+errored once in 37 calls and in 7 of 10 sessions nothing followed the first call —
+a pointer there would be noise, so `part-draft-recipes.md` deliberately has no
+trigger and is reachable only from the prompt's reference list. Don't add one "for
+symmetry" without re-running the numbers.
+
+When you add a reference file, ask which observable condition should cite it, and
+whether the work it covers actually fails. If neither, expect it not to be read —
+and that may be fine.
 
 ## Gotchas (learned the hard way)
 
