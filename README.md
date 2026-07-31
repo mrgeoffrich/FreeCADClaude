@@ -14,14 +14,20 @@ subscription; intended for personal use.*
 > stream into the UI from a background thread, and Claude can act on the live
 > document through a curated set of tools: it reads objects and selections,
 > *sees* your geometry via screenshots and section (cutaway) views, inspects the
-> API, exports files, and — behind a **per-call confirmation dialog** — runs
-> Python against the document inside an undoable transaction (`run_python`).
+> API, exports files, and runs Python against the document inside an undoable
+> transaction (`run_python`).
 >
-> **What it can touch:** the only path that changes your document is the
-> confirm-gated `run_python` — you approve each call, and on error the
-> transaction is rolled back. `Write` can create or overwrite files on disk (but
-> never the live document); every other tool is read-only. `Bash` and `Edit`
-> are disabled.
+> **What it can touch:** the only path that changes your document is
+> `run_python`, and on error the transaction is rolled back. `Write` can create
+> or overwrite files on disk (but never the live document); every other tool is
+> read-only. `Bash` and `Edit` are disabled.
+>
+> ⚠️ **Tool calls are not gated by a confirmation prompt.** `run_python` executes
+> as soon as Claude asks for it, and it is ordinary Python inside the FreeCAD
+> process — so it can reach the filesystem, not just your document. This is a
+> deliberate choice for a personal-use addon. Don't point it at work you can't
+> afford to lose, and save (or enable the `SaveSteps` preference) before long
+> builds.
 
 ## Quick install
 
@@ -169,7 +175,7 @@ When set, the agent runs with that as its working dir and enables the
 
 `eval/run.py` (cross-platform: Windows / macOS / Linux) runs an end-to-end
 test: launch FreeCAD, open the chat panel, submit a prompt through the real
-agent (auto-approving `run_python`), wait for the turn, snapshot the resulting
+agent, wait for the turn, snapshot the resulting
 document to JSON, and quit. It's stdlib-only — no venv or `pip install`; run it
 with any Python 3.8+.
 
@@ -198,7 +204,7 @@ the newest directory under `~/FreeCADClaude/`:
   volume/solid-count delta and `⚠` notes folded into each tool result. Read it
   for the *tool-call ordering* (e.g. did it review the sketch before pocketing?),
   whether a `⚠` note fired, and whether it then recovered.
-- **`scripts/`** — every approved `run_python`, in order. The count and content
+- **`scripts/`** — every `run_python`, in order. The count and content
   show whether it went straight to the answer or flailed through dead ends.
 
 Some advice from using it:

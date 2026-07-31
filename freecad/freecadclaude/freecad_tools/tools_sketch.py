@@ -6,7 +6,7 @@ setDatum(constraintIndex, value), Constraint('Symmetric', geoId, posId, ...).
 Nothing else in this tool set exposes GeoIds -- get_objects gives a bounding box
 and view_sketch_svg's exported paths are merged, unlabelled wires -- so without
 get_sketch the only way to learn a sketch's structure is a pile of exploratory
-run_python dumps, each one a user approval.
+run_python dumps, each one a wasted round-trip.
 """
 
 import os
@@ -311,7 +311,7 @@ _GET_SKETCH_SCHEMA = {
         "geometries into one unlabelled wire and omit construction geometry "
         "entirely). Optional 'name' = the sketch's internal Name (e.g. 'Sketch001'); "
         "defaults to the sketch being edited, else the selected one, else the "
-        "document's only/first sketch. Read-only -- no approval needed."
+        "document's only/first sketch. Read-only -- it never changes the sketch."
     ),
     "inputSchema": {
         "type": "object",

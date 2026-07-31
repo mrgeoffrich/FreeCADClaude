@@ -63,6 +63,26 @@ _SKILL_COMMANDS = {
 #: purely a UI-rendering limit.
 _MAX_TOOL_RESULT_CHARS = 4000
 
+#: Opens every conversation (a fresh panel and the "New" button). run_python used
+#: to raise a confirmation dialog per call, which told the user what was about to
+#: happen and let them stop it; with that gone, this is the only place the addon
+#: states its own reach. Shown per conversation rather than once ever, because the
+#: risk is per conversation -- a new chat is where someone hands Claude a new
+#: document.
+_CAPABILITY_NOTICE = """### What Claude can do here
+
+⚠️ **Claude acts on your document immediately — there is no approval prompt.**
+
+- **Change the document** — it writes and runs Python inside FreeCAD, so it can
+  add, edit or delete any object in whatever file you have open.
+- **Reach your files** — that code is ordinary Python in the FreeCAD process, so
+  it can read, write and delete files on this computer too, not just the model.
+- **Look at your work** — screenshots, section views and exports of the document.
+
+Each call is one undoable transaction (a failed one rolls itself back), and a copy
+of every script is kept under `~/FreeCADClaude/`. **Save your work before a long
+build**, and don't point it at a file you can't afford to lose."""
+
 
 def _format_tool_input(inp):
     """Render a tool's input args as a Markdown fragment for its detail entry."""
@@ -140,6 +160,7 @@ class ChatWidget(QtWidgets.QWidget):
         self._render_timer.setInterval(80)
         self._render_timer.timeout.connect(self._do_render)
         self._build_ui()
+        self._note(_CAPABILITY_NOTICE)
 
     # -- UI construction -------------------------------------------------
 
@@ -490,7 +511,7 @@ class ChatWidget(QtWidgets.QWidget):
             plan_panel.get_panel().widget.clear()
         except Exception:  # noqa: BLE001
             pass
-        self._note("*New conversation started.*")
+        self._note(_CAPABILITY_NOTICE)
 
     def _on_model_changed(self, _index):
         """Persist the selected model (only reachable between conversations, since

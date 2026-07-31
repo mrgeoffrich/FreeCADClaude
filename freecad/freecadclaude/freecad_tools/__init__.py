@@ -68,8 +68,9 @@ from .tools_sketch import (
     _run_view_sketch_svg,
 )
 
-#: Registry: tool name -> {schema, run, confirm?}.
-#: ``confirm: True`` means the bridge asks the user to approve before running.
+#: Registry: tool name -> {schema, run, precheck?}.
+#: ``precheck`` is a pure-Python validation of the args the bridge runs before
+#: the tool itself; a non-empty return is relayed to Claude instead of running.
 TOOLS = {
     "get_objects": {"schema": _GET_OBJECTS_SCHEMA, "run": _run_get_objects},
     "get_selection": {"schema": _GET_SELECTION_SCHEMA, "run": _run_get_selection},
@@ -84,7 +85,6 @@ TOOLS = {
     "run_python": {
         "schema": _RUN_PYTHON_SCHEMA,
         "run": _run_python,
-        "confirm": True,
         "precheck": _precheck_python,
     },
     "get_diagnostics": {"schema": _GET_DIAGNOSTICS_SCHEMA, "run": _run_get_diagnostics},

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""run_python -- the sole document-mutating tool, gated on user approval."""
+"""run_python -- the sole document-mutating tool."""
 
 from .namespace import scripting_namespace
 from .session import _save_run_python_script, _save_step_snapshot, _save_steps_enabled
@@ -22,7 +22,9 @@ _RUN_PYTHON_SCHEMA = {
         "rollback unit. The result reports what each feature added or removed, "
         "so you don't need a separate get_objects call to check it. For "
         "PartDesign, create a PartDesign::Body first and add features inside "
-        "it. The user is shown your code and must approve it before it runs."
+        "it. Your code runs as soon as you send it -- there is no approval "
+        "step, and the user reads it afterwards in the transcript, so make each "
+        "call one you'd be willing to have already run."
     ),
     "inputSchema": {
         "type": "object",
@@ -30,7 +32,7 @@ _RUN_PYTHON_SCHEMA = {
             "code": {"type": "string", "description": "FreeCAD Python source to execute"},
             "description": {
                 "type": "string",
-                "description": "One-line summary of what the code does (shown to the user for approval)",
+                "description": "One-line summary of what the code does (shown above the code in the user's transcript)",
             },
         },
         "required": ["code"],
@@ -39,11 +41,11 @@ _RUN_PYTHON_SCHEMA = {
 
 
 def _precheck_python(args):
-    """Reject code that won't even compile, BEFORE the user is asked to approve it.
+    """Reject code that won't even compile, BEFORE it reaches the GUI thread.
 
-    Run by the bridge ahead of the confirmation dialog: there's no point making
-    the user approve code that can't run, and Claude gets the error a turn
-    sooner. Returns an error string to relay to Claude, or "" when the code is
+    Run by the bridge ahead of the tool itself: code that can't compile has no
+    business opening a transaction, and Claude gets the error a turn sooner.
+    Returns an error string to relay to Claude, or "" when the code is
     syntactically fine. NB this only catches Python-level syntax errors -- a
     linter can't validate FreeCAD's C++ call signatures, so for *parameter*
     mistakes the agent should reach for inspect_api instead.
@@ -126,7 +128,7 @@ def _run_python(args):
     stdout = io.StringIO()
     try:
         with contextlib.redirect_stdout(stdout):
-            exec(code, namespace)  # noqa: S102 - intentional, user-approved
+            exec(code, namespace)  # noqa: S102 - intentional: this is the tool's whole job
         if not _doc_alive(doc):
             # The code closed the document mid-run; the transaction went with it,
             # so don't touch the stale handle -- report it and bail cleanly.

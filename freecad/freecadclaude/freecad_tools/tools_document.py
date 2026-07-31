@@ -84,7 +84,7 @@ _GET_SELECTION_SCHEMA = {
         "user clicked ('fillet this edge') or on whatever they are currently "
         "inside ('add a circle here' while a sketch is open). When 'editing' names "
         "a sketch, that is the sketch the user means -- pass its name to get_sketch "
-        "rather than guessing from the document. Read-only -- no approval needed."
+        "rather than guessing from the document. Read-only and cheap."
     ),
     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
 }

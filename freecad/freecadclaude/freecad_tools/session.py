@@ -168,7 +168,7 @@ def _prune_folder(folder, keep):
 
 
 def _save_run_python_script(code, description):
-    """Archive an approved run_python call under <session_dir>/scripts/.
+    """Archive a run_python call under <session_dir>/scripts/.
 
     Named "<HHMMSS>_<description>.py" -- just the time, not the date, so
     names stay short but a plain alphabetical directory listing still sorts

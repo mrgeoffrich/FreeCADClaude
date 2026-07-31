@@ -41,7 +41,7 @@ _INSPECT_API_SCHEMA = {
         "one line while the real 'doc.ExampleSketchInstance.addGeometry' spells out "
         "every overload and argument. Always inspect sketch methods via an actual "
         "instance, never via 'Sketcher.Sketch'. "
-        "Read-only and needs no approval: it only walks attribute chains, "
+        "Read-only and cheap: it only walks attribute chains, "
         "never calls or subscripts. Look up everything you're unsure of in ONE "
         "call, then write the code."
     ),

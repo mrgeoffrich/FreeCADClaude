@@ -42,7 +42,7 @@ chat panel (GUI thread)
 | `freecad/freecadclaude/agent_config.py` | Model, system prompt (loaded from `system_prompt.md`), CLI flags (tools/mcp/cwd/skills). |
 | `freecad/freecadclaude/system_prompt.md` | The system prompt text itself, edited as plain Markdown. Its `{REFS_DIR}` placeholder is replaced by `agent_config` at load with the absolute path of `references/`. |
 | `freecad/freecadclaude/references/` | run_python scripting references (sketcher / partdesign / part-draft) the system prompt tells Claude to `Read` on demand — progressive disclosure without a skill gate (the old `freecad-run-python` skill collapsed into these + the prompt's execution-contract section). |
-| `freecad/freecadclaude/gui_bridge.py` | In-FreeCAD socket server; runs tools on the GUI thread; run_python confirm dialog. |
+| `freecad/freecadclaude/gui_bridge.py` | In-FreeCAD socket server; runs tools on the GUI thread; run_python arg precheck. |
 | `freecad/freecadclaude/freecad_tools/` | The tools, as a package — see its own map below. `__init__.py` holds the `TOOLS` registry and re-exports the facade the rest of the addon imports (`TOOLS`, `list_schemas`, `feature_snapshot`, `post_tool_notes`, the session-dir helpers), so `from . import freecad_tools` still reaches everything. |
 | `freecad/freecadclaude/_deps.py` | Locates the `claude` CLI. |
 | `freecad/freecadclaude/eval_runner.py` | Unattended end-to-end eval (triggered by env var). |
@@ -51,11 +51,21 @@ chat panel (GUI thread)
 
 ## Tools
 
-Registry: `freecad_tools.TOOLS` = name → `{schema, run, confirm?}`. Current set:
+Registry: `freecad_tools.TOOLS` = name → `{schema, run, precheck?}`. Current set:
 `get_objects`, `get_selection`, `get_sketch`, `view_sketch_svg`, `capture_view`,
 `capture_user_view`, `crop_view`, `cutaway`, `export`, `inspect_api`,
-`get_diagnostics`, `run_python` (confirm-gated; the sole document-mutating tool —
+`get_diagnostics`, `run_python` (the sole document-mutating tool —
 the general Sketcher/PartDesign/Part path).
+
+**There is no approval gate.** `run_python` used to open a confirmation dialog
+per call (with a "Run all this session" button). It was removed — in practice the
+first dialog of every session was answered with "Run all", so it cost one click
+and bought nothing. Tool calls now execute as soon as they arrive. What still
+stands between a bad call and a damaged document is the transaction (a raising
+call rolls back whole, newly-created objects removed) and, optionally, the
+`SaveSteps` snapshots. Note the scope this gives up: `run_python` is arbitrary
+Python in the FreeCAD process, so it can touch the filesystem, not just the
+document. That's the deliberate trade for a personal-use addon.
 
 The package is one `tools_*` module per concern over a base of shared
 infrastructure. Dependencies run **tools → infra only** — keep it that way; the
@@ -89,7 +99,8 @@ its schema data alone" contract. Keep FreeCAD imports inside the functions.
 in `__init__.py`, with the implementation in the matching `tools_*` module (a new
 one if it's a new concern). `run(args)` executes on the GUI thread and returns a
 string; the MCP allow-list and the bridge wiring derive automatically. Set
-`"confirm": True` to require user approval. `capture_view` returns a `(text, png_path)` tuple instead of a plain
+`"precheck": fn` to validate the args in pure Python first (a non-empty return
+goes to Claude instead of running the tool). `capture_view` returns a `(text, png_path)` tuple instead of a plain
 string; `gui_bridge` reads and base64-encodes `png_path` and `mcp_server.py`
 ships it back as an inline MCP `image` content block in the same tool result —
 Claude sees the picture directly, no separate file-open step. (The Claude API's
@@ -179,7 +190,7 @@ when a chat starts and again on "New" (`chat_panel._ensure_worker`/`_on_new`), s
 every conversation gets its own folder; `session_dir()` resolves the active one
 (older session folders are pruned, keeping the most recent 40). `captures`/
 `exports`/`scripts` are written by FreeCAD tools via `_artifact_path` (auto-pruned, kept
-≤60 files each); `scripts` holds a `.py` copy of every approved `run_python` call
+≤60 files each); `scripts` holds a `.py` copy of every `run_python` call
 (written by `_save_run_python_script`, right before `exec`, so both successful and
 failed runs are archived); the same session folder also holds `stream.jsonl` — the
 raw newline-delimited JSON `agent_worker` reads from the `claude` CLI, appended
@@ -208,8 +219,8 @@ project dir (so its `.claude/skills` load) else a temp dir.
   `Read` and `Write` (always — skill reference files and plain-text file
   authoring), `Glob`/`Grep` (always — file search), the `Task*` family (todo +
   Plan subagent), and `Skill` when a skills project is configured. `Bash`/`Edit`
-  stay OFF — the only path that mutates the *live FreeCAD document* is the
-  confirm-gated `run_python`; `Write` can create/overwrite arbitrary files on
+  stay OFF — the only path that mutates the *live FreeCAD document* is
+  `run_python`; `Write` can create/overwrite arbitrary files on
   disk but never touches the document.
 - The subagent launcher is reported as `Agent` in tool_use even though enabled via
   `Task`; `Agent` is in the allow-list so subagents (e.g. `Plan`) don't prompt.
@@ -227,7 +238,7 @@ project dir (so its `.claude/skills` load) else a temp dir.
   `QT_QPA_PLATFORM=offscreen` and may lack fonts/`activeView`.
 - **End-to-end eval:** `python3 eval/run.py [-p ... -e <regex>]` (cross-platform
   — one stdlib-only script, no venv needed) — launches FreeCAD, runs a prompt
-  through the real agent (auto-approving `run_python`), snapshots the doc to
+  through the real agent, snapshots the doc to
   JSON, exits 0/1/2. Sets the `FREECADCLAUDE_EVAL*` env vars that `InitGui.py` →
   `eval_runner.py` acts on. On Windows it kills a runaway FreeCAD via
   `taskkill /IM freecad.exe` (the exe detaches, so there's no PID to track);
@@ -243,7 +254,7 @@ project dir (so its `.claude/skills` load) else a temp dir.
     `run.py` prints the session path on exit.
 - **Diagnosing a past conversation:** everything for it lives in
   `~/FreeCADClaude/<session-id>/` — `stream.jsonl` (the raw JSON the `claude`
-  CLI streamed, turn by turn), `scripts/` (every approved `run_python` call,
+  CLI streamed, turn by turn), `scripts/` (every `run_python` call,
   success or failure), and `captures/`/`exports/` (images/exported files). See
   the "Tools" section above for how `<session-id>` is chosen. The "Files"
   button in the chat panel opens `~/FreeCADClaude` itself (all sessions).

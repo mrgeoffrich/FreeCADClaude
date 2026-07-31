@@ -80,40 +80,6 @@ def _run_on_gui(fn, timeout=600):
     return ev.result
 
 
-#: Session-wide "approve all" toggle, set from the confirmation dialog.
-_auto_approve = {"on": False}
-
-
-def _confirm_dialog(tool_name, args):
-    """Ask the user to approve a tool call. Runs on the GUI thread."""
-    if _auto_approve["on"]:
-        return True
-
-    from PySide import QtWidgets
-
-    code = args.get("code", "")
-    desc = args.get("description") or ""
-
-    box = QtWidgets.QMessageBox()
-    box.setWindowTitle("FreeCADClaude — approve action?")
-    box.setIcon(QtWidgets.QMessageBox.Question)
-    box.setText(f"Claude wants to run <b>{tool_name}</b>" + (f": {desc}" if desc else "."))
-    if code:
-        box.setInformativeText("Review the code under “Show Details”.")
-        box.setDetailedText(code)
-    run_btn = box.addButton("Run", QtWidgets.QMessageBox.AcceptRole)
-    all_btn = box.addButton("Run all this session", QtWidgets.QMessageBox.YesRole)
-    box.addButton("Cancel", QtWidgets.QMessageBox.RejectRole)
-    box.setDefaultButton(run_btn)
-    box.exec()
-
-    clicked = box.clickedButton()
-    if clicked is all_btn:
-        _auto_approve["on"] = True
-        return True
-    return clicked is run_btn
-
-
 def _serve(srv, token):
     while True:
         try:
@@ -155,10 +121,11 @@ def _dispatch(req, token):
         tool = freecad_tools.TOOLS.get(name)
         if tool is None:
             return {"ok": False, "error": f"unknown tool: {name}"}
-        # Pre-flight check (e.g. a syntax compile for run_python) BEFORE the confirm
-        # dialog -- no point asking the user to approve code that can't run. Pure
-        # Python, no FreeCAD access, so it's fine off the GUI thread. A non-empty
-        # result is relayed to Claude as the tool's output so it fixes and retries.
+        # Pre-flight check (e.g. a syntax compile for run_python) BEFORE the tool
+        # runs -- code that can't compile shouldn't reach the GUI thread or open a
+        # transaction. Pure Python, no FreeCAD access, so it's fine off the GUI
+        # thread. A non-empty result is relayed to Claude as the tool's output so
+        # it fixes and retries.
         precheck = tool.get("precheck")
         if precheck is not None:
             try:
@@ -167,13 +134,6 @@ def _dispatch(req, token):
                 problem = f"precheck error: {exc!r}"
             if problem:
                 return {"ok": True, "text": problem}
-        if tool.get("confirm"):
-            try:
-                approved = _run_on_gui(lambda: _confirm_dialog(name, args))
-            except Exception as exc:  # noqa: BLE001
-                return {"ok": False, "error": f"confirmation failed: {exc!r}"}
-            if not approved:
-                return {"ok": False, "error": "The user declined to run this code."}
         def _call():
             # Snapshot PartDesign feature volumes/solid-counts BEFORE a mutating
             # tool runs, so post_tool_notes can diff and report what this operation

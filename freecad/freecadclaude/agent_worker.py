@@ -82,7 +82,7 @@ class AgentWorker(QtCore.QObject):
             argv += ["--effort", cfg["effort"]]
         # Built-in tools: a safe allowlist (Skill + read-only) when a skills
         # project is configured, otherwise none. Bash/Write/Edit stay off either
-        # way -- the only mutation path is the gated run_python MCP tool.
+        # way -- the only mutation path is the run_python MCP tool.
         builtin = cfg.get("builtin_tools") or []
         if builtin:
             argv += ["--tools", *builtin]

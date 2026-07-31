@@ -2,8 +2,8 @@
 """Unattended end-to-end evaluation of the FreeCADClaude agent.
 
 Triggered from InitGui.py when the FREECADCLAUDE_EVAL env var is set. It opens the
-chat panel, submits a prompt (FREECADCLAUDE_EVAL_PROMPT), auto-approves run_python,
-waits for the turn to finish via a nested Qt event loop (so the GUI thread stays
+chat panel, submits a prompt (FREECADCLAUDE_EVAL_PROMPT), waits for the turn to
+finish via a nested Qt event loop (so the GUI thread stays
 free to marshal tool calls), writes a JSON report (FREECADCLAUDE_EVAL_RESULT), and
 quits FreeCAD. Launch it with eval/run.py.
 """
@@ -87,7 +87,6 @@ def run():
         from . import chat_panel, freecad_tools, gui_bridge
 
         gui_bridge.start()
-        gui_bridge._auto_approve["on"] = True  # unattended: skip the confirm dialog
         freecad_tools._save_steps["on"] = True  # snapshot each build step to steps/
 
         if FreeCAD.ActiveDocument is None:

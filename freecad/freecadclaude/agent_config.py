@@ -75,14 +75,14 @@ _READ_TOOLS = ["Read"]
 #: Write is always on (like Read) so Claude can author plain-text files
 #: directly -- currently used by freecad-lofi-sketch's concept SVGs. Runs
 #: inside the claude CLI process itself (not the MCP bridge/GUI thread) and
-#: never touches the live FreeCAD document -- Bash and Edit stay OFF; the
-#: confirm-gated run_python remains the only path that mutates the document.
+#: never touches the live FreeCAD document -- Bash and Edit stay OFF; run_python
+#: remains the only path that mutates the document.
 _WRITE_TOOLS = ["Write"]
 
 #: File-search tools, always on so Claude can look for files on disk (find by
 #: name with Glob, search contents with Grep) -- e.g. locate a STEP to import or
 #: a previous export. Read-only, like Read: they discover paths but never mutate.
-#: Bash/Edit stay OFF -- the only mutation path to the live document is the gated
+#: Bash/Edit stay OFF -- the only mutation path to the live document is the
 #: run_python tool.
 _SEARCH_TOOLS = ["Glob", "Grep"]
 

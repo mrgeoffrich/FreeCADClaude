@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """End-to-end eval: launch FreeCAD, run a prompt through the real FreeCADClaude
-agent (auto-approving run_python), snapshot the resulting document to JSON.
+agent, snapshot the resulting document to JSON.
 
 Cross-platform (Windows / macOS / Linux) — the single Python replacement for the
 old run.ps1 + run.sh pair. Stdlib only, so no venv or `pip install` is needed;
@@ -24,7 +24,7 @@ judge HOW the agent behaved -- tool-call order, cut direction, whether a warning
 fired, how many steps it took -- read the run's own session folder:
     ~/FreeCADClaude/<newest>/stream.jsonl  (tool calls + per-op volume/solid
                                             delta and warning notes in results)
-    ~/FreeCADClaude/<newest>/scripts/      (every approved run_python, in order)
+    ~/FreeCADClaude/<newest>/scripts/      (every run_python, in order)
 That is where the real signal for a behaviour/prompt change lives; this script
 prints its path on exit.
 """

@@ -18,11 +18,17 @@ genuine reports within a week or two and prioritise them.
 ## Scope
 
 This addon runs Claude with tools that can act on your FreeCAD document —
-including a confirmation-gated `run_python` tool that executes Python, and a
-`Write` tool that can create or overwrite files on disk. Treat prompts, and any
-files Claude is asked to open, as untrusted input. The most valuable reports
-involve the addon doing something destructive or executing code **without** the
-expected confirmation step.
+including a `run_python` tool that executes Python inside the FreeCAD process,
+and a `Write` tool that can create or overwrite files on disk. Treat prompts, and
+any files Claude is asked to open, as untrusted input.
+
+**There is no confirmation prompt.** Tool calls run as they arrive, by design, so
+"the addon executed code without asking me" is expected behaviour rather than a
+vulnerability. What remains worth reporting: anything that lets a third party
+reach these tools (the bridge listens on localhost behind a shared-secret token —
+a way past that token, or to bind it more widely, is a real finding), prompt
+injection from file content that Claude reads, or the addon leaking credentials
+or session data.
 
 ## Supported versions
 
