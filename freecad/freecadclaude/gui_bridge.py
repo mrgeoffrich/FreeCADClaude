@@ -27,6 +27,23 @@ from . import freecad_tools
 # A private Qt event type for "run this callable on the GUI thread".
 _EVENT_TYPE = QtCore.QEvent.Type(QtCore.QEvent.registerEventType())
 
+# How long we wait for the GUI thread before reporting the call as still-running.
+# mcp_server's socket timeout must stay ABOVE this so the bridge, not the socket,
+# is the side that gives up first -- it's the only one that knows what happened.
+_GUI_CALL_TIMEOUT = 600
+
+
+class GuiBusyTimeout(Exception):
+    """A GUI-thread call outlasted the timeout -- and is STILL running.
+
+    Nothing here can preempt Python already executing on the GUI thread, so this
+    is a report, not a cancellation: the call keeps going and, if it succeeds,
+    still commits its transaction. The message has to say that, because the
+    obvious reading of a timeout -- "it failed, send it again" -- is the one
+    response that makes things worse: the resend queues behind the first call
+    and can apply the same change twice.
+    """
+
 
 class _CallEvent(QtCore.QEvent):
     def __init__(self, fn):
@@ -70,14 +87,42 @@ def start():
     return port, token
 
 
-def _run_on_gui(fn, timeout=600):
+def _run_on_gui(fn, label="call", timeout=_GUI_CALL_TIMEOUT):
     ev = _CallEvent(fn)
     QtCore.QCoreApplication.postEvent(_state["invoker"], ev)
     if not ev.done.wait(timeout):
-        raise TimeoutError("FreeCAD GUI thread did not respond in time")
+        raise GuiBusyTimeout(
+            f"'{label}' has been running on FreeCAD's GUI thread for {timeout}s "
+            "and has NOT returned. It was not cancelled -- it is still running, "
+            "FreeCAD is frozen until it finishes, and if it succeeds it will "
+            "still commit its changes.\n\n"
+            "Do NOT resend this call: a second copy queues behind the first and "
+            "could apply the same change twice. Tell the user FreeCAD is busy "
+            "with this call and wait for it. Once it frees up, call get_objects "
+            "to see what actually landed before doing anything else.\n\n"
+            "The usual cause is a loop of Part shape operations (slice, cut, "
+            "fuse, recompute, ...): each costs tens to hundreds of milliseconds "
+            "on a real solid, and run_python holds the GUI thread for the whole "
+            "call. Restructure it to use the one-shot form rather than retrying."
+        )
     if ev.error is not None:
         raise ev.error
     return ev.result
+
+
+def _warn(msg):
+    """Surface a bridge-level problem in FreeCAD's report view.
+
+    The user is looking at a frozen or misbehaving FreeCAD, not at the chat
+    transcript, so the places where we drop something on the floor say so where
+    they'll actually see it. Imported lazily and failure-tolerantly -- this must
+    never be the reason a reply doesn't get sent."""
+    try:
+        import FreeCAD
+
+        FreeCAD.Console.PrintWarning(msg + "\n")
+    except Exception:  # noqa: BLE001 - diagnostics must not raise
+        pass
 
 
 def _serve(srv, token):
@@ -105,7 +150,15 @@ def _handle(conn, token):
         try:
             conn.sendall((json.dumps(reply) + "\n").encode("utf-8"))
         except OSError:
-            pass
+            # The caller gave up and closed the socket, so this reply has nowhere
+            # to go. Worth saying out loud: the call itself still ran to
+            # completion, and a mutating one still committed, even though Claude
+            # was told it failed.
+            _warn(
+                "FreeCADClaude: dropped the reply to a "
+                f"'{req.get('tool', '?')}' call -- the caller had already timed "
+                "out. The call itself still ran and its changes stand."
+            )
 
 
 def _dispatch(req, token):
@@ -151,7 +204,7 @@ def _dispatch(req, token):
             return text, png_path, note
 
         try:
-            text, png_path, note = _run_on_gui(_call)
+            text, png_path, note = _run_on_gui(_call, label=name)
             if note:
                 text = f"{text}\n\n{note}"
             reply = {"ok": True, "text": text}
@@ -165,6 +218,9 @@ def _dispatch(req, token):
                 except OSError as exc:
                     reply["text"] += f"\n\n(failed to read rendered image: {exc!r})"
             return reply
+        except GuiBusyTimeout as exc:
+            # Already written for Claude to read -- don't repr() it into noise.
+            return {"ok": False, "error": str(exc)}
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": repr(exc)}
     return {"ok": False, "error": f"unknown op: {op}"}

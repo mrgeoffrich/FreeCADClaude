@@ -349,6 +349,34 @@ and that may be fine.
   window pops up (and historically hung) under the windowed FreeCAD process.
 - `run_python` runs inside an `openTransaction`/`commit` (undoable); on error it
   aborts AND removes newly-added objects (undo may be off in some contexts).
+- **A loop of Part shape operations doesn't run slowly — it freezes FreeCAD, and
+  nothing can preempt it.** `run_python` executes on the GUI thread, so a call
+  that takes minutes is minutes of a dead application. Measured: a session that
+  ran `while x <= 151.5: ymax(x); x += 0.1` — ~1,700 `Shape.slice()` calls on a
+  725-face solid at ~96 ms each — held the GUI thread for **2m46s**. Three
+  things follow, and all three are now handled:
+  - `tools_python._heavy_loop_note` (a `run_python` precheck) refuses the call
+    statically, before it reaches the GUI thread, when a heavy op runs inside a
+    loop of unknown or >50 trip count. It resolves calls through locally-defined
+    helpers, because the expensive call is usually one level down — in the
+    measured case the `slice()` was inside `def ymax`, not in the loop body, so
+    a lexical check would have missed the exact thing worth catching. The
+    threshold is sized off the logged sessions (the loops that read fine sampled
+    7 and 11 Z-heights; the ones that froze ran 183/245/1,206), and `# slow-ok`
+    anywhere in the code skips it — a loop that must run costs one round-trip,
+    which is the point.
+  - The bridge's `GuiBusyTimeout` (`_GUI_CALL_TIMEOUT`, 600 s) reports the call
+    as **still running**, not failed. It is not a cancellation — the call keeps
+    going and still commits — so the message's job is to stop the obvious
+    response ("resend it"), which would queue a second copy behind the first and
+    apply the same change twice.
+  - `mcp_server._CALL_TIMEOUT` (900 s) must stay **above** that 600 s. It was
+    120 s, which is how the incident got worse than slow: the socket gave up 46 s
+    before the work finished, the reply landed on a closed socket and was
+    dropped by `_handle`'s `except OSError`, and Claude was told a call had
+    failed that in fact succeeded. Whoever times out first has to be the side
+    that can describe what's happening — that's the bridge. That dropped-reply
+    path now warns into the report view via `gui_bridge._warn`.
 - Box `Length`/etc. are `Quantity` objects (`str` → "20.0 mm"); use the numeric
   input or `.Value`.
 - **Assigning `sketch.Geometry` to move constrained geometry silently mangles it.**

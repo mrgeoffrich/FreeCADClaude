@@ -21,10 +21,22 @@ _HOST = "127.0.0.1"
 _PORT = int(os.environ.get("FREECAD_BRIDGE_PORT", "0"))
 _TOKEN = os.environ.get("FREECAD_BRIDGE_TOKEN", "")
 
+# The bridge runs the tool on FreeCAD's GUI thread and owns the deadline for it
+# (gui_bridge._GUI_CALL_TIMEOUT). Our socket timeout must sit ABOVE that one, or
+# we abandon a call the bridge is still working on: the reply it eventually
+# sends lands on a closed socket and is dropped, so a slow-but-successful call
+# is reported to Claude as a failure -- and a *mutating* call reported that way
+# still commits, inviting Claude to apply the same change twice. Whoever times
+# out first must be the side that can actually describe what's going on.
+_CALL_TIMEOUT = 900
+# Listing only reads a static schema table on the bridge thread -- it never
+# touches the GUI thread, so a slow reply means FreeCAD is wedged, not busy.
+_LIST_TIMEOUT = 30
 
-def _bridge(payload):
+
+def _bridge(payload, timeout=_CALL_TIMEOUT):
     """Send one JSON request to the FreeCAD bridge, return the JSON reply."""
-    with socket.create_connection((_HOST, _PORT), timeout=120) as sock:
+    with socket.create_connection((_HOST, _PORT), timeout=timeout) as sock:
         sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
         buf = b""
         while not buf.endswith(b"\n"):
@@ -37,7 +49,7 @@ def _bridge(payload):
 
 def _list_tools():
     try:
-        return _bridge({"token": _TOKEN, "op": "list"}).get("tools", [])
+        return _bridge({"token": _TOKEN, "op": "list"}, _LIST_TIMEOUT).get("tools", [])
     except Exception:  # noqa: BLE001 - never let listing crash the server
         return []
 
