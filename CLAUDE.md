@@ -180,6 +180,27 @@ the active tab isn't a 3D view. `capture_view`/`cutaway`/`crop_view` all enter
 camera / insert the clip plane / replay the last camera and zoom); the shared
 `x_min..z_max` framing is `render._apply_extent_crop`.
 
+**Draw style** (`style` on both `capture_view` and `cutaway`, schema shared via
+`render._STYLE_SCHEMA_PROPS`): `shaded` (default), `xray`, `wireframe`.
+`_force_draw_style` is the single place the viewer's override mode is set — and
+that override is *why* a ViewObject's `DisplayMode` has no effect on a capture
+(it deliberately outranks per-object modes so a shot can't inherit e.g. `Points`
+from one object). Measured the confusing way first: `DisplayMode` read back as
+`Wireframe` while the render came out shaded. `wireframe` is therefore a per-view
+override — no document mutation, dies with the throwaway view. `xray` has no
+draw-style equivalent, so it goes through `Transparency` (60%; at 80 the form
+dissolves into the background) and must be restored.
+
+**`_shot_appearance` saves in one pass and applies in a second, and that split is
+load-bearing.** Setting `Transparency` on a Body **propagates to the features
+inside it**, so a save-then-set-as-you-go loop reads an already-propagated value
+for objects it reaches later and "restores" them to the shot's value. That leaked
+60% transparency onto 4 objects of a real document before the split was added.
+The same hazard applies to any ViewObject property that propagates — record
+everything before changing anything. Note also what the override does *not* cover:
+`Hidden Line` renders identically to `Shaded` on FreeCAD 1.1 (no edge lines), so
+it isn't offered.
+
 **A crop defaults its omitted axes to the SHOWN objects, and the image is shaped
 to the geometry** — both learned from one session where Claude could not get a
 usable picture of a 122×6.6mm door and gave up on looking at it entirely

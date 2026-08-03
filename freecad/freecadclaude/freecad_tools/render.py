@@ -44,15 +44,13 @@ _VIEW_PRESETS = {
 _VIEW_PREF_PATH = "User parameter:BaseApp/Preferences/View"
 
 #: Background for saveImage on every raster capture (capture_view/crop_view/
-#: cutaway). Black rather than white: FreeCAD's default shaded geometry is mid
-#: grey, which is low-contrast on white -- a black backdrop makes the part's
-#: silhouette and shading read far more clearly for the vision model. (The SVG
-#: path keeps its white background: that's black line-art, not shaded geometry.)
-#: Render background. Measured against the alternatives on a real part: a slate
+#: cutaway). Measured against the alternatives on a real part: this slate
 #: blue-grey separates from FreeCAD's default shape grey by a colour distance of
 #: 354 (black managed 350, white 189), so it gives _looks_blank the widest margin
-#: AND -- the reason it beats black -- a through-slot or bore reads unmistakably
-#: as "background seen through the part" instead of as another dark face.
+#: AND -- the reason it beats the black it replaced -- a through-slot or bore
+#: reads unmistakably as "background seen through the part" rather than as one
+#: more dark face. (The SVG path keeps its white background: that's black
+#: line-art, not shaded geometry.)
 _CAPTURE_BG = "#3A4A5A"
 
 #: Multisampling for the offscreen render. saveImage takes a 6th `samples`
@@ -71,6 +69,43 @@ _SHOT_DIFFUSE = (0.82, 0.84, 0.87, 0.0)
 _SHOT_EDGE_COLOR = (0.0, 0.0, 0.0, 0.0)
 _SHOT_LINE_WIDTH = 2.0
 
+#: How the shot is drawn. 'shaded' and 'xray' both draw shaded-with-edges; they
+#: differ only in Transparency, which has no draw-style equivalent and so goes
+#: through the ViewObject (saved and restored like the rest of the appearance).
+#: 'wireframe' is a draw style, so it rides the per-view override in
+#: _force_draw_style -- no document mutation at all, and it dies with the
+#: throwaway view. Setting a ViewObject's DisplayMode instead does nothing here,
+#: and that is not a Coin quirk: _force_draw_style's override deliberately
+#: outranks per-object modes so a capture can't inherit e.g. Points from one
+#: object. Measured the confusing way first -- DisplayMode read back as
+#: 'Wireframe' and the render came out shaded.
+_STYLES = ("shaded", "wireframe", "xray")
+_DEFAULT_STYLE = "shaded"
+
+#: style -> the viewer override mode that draws it.
+_OVERRIDE_MODES = {"shaded": "Flat Lines", "xray": "Flat Lines", "wireframe": "Wireframe"}
+#: 60% reads as see-through while the silhouette and surface shading survive;
+#: at 80% the form starts dissolving into the background.
+_XRAY_TRANSPARENCY = 60
+
+#: The draw-style argument, shared by capture_view and cutaway.
+_STYLE_SCHEMA_PROPS = {
+    "style": {
+        "type": "string",
+        "enum": list(_STYLES),
+        "description": (
+            "How to draw the shot. 'shaded' (default) is solid faces with edges "
+            "-- the right pick for reading outer form. 'xray' keeps the shaded "
+            "surface and silhouette but makes it semi-transparent so internal "
+            "features show through: usually the best 'what's inside' view. "
+            "'wireframe' draws every edge including the ones behind, hiding "
+            "nothing -- the most literal see-through, but a busy image on a "
+            "complex part. For a clean flat section through the solid rather "
+            "than a see-through, use the cutaway tool instead."
+        ),
+    },
+}
+
 
 def _mdi_subwindows():
     """The main window's current set of MDI subwindows (one per open document
@@ -85,12 +120,17 @@ def _mdi_subwindows():
     return set(mdi_area.subWindowList()) if mdi_area else set()
 
 
-def _force_flat_lines(view):
-    """Force `view` to render every object shaded-with-edges ("Flat Lines"),
-    regardless of each object's own DisplayMode or whatever draw style the
-    user's real view currently happens to be set to -- so a capture always
-    reads clearly instead of silently inheriting e.g. Wireframe/Points if
-    that's what a particular object (or the user) is using elsewhere.
+def _force_draw_style(view, style=_DEFAULT_STYLE):
+    """Force how `view` draws, overriding each object's own DisplayMode and
+    whatever draw style the user's real view currently happens to be set to --
+    so a capture always reads clearly instead of silently inheriting e.g.
+    Wireframe/Points if that's what a particular object (or the user) is using
+    elsewhere.
+
+    That deliberate outranking is also why a ViewObject's DisplayMode has no
+    effect on a capture, and why `style` is the only way to change how a shot is
+    drawn. The single place the override is set, so the default and the
+    caller-chosen style can't be applied by two different mechanisms.
 
     setOverrideMode is per-viewer state on the throwaway Coin viewer this
     view owns; it never touches the user's real view or any ViewObject
@@ -98,7 +138,7 @@ def _force_flat_lines(view):
     View3DInventorViewer.setOverrideMode (FreeCAD/FreeCAD#19044, Jan 2025).
     """
     try:
-        view.getViewer().setOverrideMode("Flat Lines")
+        view.getViewer().setOverrideMode(_OVERRIDE_MODES.get(style, "Flat Lines"))
     except Exception:  # noqa: BLE001
         pass
 
@@ -144,7 +184,7 @@ def _offscreen_view(doc):
     # the event loop never turns during this call, disable animation so those
     # calls apply immediately/synchronously instead of capturing mid-transition.
     view.setAnimationEnabled(False)
-    _force_flat_lines(view)
+    _force_draw_style(view)
 
     subwindow = next(iter(_mdi_subwindows() - before), None)
     return view, subwindow, prev_view
@@ -193,7 +233,7 @@ def _set_diffuse(view_object, rgba):
 
 
 @contextlib.contextmanager
-def _shot_appearance(doc, keep_names):
+def _shot_appearance(doc, keep_names, style=_DEFAULT_STYLE):
     """Give the shot a pale body with dark, definite edges -- then put the
     document's own appearance back.
 
@@ -208,25 +248,42 @@ def _shot_appearance(doc, keep_names):
     """
     default = _default_shape_rgb()
     saved = []
-    try:
-        for obj in doc.Objects:
-            if obj.Name not in keep_names:
-                continue
-            view_object = getattr(obj, "ViewObject", None)
-            if view_object is None:
-                continue
-            props = view_object.PropertiesList
-            if "ShapeAppearance" not in props:
-                continue
+    saved_transparency = []
+    # PASS 1 -- record every value we might change, BEFORE changing any of them.
+    # Setting Transparency on a Body propagates to the features inside it, so a
+    # save-then-set-as-you-go loop reads an already-propagated value for objects
+    # it reaches later and "restores" them to the shot's value. That leaked 60%
+    # transparency into a real document; the split is what stops it.
+    for obj in doc.Objects:
+        if obj.Name not in keep_names:
+            continue
+        view_object = getattr(obj, "ViewObject", None)
+        if view_object is None:
+            continue
+        props = view_object.PropertiesList
+        # Transparency is NOT gated on the default-colour test: an xray that
+        # left a user-coloured part opaque would hide exactly what the caller
+        # asked to see through.
+        if style == "xray" and "Transparency" in props:
             try:
-                diffuse = view_object.ShapeAppearance[0].DiffuseColor
+                saved_transparency.append((view_object, view_object.Transparency))
             except Exception:  # noqa: BLE001
-                continue
-            if any(abs(a - b) > 0.02 for a, b in zip(diffuse[:3], default)):
-                continue  # user-chosen colour: leave it alone
-            line_width = getattr(view_object, "LineWidth", None)
-            line_color = getattr(view_object, "LineColor", None)
-            saved.append((view_object, tuple(diffuse), line_width, line_color))
+                pass
+        if "ShapeAppearance" not in props:
+            continue
+        try:
+            diffuse = view_object.ShapeAppearance[0].DiffuseColor
+        except Exception:  # noqa: BLE001
+            continue
+        if any(abs(a - b) > 0.02 for a, b in zip(diffuse[:3], default)):
+            continue  # user-chosen colour: leave it alone
+        saved.append((view_object, tuple(diffuse),
+                      getattr(view_object, "LineWidth", None),
+                      getattr(view_object, "LineColor", None)))
+
+    try:
+        # PASS 2 -- apply, now that everything is recorded.
+        for view_object, _diffuse, line_width, line_color in saved:
             try:
                 _set_diffuse(view_object, _SHOT_DIFFUSE)
                 if line_width is not None:
@@ -234,6 +291,11 @@ def _shot_appearance(doc, keep_names):
                 if line_color is not None:
                     view_object.LineColor = _SHOT_EDGE_COLOR
             except Exception:  # noqa: BLE001 - leave it as it was
+                pass
+        for view_object, _transparency in saved_transparency:
+            try:
+                view_object.Transparency = _XRAY_TRANSPARENCY
+            except Exception:  # noqa: BLE001
                 pass
         yield
     finally:
@@ -246,10 +308,15 @@ def _shot_appearance(doc, keep_names):
                     view_object.LineColor = line_color
             except Exception:  # noqa: BLE001
                 pass
+        for view_object, transparency in saved_transparency:
+            try:
+                view_object.Transparency = transparency
+            except Exception:  # noqa: BLE001
+                pass
 
 
 @contextlib.contextmanager
-def _offscreen_shot(doc, keep_names, width, height):
+def _offscreen_shot(doc, keep_names, width, height, style=_DEFAULT_STYLE):
     """The whole scaffolding around a raster capture, entered by all three
     tools (capture_view / crop_view / cutaway): yields a throwaway view of
     `doc` sized to width x height, showing only `keep_names`, with the
@@ -282,7 +349,9 @@ def _offscreen_shot(doc, keep_names, width, height):
         saved_sel = _suspend_selection(doc)  # drop selection highlight for the shot
         if subwindow is not None:
             subwindow.resize(width, height)
-        with _shot_appearance(doc, keep_names):
+        # Per-view override: no document mutation, and it dies with the view.
+        _force_draw_style(view, style)
+        with _shot_appearance(doc, keep_names, style):
             yield view
     finally:
         _restore_visibility(saved)
@@ -549,7 +618,8 @@ def _looks_blank(png_path):
 #: crop_view can reproduce the framing Claude just saw and zoom into a
 #: sub-rectangle of it (see _run_crop_view). Written at the tail of
 #: _run_capture_view while the offscreen view is still alive.
-_last_capture = {"camera": None, "width": None, "height": None, "doc": None, "keep": None}
+_last_capture = {"camera": None, "width": None, "height": None, "doc": None,
+                 "keep": None, "style": None}
 
 
 def _orbit_rotation(azimuth_deg, elevation_deg):
@@ -782,12 +852,20 @@ def _capture_setup(args, tool_name):
     if err:
         return None, err
 
+    style = str(args.get("style") or _DEFAULT_STYLE).strip().lower()
+    if style not in _STYLES:
+        return None, (
+            f"Unknown 'style' {args.get('style')!r}. Pick one of: "
+            f"{', '.join(_STYLES)}."
+        )
+
     width = int(args.get("width", _DEFAULT_WIDTH))
     height = int(args.get("height", _DEFAULT_HEIGHT))
     return {
         "doc": doc,
         "keep_set": _visibility_keep_set(doc, names),
         "plan": plan,
+        "style": style,
         "width": width,
         "height": height,
         # An explicit size is honoured as given; only a defaulted one gets

@@ -9,6 +9,7 @@ from .geometry import _EXTENT_SCHEMA_PROPS, _document_bbox
 from .render import (
     _CAMERA_SCHEMA_PROPS,
     _SIZE_SCHEMA_PROPS,
+    _STYLE_SCHEMA_PROPS,
     _apply_camera_plan,
     _apply_extent_crop,
     _fit_render_size,
@@ -176,6 +177,7 @@ _CUTAWAY_SCHEMA = {
             **_CAMERA_SCHEMA_PROPS,
             **_EXTENT_SCHEMA_PROPS,
             **_SIZE_SCHEMA_PROPS,
+            **_STYLE_SCHEMA_PROPS,
         },
         "required": ["objects"],
         "additionalProperties": False,
@@ -207,7 +209,7 @@ def _run_cutaway(args):
     crop_warning = None
     measured = None
     degenerate_warning = None
-    with _offscreen_shot(doc, keep_set, width, height) as view:
+    with _offscreen_shot(doc, keep_set, width, height, setup["style"]) as view:
         if view is None:
             return "Could not create an offscreen view to capture."
 

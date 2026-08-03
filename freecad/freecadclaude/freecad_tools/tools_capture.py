@@ -10,6 +10,7 @@ from .geometry import _EXTENT_SCHEMA_PROPS
 from .render import (
     _CAMERA_SCHEMA_PROPS,
     _SIZE_SCHEMA_PROPS,
+    _STYLE_SCHEMA_PROPS,
     _VIEW_PREF_PATH,
     _apply_camera_plan,
     _apply_extent_crop,
@@ -59,6 +60,7 @@ _CAPTURE_VIEW_SCHEMA = {
             "objects": _objects_schema_prop(),
             **_CAMERA_SCHEMA_PROPS,
             **_SIZE_SCHEMA_PROPS,
+            **_STYLE_SCHEMA_PROPS,
             **_EXTENT_SCHEMA_PROPS,
         },
         "required": ["objects"],
@@ -73,11 +75,12 @@ def _run_capture_view(args):
         return err
     doc, keep_set, plan = setup["doc"], setup["keep_set"], setup["plan"]
     width, height, extents = setup["width"], setup["height"], setup["extents"]
+    style = setup["style"]
     png_path = _artifact_path("captures", plan["label"], ".png")
 
     warnings = []
     measured = None
-    with _offscreen_shot(doc, keep_set, width, height) as view:
+    with _offscreen_shot(doc, keep_set, width, height, style) as view:
         if view is None:
             return "Could not create an offscreen view to capture."
 
@@ -130,7 +133,7 @@ def _run_capture_view(args):
         try:
             _last_capture.update(
                 camera=view.getCamera(), width=width, height=height,
-                doc=doc.Name, keep=keep_set,
+                doc=doc.Name, keep=keep_set, style=style,
             )
         except Exception:  # noqa: BLE001 - crop_view just falls back to "capture first"
             _last_capture.update(camera=None)
@@ -306,7 +309,8 @@ def _run_crop_view(args):
     height = int(_last_capture.get("height") or 960)
 
     blank = False
-    with _offscreen_shot(doc, keep_set, width, height) as view:
+    with _offscreen_shot(doc, keep_set, width, height,
+                         _last_capture.get("style") or "shaded") as view:
         if view is None:
             return "Could not create an offscreen view to capture."
 
