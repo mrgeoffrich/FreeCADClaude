@@ -293,22 +293,58 @@ reasons, and only one is a wording problem:
    chasing the wrong number.
 
 So the pointer is attached to a **detected condition** instead, arriving with the
-evidence in a tool result — the same channel that makes the `⚠` notes work:
+evidence in a tool result — the same channel that makes the `⚠` notes work.
 
-- `diagnostics.summarize_new_failures(before)` cites
-  `partdesign-body-tip-cycle-gotcha.md` only when `_broke_an_existing_feature`
-  holds (a previously-fine feature went Invalid) — the documented symptom.
+**That fixed when the pointer arrives, not whether the file gets opened — also
+measured.** Over the 13 logged sessions since the triggers landed (30 Jul,
+`a2e79f9`), the pointer notes fired **11 times across 9 sessions** — the trigger
+mechanism works — but were followed by a `Read` of the cited file **once**, with
+**171 `run_python` calls** running past an unopened reference. That is the same
+near-zero read rate the prompt-based instruction got. Two conclusions, and the
+second is the design rule now:
+
+1. A pointer's read rate is roughly independent of how well-timed it is. Don't
+   spend another round of wording on it.
+2. **Carry the payload, cite the file only for the tail.** `_EDITING_RULES` was
+   already built this way and is the one that works: it fired in 6 sessions and
+   needed zero reads, because the four rules are *in* the note and only the API
+   forms/external-geometry residue is behind the link. `_PARTDESIGN_ESSENTIALS`
+   was rewritten to match (it used to be a bare "read this file", ignored 10
+   times out of 11). A note that has to be followed to be useful mostly isn't.
+
+The three notes, and what each one is:
+
+- `diagnostics.summarize_new_failures(before)` escalates when
+  `_broke_an_existing_feature` holds (a previously-fine feature went Invalid) and
+  hands off to `_pre_existing_failure_note`, which **works out which cause it is
+  before naming one**. It used to assert the tip cycle outright from that
+  symptom, and that was wrong: measured, the note fired in 2 sessions since it
+  landed and *neither* was a cycle (no `must be a DAG` in either log), while in
+  one Claude had to overrule it — *"its `Base` pins literal edge names
+  (`Edge4…Edge18`)… Not a BaseFeature [cycle]"*. The symptom is shared with
+  **topological naming**, which is much the more common cause. So now:
+  `_on_basefeature_cycle` follows `BaseFeature` and reports the cycle only when
+  the chain actually repeats; `_pinned_subelements` detects a dress-up
+  hardcoding `EdgeNN` names and names topological naming instead, with the
+  offending edges; and when neither is confirmable the note says both are
+  possible rather than picking. **Confidently naming the wrong cause is worse
+  than naming none** — it costs the model a turn to argue with.
 - `tools_sketch._editing_rules_note()` appends the rules for changing an existing
   sketch to the **first `get_sketch` of each conversation** (keyed on
   `active_session_id()`, so "New" re-arms it). A `get_sketch` call *is* "I am
   about to edit a sketch", so it's the one moment those rules are relevant; they
   used to cost 700 always-loaded words in the prompt and then, briefly, sat in the
   file with the 0% read rate.
-- `diagnostics._partdesign_reference_note(before)` cites `partdesign-scripting.md`
-  the first time a conversation leaves a `PartDesign::Body` in the document. The
-  trigger is the **Body**, not a feature, because a Body is usually created in its
-  own call — which puts the pointer ahead of the first feature rather than after
-  it.
+- `diagnostics._partdesign_reference_note(before)` delivers
+  `_PARTDESIGN_ESSENTIALS` the first time a conversation leaves a
+  `PartDesign::Body` in the document. The trigger is the **Body**, not a feature,
+  because a Body is usually created in its own call — which puts the note ahead
+  of the first feature rather than after it. Its contents were picked from the
+  errors actually logged (`KeyError: 'XY_Plane'`, a feature object passed where
+  `newObject` wants a type string, `Tip` read as `None`, `Transformed`/
+  `SubElementNames` guessed on a pattern, `Body: object is not allowed`), not
+  from what the reference happens to cover; `partdesign-scripting.md` is cited at
+  the end for Revolution/Groove, Loft/Pipe, Hole, datums and MultiTransform.
 
 **Both the trigger and the decision not to add one were measured**, over the same
 logged sessions (33 with `run_python`, 325 calls, 9% of calls hitting a traceback):
