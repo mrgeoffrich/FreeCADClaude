@@ -42,6 +42,12 @@ from .session import (  # noqa: F401 - re-exported for chat_panel/agent_config/e
     new_session_id,
     session_dir,
 )
+from .tools_annotate import (
+    _ANNOTATE_VIEW_SCHEMA,
+    _READ_ANNOTATION_SCHEMA,
+    _run_annotate_view,
+    _run_read_annotation,
+)
 from .tools_capture import (
     _CAPTURE_USER_VIEW_SCHEMA,
     _CAPTURE_VIEW_SCHEMA,
@@ -78,6 +84,8 @@ TOOLS = {
     "view_sketch_svg": {"schema": _VIEW_SKETCH_SVG_SCHEMA, "run": _run_view_sketch_svg},
     "capture_view": {"schema": _CAPTURE_VIEW_SCHEMA, "run": _run_capture_view},
     "capture_user_view": {"schema": _CAPTURE_USER_VIEW_SCHEMA, "run": _run_capture_user_view},
+    "annotate_view": {"schema": _ANNOTATE_VIEW_SCHEMA, "run": _run_annotate_view},
+    "read_annotation": {"schema": _READ_ANNOTATION_SCHEMA, "run": _run_read_annotation},
     "crop_view": {"schema": _CROP_VIEW_SCHEMA, "run": _run_crop_view},
     "cutaway": {"schema": _CUTAWAY_SCHEMA, "run": _run_cutaway},
     "export": {"schema": _EXPORT_SCHEMA, "run": _run_export},

@@ -53,7 +53,8 @@ chat panel (GUI thread)
 
 Registry: `freecad_tools.TOOLS` = name → `{schema, run, precheck?}`. Current set:
 `get_objects`, `get_selection`, `get_sketch`, `view_sketch_svg`, `capture_view`,
-`capture_user_view`, `crop_view`, `cutaway`, `export`, `inspect_api`,
+`capture_user_view`, `crop_view`, `cutaway`, `annotate_view`, `read_annotation`,
+`export`, `inspect_api`,
 `get_diagnostics`, `run_python` (the sole document-mutating tool —
 the general Sketcher/PartDesign/Part path).
 
@@ -80,6 +81,7 @@ infra modules import nothing from `tools_*` (that's why `_ERROR_FLAGS` and
 | `tools_inspect.py` | `inspect_api`. |
 | `tools_sketch.py` | `get_sketch`, `view_sketch_svg` (+ the GeoId overlay). |
 | `tools_capture.py` | `capture_view`, `capture_user_view`, `crop_view`. |
+| `tools_annotate.py` | `annotate_view`, `read_annotation` — the draw-on-the-screenshot round trip. |
 | `tools_cutaway.py` | `cutaway` (+ clip-plane resolution). |
 | `tools_export.py` | `export`. |
 | `session.py` | Artifact folders: the per-conversation session dir, the script/step archives (`_session_subdir`/`_safe_name` build every artifact path), plus the two paths that aren't artifacts but that several modules must agree on: `PARAM_PATH` (the preferences root) and `REFS_DIR` (the bundled `references/`). Both are single-spelled here and imported by `agent_config` rather than re-declared — `agent_config` substitutes `REFS_DIR` into the prompt's `{REFS_DIR}` while the tools cite paths under it in their notes, so a second copy could drift and hand Claude a path that doesn't resolve. `active_session_id()` is how a tool remembers "already said this in this conversation" without inventing its own notion of when one starts. |
@@ -179,6 +181,25 @@ the active tab isn't a 3D view. `capture_view`/`cutaway`/`crop_view` all enter
 `render._offscreen_shot` and differ only in what they do inside it (aim the
 camera / insert the clip plane / replay the last camera and zoom); the shared
 `x_min..z_max` framing is `render._apply_extent_crop`.
+
+**Annotation round trip** (`tools_annotate.py`): `annotate_view` grabs the user's
+own view (same `GrabFramebuffer` path as `capture_user_view`), saves it under
+`<session>/annotations/`, and opens it in their image editor — then **returns
+immediately**. It must: the call runs on the GUI thread, so waiting for the
+editor to close would freeze FreeCAD for as long as the user spent drawing. The
+user draws, saves in place, says so, and `read_annotation` re-reads the file and
+returns it as an inline image.
+
+**There is deliberately no pixel diffing or colour detection.** Claude *sees* the
+returned image, so a circled boss or an arrow at an edge is read straight off the
+picture — which means the user can mark up however they like rather than matching
+a scheme the code knows how to find. What the code contributes is what a picture
+can't carry: the document, the visible objects, their world extents and the
+camera angle, recorded **at grab time** (`_last_annotation["context"]`) and
+replayed by `read_annotation`, since those facts describe the image and not
+wherever the user has since orbited to. Editor is `open -a Preview` (macOS) /
+`mspaint` (Windows) / `xdg-open` (Linux), overridable with the `AnnotateEditor`
+preference under `PARAM_PATH`.
 
 **Draw style** (`style` on both `capture_view` and `cutaway`, schema shared via
 `render._STYLE_SCHEMA_PROPS`): `shaded` (default), `xray`, `wireframe`.
