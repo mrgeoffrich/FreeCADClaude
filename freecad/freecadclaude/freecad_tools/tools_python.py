@@ -50,6 +50,13 @@ _HEAVY_SHAPE_OPS = frozenset({
     "extrude", "revolve", "makeThickness", "makeOffsetShape", "makeOffset2D",
     "makeFillet", "makeChamfer", "makeLoft", "makePipeShell", "makeSolid",
     "distToShape", "removeSplitter", "refine", "tessellate", "recompute",
+    # isInside *looks* like a cheap point test, which is exactly why it got past
+    # this list once. It isn't: FreeCAD's TopoShapePy::isInside constructs a
+    # fresh BRepClass3d_SolidClassifier per call, so it walks every face of the
+    # solid for every point -- O(faces) per sample, not O(1). Sampled under the
+    # freeze it caused: 1462 of 2206 stacks were in the classifier's constructor
+    # alone, before any classifying had happened.
+    "isInside",
 })
 
 # Trip count above which a loop of shape operations is worth stopping for. Sized
@@ -208,6 +215,13 @@ def _heavy_loop_note(code):
         "sample point, and shape.slices(dir, [d1, d2, ...]) does many planes in "
         "one go.\n"
         "  - shape.cut([a, b, c]) / .fuse([...]) take the whole list at once.\n"
+        "  - Probing for material with isInside() point by point is the slow way "
+        "to ask a question OCCT answers in one call: shape.common(Part.makeLine("
+        "a, b)) returns the material intervals along a WHOLE line as edges -- "
+        "read the endpoints off them. That is one call instead of one per "
+        "sample, and the answer is exact rather than quantised to your step "
+        "size. For a height/width profile, slice the plane instead and read the "
+        "extremes off the section wires.\n"
         "  - Recompute once after the loop, not inside it.\n\n"
         f"If the loop really is bounded and necessary, put `# {_SLOW_OK}` in the "
         "code and resend -- but warn the user first that FreeCAD will be "

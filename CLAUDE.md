@@ -469,6 +469,21 @@ and that may be fine.
     7 and 11 Z-heights; the ones that froze ran 183/245/1,206), and `# slow-ok`
     anywhere in the code skips it — a loop that must run costs one round-trip,
     which is the point.
+  - **`isInside` belongs on that heavy list even though it looks like a cheap
+    point test**, and it was missed once for exactly that reason (a session
+    froze the GUI for >5 min sampling a wall profile with it). FreeCAD's
+    `TopoShapePy::isInside` builds a fresh `BRepClass3d_SolidClassifier` on
+    *every* call, so it walks the whole solid per point: sampled under the
+    freeze, **1462 of 2206 stacks were in the classifier's constructor** before
+    any classifying happened. Measured cost is linear in face count —
+    0.06 ms @ 10 faces, 0.54 @ 130, **2.80 @ 568** — so it degrades silently as
+    the model gets real. The one-shot form is a boolean against a line:
+    `shape.common(Part.makeLine(a, b)).Edges` returns the material intervals
+    along the whole line in one call (**210×** faster than the 1,071-point scan
+    it replaced, and exact rather than quantised to the step). For a height or
+    width profile, `shape.slices(dir, [d1, …])` is one call for all planes and
+    gives every coordinate, not the few that got sampled (**9×**, and all 65
+    probed heights matched the point scan exactly).
   - The bridge's `GuiBusyTimeout` (`_GUI_CALL_TIMEOUT`, 600 s) reports the call
     as **still running**, not failed. It is not a cancellation — the call keeps
     going and still commits — so the message's job is to stop the obvious
