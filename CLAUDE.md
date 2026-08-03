@@ -326,6 +326,12 @@ project dir (so its `.claude/skills` load) else a temp dir.
   success or failure), and `captures/`/`exports/` (images/exported files). See
   the "Tools" section above for how `<session-id>` is chosen. The "Files"
   button in the chat panel opens `~/FreeCADClaude` itself (all sessions).
+- **Releasing:** see `RELEASE.md`. Short version — users install from the `main`
+  **branch** (the Addon Manager custom-repo entry and `package.xml` both pin
+  `branch="main"`), so a tag ships nothing and the GitHub release is just the
+  changelog. The step that isn't optional is bumping `<version>`/`<date>` in
+  `package.xml` in the same commit you tag: that number is what the Addon
+  Manager shows users, so a tag without it is invisible to them.
 
 ## Conventions
 
