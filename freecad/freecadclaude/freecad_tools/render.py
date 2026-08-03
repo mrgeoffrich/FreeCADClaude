@@ -15,6 +15,7 @@ cannot describe or handle the same knob differently.
 """
 
 import contextlib
+import math
 
 from .geometry import (
     _EXTENT_KEYS,
@@ -225,6 +226,35 @@ def _ortho_camera(view):
     return None
 
 
+def _screen_half_extents(cam, box):
+    """``(center, (hu, hv, hd))`` -- how wide, tall and deep world BoundBox `box`
+    is along `cam`'s own axes, i.e. its on-screen proportions.
+
+    min/max over the 8 corners gives the tight screen-aligned bound at any camera
+    orientation. Shared by the framing (_frame_camera_on_box) and the auto render
+    size (_fit_render_size) on purpose: the size we pick and the frame we set have
+    to be measuring the same box the same way, or the image is letterboxed by
+    exactly the amount they disagree.
+    """
+    import FreeCAD
+
+    right, up, fwd = _camera_basis(cam)
+    center = FreeCAD.Vector(
+        (box.XMin + box.XMax) / 2.0,
+        (box.YMin + box.YMax) / 2.0,
+        (box.ZMin + box.ZMax) / 2.0,
+    )
+    hu = hv = hd = 0.0
+    for cx in (box.XMin, box.XMax):
+        for cy in (box.YMin, box.YMax):
+            for cz in (box.ZMin, box.ZMax):
+                d = FreeCAD.Vector(cx, cy, cz) - center
+                hu = max(hu, abs(d.dot(right)))
+                hv = max(hv, abs(d.dot(up)))
+                hd = max(hd, abs(d.dot(fwd)))
+    return center, (hu, hv, hd)
+
+
 def _frame_camera_on_box(view, box, aspect, margin=1.06):
     """Aim `view`'s ORTHOGRAPHIC camera at world BoundBox `box` and scale it so
     the box fills a viewport of `aspect` (= render width/height), by writing the
@@ -246,22 +276,7 @@ def _frame_camera_on_box(view, box, aspect, margin=1.06):
         return False
     try:
         right, up, fwd = _camera_basis(cam)
-        center = FreeCAD.Vector(
-            (box.XMin + box.XMax) / 2.0,
-            (box.YMin + box.YMax) / 2.0,
-            (box.ZMin + box.ZMax) / 2.0,
-        )
-        # Half-extents of the box measured along the camera's own axes: how wide
-        # (hu), tall (hv) and deep (hd) it is on screen. min/max over the 8
-        # corners gives the tight screen-aligned bound for any orientation.
-        hu = hv = hd = 0.0
-        for cx in (box.XMin, box.XMax):
-            for cy in (box.YMin, box.YMax):
-                for cz in (box.ZMin, box.ZMax):
-                    d = FreeCAD.Vector(cx, cy, cz) - center
-                    hu = max(hu, abs(d.dot(right)))
-                    hv = max(hv, abs(d.dot(up)))
-                    hd = max(hd, abs(d.dot(fwd)))
+        center, (hu, hv, hd) = _screen_half_extents(cam, box)
         if hu <= 1e-9 and hv <= 1e-9:
             return False
         # Ortho height that contains the box both ways at the render's aspect.
@@ -284,24 +299,43 @@ def _frame_camera_on_box(view, box, aspect, margin=1.06):
         return False
 
 
-def _apply_extent_crop(view, doc, extents, aspect):
+def _framed_box(doc, keep_names, extents):
+    """The world box a capture will actually frame: the SHOWN objects, narrowed
+    by any crop axis the caller gave.
+
+    ``keep_names`` matters, and leaving it off was a real bug: an omitted crop
+    axis defaulted to the whole document's extent, so cropping x on one object
+    out of 36 blew y and z out to everything else in the file. Measured on a
+    122x6.6mm door in a document whose other parts sit near the origin: a
+    requested 63mm-wide crop rendered the door at 4.9% of the frame height,
+    jammed against the top edge -- a NARROWER crop came out worse than no crop
+    at all. The framing then reported the right extents (_shown_extents_note
+    already passed keep_set) while having framed a different box entirely.
+    """
+    base = _document_bbox(doc, names=keep_names)
+    return _crop_bbox(base, extents) if extents else base
+
+
+def _apply_extent_crop(view, doc, extents, aspect, keep_names=None):
     """Re-frame `view` on the world-space crop `extents` (from _extent_args),
-    defaulting any axis the caller omitted to the document's own extent --
-    capture_view's and cutaway's shared x_min..z_max handling.
+    defaulting any axis the caller omitted to the extent of the objects being
+    shown -- capture_view's and cutaway's shared x_min..z_max handling.
 
     Returns a warning string if the crop couldn't be honoured (in which case
     `view` is left on the full fitAll frame, so the caller still gets a usable
     image), else None.
     """
-    scene_bbox = _document_bbox(doc)
+    scene_bbox = _document_bbox(doc, names=keep_names)
     # An empty scene bbox is only fatal if the caller leaned on it for a default:
     # a fully-specified crop needs nothing from the document.
     if scene_bbox.XMin > scene_bbox.XMax and not all(k in extents for k in _EXTENT_KEYS):
         return (
-            "Warning: the document has no real geometry to crop against -- "
+            "Warning: the shown objects have no real geometry to crop against -- "
             "showing the full extent instead."
         )
-    if not _frame_camera_on_box(view, _crop_bbox(scene_bbox, extents), aspect):
+    # Via _framed_box, so the box framed here is by construction the same one
+    # _fit_render_size then measures to pick the image shape.
+    if not _frame_camera_on_box(view, _framed_box(doc, keep_names, extents), aspect):
         view.fitAll()
         return (
             "Warning: could not frame the requested crop on this build -- "
@@ -596,6 +630,17 @@ _SIZE_SCHEMA_PROPS = {
 #: edge); larger just gets downscaled again, so this is the detail sweet spot.
 _DEFAULT_WIDTH, _DEFAULT_HEIGHT = 1280, 960
 
+#: Auto-size budget: the same 1.23 MP of detail, and the same 1568px long edge
+#: past which Claude downscales anyway. Below ~2:1 the area binds and you get
+#: 1280x960; above it the long edge does.
+_PIXEL_BUDGET = _DEFAULT_WIDTH * _DEFAULT_HEIGHT
+_MAX_LONG_EDGE = 1568
+#: How far the auto size will stretch from square. A door 18x longer than it is
+#: wide would otherwise ask for a 1568x85 letterbox -- past about 4:1 the extra
+#: elongation stops buying visible detail and starts costing legibility, so the
+#: remainder is left for crop_view to zoom into.
+_MAX_AUTO_ASPECT = 4.0
+
 
 def _capture_setup(args, tool_name):
     """Validate and resolve everything capture_view and cutaway need before they
@@ -634,9 +679,59 @@ def _capture_setup(args, tool_name):
         "plan": plan,
         "width": width,
         "height": height,
+        # An explicit size is honoured as given; only a defaulted one gets
+        # reshaped to the geometry by _fit_render_size.
+        "explicit_size": "width" in args or "height" in args,
         "extents": _extent_args(args),
         "aspect": float(width) / float(height),
     }, None
+
+
+def _fit_render_size(view, doc, setup):
+    """Shape the IMAGE to the framed geometry, rather than letterboxing the
+    geometry into a fixed 4:3 image. Returns the ``(width, height)`` to save at.
+
+    A 122x6.6mm door framed correctly into 1280x960 still lands in 6.8% of the
+    image height with the rest black -- a right answer that is a useless picture,
+    and in a logged session it's what made Claude abandon looking at the part and
+    start reading it numerically instead (~1,700 Part.slice() calls, 2m46s of
+    frozen GUI). Matching the image to the object puts the same door across ~94%
+    of the width at 3x the height, for the same pixel budget.
+
+    Must run AFTER _apply_camera_plan: how wide and tall a box looks depends on
+    where the camera ended up pointing, so this reads the live camera basis
+    rather than re-deriving it from the plan, which would duplicate the
+    preset->orientation mapping and let the two drift.
+
+    Falls back to the caller's size whenever anything is unclear (explicit size,
+    no ortho camera, degenerate box, framing refused) -- the fallback is the old
+    behaviour, so this can only improve a shot or leave it alone.
+    """
+    width, height = setup["width"], setup["height"]
+    if setup["explicit_size"]:
+        return width, height
+    box = _framed_box(doc, setup["keep_set"], setup["extents"])
+    cam = _ortho_camera(view)
+    if cam is None or box.XMin > box.XMax:
+        return width, height
+    try:
+        _, (hu, hv, _) = _screen_half_extents(cam, box)
+        if hu <= 1e-9 or hv <= 1e-9:
+            return width, height
+        aspect = min(max(hu / hv, 1.0 / _MAX_AUTO_ASPECT), _MAX_AUTO_ASPECT)
+        w = min(float(_MAX_LONG_EDGE), math.sqrt(_PIXEL_BUDGET * aspect))
+        h = w / aspect
+        if h > _MAX_LONG_EDGE:  # tall-and-thin: the long edge is the height
+            h = float(_MAX_LONG_EDGE)
+            w = h * aspect
+        w, h = max(1, int(round(w))), max(1, int(round(h)))
+        # fitAll (or the crop) framed for the OLD aspect, so a size change has to
+        # re-frame or the object sits letterboxed in the new shape.
+        if not _frame_camera_on_box(view, box, float(w) / float(h)):
+            return width, height
+        return w, h
+    except Exception:  # noqa: BLE001 - any coin/API hiccup -> the asked-for size
+        return width, height
 
 
 def _measured_angles(measured, plan):

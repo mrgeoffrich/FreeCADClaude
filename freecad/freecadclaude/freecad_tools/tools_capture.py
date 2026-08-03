@@ -16,6 +16,7 @@ from .render import (
     _camera_angle_note,
     _capture_setup,
     _crop_camera_frame,
+    _fit_render_size,
     _last_capture,
     _looks_blank,
     _measured_angles,
@@ -87,10 +88,12 @@ def _run_capture_view(args):
             return err
 
         if extents:
-            warning = _apply_extent_crop(view, doc, extents, setup["aspect"])
+            warning = _apply_extent_crop(view, doc, extents, setup["aspect"], keep_set)
             if warning:
                 warnings.append(warning)
 
+        # Last, so it reshapes whatever frame we ended up with (fitAll or crop).
+        width, height = _fit_render_size(view, doc, setup)
         _save_view_png(view, png_path, width, height)
 
         # Don't silently hand back a black frame: if it's essentially empty, tell

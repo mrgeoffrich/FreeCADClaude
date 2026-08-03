@@ -11,6 +11,7 @@ from .render import (
     _SIZE_SCHEMA_PROPS,
     _apply_camera_plan,
     _apply_extent_crop,
+    _fit_render_size,
     _camera_angle_note,
     _capture_setup,
     _measured_angles,
@@ -229,7 +230,7 @@ def _run_cutaway(args):
             return err
 
         if extents:
-            crop_warning = _apply_extent_crop(view, doc, extents, setup["aspect"])
+            crop_warning = _apply_extent_crop(view, doc, extents, setup["aspect"], keep_set)
 
         # Direction is unchanged by fitAll, so this matches the saved image.
         measured = _orbit_angles_from_view(view)
@@ -257,6 +258,8 @@ def _run_cutaway(args):
                 "the opposite side (e.g. the opposite 'view' preset, or azimuth+180)."
             )
 
+        # Last, so it reshapes whatever frame we ended up with (fitAll or crop).
+        width, height = _fit_render_size(view, doc, setup)
         _save_view_png(view, png_path, width, height)
 
     text = f"Cutaway at {clip_desc}, saved to {png_path}."

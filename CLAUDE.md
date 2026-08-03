@@ -179,6 +179,32 @@ the active tab isn't a 3D view. `capture_view`/`cutaway`/`crop_view` all enter
 `render._offscreen_shot` and differ only in what they do inside it (aim the
 camera / insert the clip plane / replay the last camera and zoom); the shared
 `x_min..z_max` framing is `render._apply_extent_crop`.
+
+**A crop defaults its omitted axes to the SHOWN objects, and the image is shaped
+to the geometry** — both learned from one session where Claude could not get a
+usable picture of a 122×6.6mm door and gave up on looking at it entirely
+(*"raster crops aren't helping on an 18:1 strip; I'll analyse the geometry
+numerically instead"*), which is what led to the ~1,700-`slice()` call that froze
+the GUI for 2m46s. Two separate causes:
+- `_apply_extent_crop` called `_document_bbox(doc)` with no `names`, so an axis
+  the caller didn't specify defaulted to the **whole document** — cropping x on
+  one object out of 36 blew y and z out to everything else in the file. The door
+  (Y 114..120.6) got framed against the document's Y −6.6..120.6, landing at 4.9%
+  of frame height jammed on the top edge: a *narrower* crop rendered worse than
+  no crop. Predicted-vs-observed framing matched to within 1% on both axes, and
+  `_shown_extents_note` had been reporting the right box while the camera framed
+  a different one. `_framed_box(doc, keep_names, extents)` is now the single
+  definition of "the box a capture frames", used by both the framing and the
+  auto-size so they cannot disagree.
+- Even framed correctly, an 18:1 part in a fixed 4:3 image is 6.8% geometry and
+  ~90% black. `render._fit_render_size` now shapes the *image* to the box's
+  on-screen aspect (`_screen_half_extents` off the live camera basis — it must
+  run after `_apply_camera_plan`, since how wide a box looks depends on where the
+  camera ended up). Same 1.23 MP budget and 1568px long-edge ceiling, clamped to
+  `_MAX_AUTO_ASPECT` 4:1; 4:3 input still yields exactly 1280×960, so ordinary
+  parts are untouched. An explicit `width`/`height` disables it, and every
+  unclear case (no ortho camera, degenerate box, framing refused) falls back to
+  the old size — it can only improve a shot or leave it alone.
 `view_sketch_svg` (exact SVG; for
 3D pass `view=front/top/...` → `TechDraw.projectToSVG` orthographic) is for
 reasoning about exact coordinates as text, not for looking at the shape — its
