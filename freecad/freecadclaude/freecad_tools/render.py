@@ -48,7 +48,28 @@ _VIEW_PREF_PATH = "User parameter:BaseApp/Preferences/View"
 #: grey, which is low-contrast on white -- a black backdrop makes the part's
 #: silhouette and shading read far more clearly for the vision model. (The SVG
 #: path keeps its white background: that's black line-art, not shaded geometry.)
-_CAPTURE_BG = "Black"
+#: Render background. Measured against the alternatives on a real part: a slate
+#: blue-grey separates from FreeCAD's default shape grey by a colour distance of
+#: 354 (black managed 350, white 189), so it gives _looks_blank the widest margin
+#: AND -- the reason it beats black -- a through-slot or bore reads unmistakably
+#: as "background seen through the part" instead of as another dark face.
+_CAPTURE_BG = "#3A4A5A"
+
+#: Multisampling for the offscreen render. saveImage takes a 6th `samples`
+#: argument that the addon never used to pass, so every capture was rendered with
+#: NO anti-aliasing (the AntiAliasing preference is 0 by default too). Measured on
+#: one iso view of a real part: samples 0 -> 38 unique colours and 97% of edges a
+#: hard 1px step; samples 8 -> 212 colours and 6%. 16 renders identically to 8 on
+#: this GL stack, so 8 is the ceiling worth asking for.
+_MSAA_SAMPLES = 8
+
+#: Appearance used for the shot: a pale body so the near-black edges actually
+#: contrast against it, and a definite edge width. FreeCAD's default shape grey
+#: (0.447) sits too close to its default edge colour (0.098) to read as an
+#: outline at capture sizes.
+_SHOT_DIFFUSE = (0.82, 0.84, 0.87, 0.0)
+_SHOT_EDGE_COLOR = (0.0, 0.0, 0.0, 0.0)
+_SHOT_LINE_WIDTH = 2.0
 
 
 def _mdi_subwindows():
@@ -149,6 +170,84 @@ def _close_offscreen_view(subwindow, prev_view=None):
             pass
 
 
+def _default_shape_rgb():
+    """FreeCAD's configured default shape colour as an (r, g, b) 0..1 triple."""
+    import FreeCAD
+
+    raw = FreeCAD.ParamGet(_VIEW_PREF_PATH).GetUnsigned("DefaultShapeColor", 3435973887)
+    return (((raw >> 24) & 0xFF) / 255.0,
+            ((raw >> 16) & 0xFF) / 255.0,
+            ((raw >> 8) & 0xFF) / 255.0)
+
+
+def _set_diffuse(view_object, rgba):
+    """Write one diffuse colour onto a ViewObject's ShapeAppearance material.
+
+    ShapeAppearance is a tuple of materials; mutating a member in place doesn't
+    stick, so the whole tuple has to be reassigned.
+    """
+    materials = view_object.ShapeAppearance
+    material = materials[0]
+    material.DiffuseColor = rgba
+    view_object.ShapeAppearance = (material,) + tuple(materials[1:])
+
+
+@contextlib.contextmanager
+def _shot_appearance(doc, keep_names):
+    """Give the shot a pale body with dark, definite edges -- then put the
+    document's own appearance back.
+
+    ONLY objects still on FreeCAD's default shape colour are touched. That
+    restriction is the whole design: a user who has colour-coded an assembly is
+    carrying real information in those colours, and flattening them to grey to
+    make a prettier picture would destroy the thing the picture is for. On one
+    real document that is 22 objects normalised while the gold wall, the red/
+    green/blue datum axes and the blue sketches keep their meaning.
+
+    Restores on every exit path, like the visibility isolation it sits beside.
+    """
+    default = _default_shape_rgb()
+    saved = []
+    try:
+        for obj in doc.Objects:
+            if obj.Name not in keep_names:
+                continue
+            view_object = getattr(obj, "ViewObject", None)
+            if view_object is None:
+                continue
+            props = view_object.PropertiesList
+            if "ShapeAppearance" not in props:
+                continue
+            try:
+                diffuse = view_object.ShapeAppearance[0].DiffuseColor
+            except Exception:  # noqa: BLE001
+                continue
+            if any(abs(a - b) > 0.02 for a, b in zip(diffuse[:3], default)):
+                continue  # user-chosen colour: leave it alone
+            line_width = getattr(view_object, "LineWidth", None)
+            line_color = getattr(view_object, "LineColor", None)
+            saved.append((view_object, tuple(diffuse), line_width, line_color))
+            try:
+                _set_diffuse(view_object, _SHOT_DIFFUSE)
+                if line_width is not None:
+                    view_object.LineWidth = _SHOT_LINE_WIDTH
+                if line_color is not None:
+                    view_object.LineColor = _SHOT_EDGE_COLOR
+            except Exception:  # noqa: BLE001 - leave it as it was
+                pass
+        yield
+    finally:
+        for view_object, diffuse, line_width, line_color in saved:
+            try:
+                _set_diffuse(view_object, diffuse)
+                if line_width is not None:
+                    view_object.LineWidth = line_width
+                if line_color is not None:
+                    view_object.LineColor = line_color
+            except Exception:  # noqa: BLE001
+                pass
+
+
 @contextlib.contextmanager
 def _offscreen_shot(doc, keep_names, width, height):
     """The whole scaffolding around a raster capture, entered by all three
@@ -183,7 +282,8 @@ def _offscreen_shot(doc, keep_names, width, height):
         saved_sel = _suspend_selection(doc)  # drop selection highlight for the shot
         if subwindow is not None:
             subwindow.resize(width, height)
-        yield view
+        with _shot_appearance(doc, keep_names):
+            yield view
     finally:
         _restore_visibility(saved)
         _restore_selection(saved_sel)
@@ -376,15 +476,26 @@ def _crop_camera_frame(view, x1, y1, x2, y2, aspect):
 
 def _save_view_png(view, png_path, width, height):
     """Render `view` to `png_path` at width x height on the _CAPTURE_BG
-    background, forcing the FBO save method (and restoring the user's) -- the
-    one place capture_view/crop_view/cutaway actually write an image."""
+    background, multisampled, forcing the FBO save method (and restoring the
+    user's) -- the one place capture_view/crop_view/cutaway actually write an
+    image.
+
+    FramebufferObject matters: it renders offscreen at exactly the size asked
+    for, where GrabFramebuffer would scale up whatever the throwaway widget
+    happened to realize at.
+    """
     import FreeCAD
 
     params = FreeCAD.ParamGet(_VIEW_PREF_PATH)
     prev_method = params.GetString("SavePicture", "")
     params.SetString("SavePicture", "FramebufferObject")
     try:
-        view.saveImage(png_path, width, height, _CAPTURE_BG)
+        try:
+            view.saveImage(png_path, width, height, _CAPTURE_BG, "", _MSAA_SAMPLES)
+        except Exception:  # noqa: BLE001
+            # Builds without the samples argument (or a GL stack that refuses the
+            # count) still take the 4-arg form: an aliased image beats no image.
+            view.saveImage(png_path, width, height, _CAPTURE_BG)
     finally:
         params.SetString("SavePicture", prev_method)
 

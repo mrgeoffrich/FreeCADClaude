@@ -48,18 +48,45 @@ def _crop_bbox(base_bbox, extents):
 _MAX_SANE_EXTENT = 1e6
 
 
+def _contained_by_population(obj, subset):
+    """True when `obj`'s container is itself part of the population being
+    measured -- so the container's own shape already accounts for it.
+
+    Carrying a Shape is not the same as being DRAWN. A PartDesign Body's
+    non-tip features and its in-body sketches all have Shapes and report
+    Visibility True, but only the Body's tip renders; worse, those child shapes
+    sit wherever they were authored. On one real part that dragged the union out
+    to X -8.3..149.3 when the drawn solid was X 31.8..149.3 -- enough to frame a
+    capture with the part shoved into a corner. Skipping children of a counted
+    container is what makes this measure what's actually on screen.
+    """
+    try:
+        parent = obj.getParentGeoFeatureGroup()
+    except Exception:  # noqa: BLE001 - no parent API on this object
+        return False
+    if parent is None:
+        return False
+    return True if subset is None else parent.Name in subset
+
+
 def _document_bbox(doc, names=None):
     """Union BoundBox of every real (finite, Shape-bearing) object in `doc`
     -- the same population fitAll() frames -- used to default any crop axis
     the caller didn't specify for capture_view. Pass `names` (a set/iterable of
     internal Names) to restrict the union to just those objects, e.g. so a
-    cutaway's default cut bisects the shown objects, not the whole scene."""
+    cutaway's default cut bisects the shown objects, not the whole scene.
+
+    Objects held inside another counted object are skipped -- see
+    _contained_by_population for why that's the difference between framing the
+    geometry and framing a box it sits in the corner of."""
     import FreeCAD
 
     subset = set(names) if names is not None else None
     box = FreeCAD.BoundBox()
     for obj in doc.Objects:
         if subset is not None and obj.Name not in subset:
+            continue
+        if _contained_by_population(obj, subset):
             continue
         shape = getattr(obj, "Shape", None)
         if shape is None or shape.isNull():
