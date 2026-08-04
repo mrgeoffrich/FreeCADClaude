@@ -58,9 +58,12 @@ from .tools_capture import (
 )
 from .tools_cutaway import _CUTAWAY_SCHEMA, _run_cutaway
 from .tools_document import (  # _REPORTED_PROPS re-exported for eval_runner
+    _DESCRIBE_OBJECTS_SCHEMA,
     _GET_OBJECTS_SCHEMA,
     _GET_SELECTION_SCHEMA,
     _REPORTED_PROPS,  # noqa: F401
+    _precheck_describe_objects,
+    _run_describe_objects,
     _run_get_objects,
     _run_get_selection,
 )
@@ -79,6 +82,11 @@ from .tools_sketch import (
 #: the tool itself; a non-empty return is relayed to Claude instead of running.
 TOOLS = {
     "get_objects": {"schema": _GET_OBJECTS_SCHEMA, "run": _run_get_objects},
+    "describe_objects": {
+        "schema": _DESCRIBE_OBJECTS_SCHEMA,
+        "run": _run_describe_objects,
+        "precheck": _precheck_describe_objects,
+    },
     "get_selection": {"schema": _GET_SELECTION_SCHEMA, "run": _run_get_selection},
     "get_sketch": {"schema": _GET_SKETCH_SCHEMA, "run": _run_get_sketch},
     "view_sketch_svg": {"schema": _VIEW_SKETCH_SVG_SCHEMA, "run": _run_view_sketch_svg},

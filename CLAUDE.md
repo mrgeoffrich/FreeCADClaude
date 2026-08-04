@@ -52,7 +52,8 @@ chat panel (GUI thread)
 ## Tools
 
 Registry: `freecad_tools.TOOLS` = name → `{schema, run, precheck?}`. Current set:
-`get_objects`, `get_selection`, `get_sketch`, `view_sketch_svg`, `capture_view`,
+`get_objects`, `describe_objects`, `get_selection`, `get_sketch`,
+`view_sketch_svg`, `capture_view`,
 `capture_user_view`, `crop_view`, `cutaway`, `annotate_view`, `read_annotation`,
 `export`, `inspect_api`,
 `get_diagnostics`, `run_python` (the sole document-mutating tool —
@@ -76,7 +77,7 @@ infra modules import nothing from `tools_*` (that's why `_ERROR_FLAGS` and
 | Module | Role |
 |---|---|
 | `__init__.py` | The `TOOLS` registry, `list_schemas()`, and the facade re-exports. |
-| `tools_document.py` | `get_objects`, `get_selection`. `get_objects` also returns a `bodies` section — each `PartDesign::Body`'s **tip chain**, base-first (see `diagnostics._body_states`). That's the only place a Body's build order is visible, and it's in the tool the model already calls first; a feature missing from the chain contributes nothing however healthy it looks. Costs ~518 bytes of a 15.7 KB payload on a 68-object/3-body document. |
+| `tools_document.py` | `get_objects` (the shallow survey), `describe_objects` (the deep read on named objects), `get_selection` — see "The survey/detail split" below. `get_objects` also returns a `bodies` section — each `PartDesign::Body`'s **tip chain**, base-first (see `diagnostics._body_states`). That's the only place a Body's build order is visible, and it's in the tool the model already calls first; a feature missing from the chain contributes nothing however healthy it looks. Costs ~475 bytes of a 7.3 KB payload on a 68-object/3-body document. |
 | `tools_python.py` | `run_python` (+ its syntax precheck). |
 | `tools_inspect.py` | `inspect_api`. |
 | `tools_sketch.py` | `get_sketch`, `view_sketch_svg` (+ the GeoId overlay). |
@@ -124,6 +125,65 @@ authors files on disk but never touches the live document. `Glob`/`Grep` used to
 be gated behind a configured skills project — they're now always-on (decoupled
 from `_SKILL_TOOLS`, which is now just `Skill`), since file search is a general
 capability, not a skill-only one.
+
+**The survey/detail split** (`get_objects` → `describe_objects`): `get_objects`
+used to carry the detail for *every* object at once. Measured over the 34 logged
+calls it came to **15.9 KB a call** (up to 31 KB) — and it is called about **once
+per session**, so it is not a frequency problem, it is one very expensive payload.
+Every trim below was checked against what the logged sessions actually referred to
+again afterwards, not guessed:
+
+- **Origin planes and axes were 38% of the payload and carry no information.**
+  592 of 1,419 logged objects are the `App::Origin`/`App::Plane`/`App::Line`/
+  `App::Point` set every Body and Std Part gets; every entry is identical
+  boilerplate whose bounding box is literally **±1e100**. But the *names* matter —
+  a multi-body document numbers them (`XY_Plane002`) and picking the wrong suffix
+  is a logged error (`KeyError: 'XY_Plane'`) — and the flat list never said which
+  Body owned which. So they're collapsed onto their owner's entry as `origin`
+  (`_origin_owners` walks each `App::Origin`'s `OriginFeatures` rather than
+  guessing from names): fewer bytes *and* a mapping that wasn't there before.
+  `_ORIGIN_NOTE` explains the resulting gap between `object_count` and the
+  entries, because an unexplained gap reads as missing objects and costs exactly
+  the exploratory `run_python` this tool exists to prevent.
+- **Per-feature bounding boxes are dead weight; sketch ones are not.** Of the
+  non-integer bbox numbers that only an in-body feature carried, **505 were never
+  referred to again and 82 were — 76 of those 82 from sketches**. In-body feature
+  boxes are also 29% exact duplicates of each other (a chain all bounding the same
+  growing solid, which the Body's own entry reports). So `_reported_bbox` skips
+  anything derived from `PartDesign::Feature` and keeps everything else.
+- `position` was `[0,0,0]` on **82%** of objects, `label` usually repeats `name`,
+  and `visible` only matters when true — all three are now conditional.
+- Output is **compact JSON** (`separators=(",", ":")`), not `indent=2`: the
+  indentation alone was a third of the payload, and this is a bulk list Claude
+  reads rather than parses.
+
+Net: **72% smaller** on real saved documents (a 68-object/3-body model goes 25.0 KB
+→ 7.3 KB), and `get_objects` itself runs in ~2.4 ms.
+
+`describe_objects(names=[...])` is where the detail went, and it is deliberately
+allowed to be slow and large — you name the handful you care about. It answers the
+object-level half of what `run_python` was being used for: **42% of the 499 logged
+`run_python` calls are pure read-only inspection** (no mutation at all), and the
+object-level themes were bbox 92, volume 37, chain/tip 29, validity 17, properties
+15. So it returns full placement *including rotation*, the world bbox, shape
+metrics (solids/faces/edges/vertexes, volume, area, centre of mass, `isValid`),
+dimensions, attachment (`AttachmentSupport`/`MapMode`/`AttachmentOffset`),
+dependency links **both ways** (`depends_on` walked generically off
+`PropertiesList`+`getTypeIdOfProperty`, so an unforeseen feature type still
+reports its inputs; `used_by` from `InList`), a Body's tip and chain, and a
+sketch's DoF/solver state/wire closure. The face- and edge-level querying that
+made up the other half of those calls stays in `run_python` — it's query-shaped,
+not enumerable.
+
+Two things worth not breaking. `_dependency_links` skips `Hidden` properties and
+anything starting with `_`: `_Body` is FreeCAD's own bookkeeping and would report
+a feature's containing Body as one of its *inputs*, which reads as a cycle.
+And `_extra_metrics` (area + centre of mass) is a **separate** hash-keyed cache
+from `diagnostics._shape_metrics` on purpose — that one feeds the fingerprint diff
+running twice on every `run_python` call on the GUI thread, and two more GProp
+reads there would make every mutating call pay for something only this tool wants.
+Caching them here took a 9-object describe from 173 ms to 2 ms on a repeat (361 ms
+cold, which is the honest price of `Volume`/`Area`/`isValid` on real solids).
 
 **Sketch editing** (`get_sketch`, read-only): every Sketcher mutation is addressed
 by **GeoId** (`moveGeometry`, `addConstraint`) or **constraint index** (`setDatum`,
