@@ -63,6 +63,20 @@ CASES = {
         ),
         "timeout": 600,
     },
+    # The regression case for the tip-chain work. Unlike every case above it
+    # EDITS AN EXISTING MODEL, which is where the chain hazards live: this exact
+    # request, on this exact document, is the session where one
+    # `SoleFillet.Base = (FootFlareL, ...)` silently dropped two features out of
+    # the Body's tip chain and cost the following 27 run_python calls. Needs -d
+    # (the document isn't in-tree); the SOURCE is never written to -- run.py
+    # stages a copy per run.
+    "feet-flare": {
+        "prompt": (
+            "Make the bottom of the table's feet 50% larger in the Y direction so "
+            "it's more stable, with a nice loft up into the leg. Do not ask questions."
+        ),
+        "timeout": 900,
+    },
 }
 
 
@@ -103,19 +117,40 @@ def parse_args():
                    help="PASS/FAIL regex matched against the result JSON")
     p.add_argument("-c", "--case", default=None, choices=list(CASES),
                    help="a named in-tree case (sets the prompt/timeout)")
+    p.add_argument("-d", "--doc", default=None,
+                   help="an existing .FCStd to edit instead of starting empty; it is "
+                        "COPIED per run, so the source file is never modified")
     p.add_argument("-l", "--list", action="store_true", help="list named cases and exit")
     return p.parse_args()
 
 
 def resolve_prompt_timeout(args):
-    """Apply precedence: explicit -p/-t > case value > built-in default."""
+    """Apply precedence: explicit -p/-t/-d > case value > built-in default."""
     case = CASES.get(args.case) if args.case else {}
     prompt = args.prompt if args.prompt is not None else case.get("prompt", DEFAULT_PROMPT)
     if args.timeout is not None:
         timeout = args.timeout
     else:
         timeout = case.get("timeout", DEFAULT_TIMEOUT)
-    return prompt, timeout
+    doc = args.doc if args.doc is not None else case.get("doc")
+    return prompt, timeout, doc
+
+
+def stage_document(src):
+    """Copy the fixture to a per-run working file and return its path.
+
+    Never let the eval open the source: the agent can save, and a run that
+    half-breaks a model would poison every later run (and, for a case pointed at
+    a real design, the user's own file). Each run therefore starts from a
+    byte-identical copy, which is also what makes repeat runs comparable.
+    """
+    if not os.path.isfile(src):
+        print("No such document: %s" % src, file=sys.stderr)
+        return None
+    dst = os.path.join(tempfile.gettempdir(),
+                       "freecadclaude_eval_" + os.path.basename(src))
+    shutil.copyfile(src, dst)
+    return dst
 
 
 def find_session():
@@ -158,12 +193,18 @@ def main():
         print("cases: %s" % ", ".join(CASES))
         return 0
 
-    prompt, timeout = resolve_prompt_timeout(args)
+    prompt, timeout, doc = resolve_prompt_timeout(args)
 
     freecad = find_freecad()
     if not freecad:
         print("Could not find the FreeCAD GUI binary.", file=sys.stderr)
         return 2
+
+    staged = None
+    if doc:
+        staged = stage_document(os.path.expanduser(doc))
+        if not staged:
+            return 2
 
     result = os.path.join(tempfile.gettempdir(), "freecadclaude_eval_result.json")
     log = os.path.splitext(result)[0] + ".log"
@@ -177,10 +218,14 @@ def main():
     env["FREECADCLAUDE_EVAL_PROMPT"] = prompt
     env["FREECADCLAUDE_EVAL_RESULT"] = result
     env["FREECADCLAUDE_EVAL_TIMEOUT"] = str(timeout)
+    if staged:
+        env["FREECADCLAUDE_EVAL_DOC"] = staged
 
     print("Launching FreeCAD eval...")
     print("  binary: %s" % freecad)
     print("  prompt: %s" % prompt)
+    if staged:
+        print("  doc:    %s  (copy of %s)" % (staged, doc))
 
     # Launch the binary DIRECTLY, in the background. FreeCAD writes the result and
     # quits itself; we poll for the file and only kill it if it overruns. Its

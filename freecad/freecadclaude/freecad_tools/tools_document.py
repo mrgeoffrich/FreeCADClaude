@@ -2,7 +2,7 @@
 """Read-only document probes: get_objects (what exists) and get_selection
 (what the user is pointing at)."""
 
-from .diagnostics import _ERROR_FLAGS
+from .diagnostics import _body_states, _ERROR_FLAGS
 from .geometry import _bbox_dict, _document_bbox
 from .gui_state import _active_edit_summary
 
@@ -15,10 +15,51 @@ _GET_OBJECTS_SCHEMA = {
         "(as JSON). Call this before modifying or referring to existing "
         "geometry so you know what's there -- the bounding boxes are also the "
         "quickest way to find x_min/x_max/y_min/y_max/z_min/z_max values for "
-        "capture_view/view_sketch_svg's crop params."
+        "capture_view/view_sketch_svg's crop params. For a PartDesign document "
+        "it also returns each Body's 'chain': the features that actually build "
+        "its shape, in order. Read that before editing an existing Body -- it "
+        "is the only place the build order is visible, and a feature missing "
+        "from it contributes nothing however healthy it looks."
     ),
     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
 }
+
+#: Spelled out only when a Body actually has an off-chain feature, which measured
+#: across 58 real bodies is never unless something went wrong -- so the common
+#: case costs nothing and the broken one arrives explained.
+_OFF_CHAIN_NOTE = (
+    "These solid features sit in the Body but nothing between them and the Tip "
+    "references them, so they contribute NOTHING to its shape -- they still "
+    "recompute cleanly on their own branch, which is why no error mentions them. "
+    "Either re-link them into the chain via BaseFeature, or delete them."
+)
+
+#: With no Tip there is no chain at all, so every feature lands off it -- a
+#: different fault from a side branch, and _OFF_CHAIN_NOTE's advice (re-link via
+#: BaseFeature) would be the wrong repair.
+_NO_TIP_NOTE = (
+    "This Body has no Tip, so it builds NO shape and every feature below is "
+    "inert. Set body.Tip to whichever feature should be last -- deleting the tip "
+    "feature with doc.removeObject does not move the Tip back on its own."
+)
+
+
+def _body_chains(doc):
+    """Per-Body build order for get_objects, plus anything that fell off it."""
+    bodies = []
+    for name, st in _body_states(doc).items():
+        entry = {"name": name, "label": st["label"], "tip": st["tip"],
+                 "chain": st["chain"]}
+        if st["orphans"]:
+            entry["not_in_chain"] = st["orphans"]
+            entry["not_in_chain_note"] = _NO_TIP_NOTE if not st["tip"] else _OFF_CHAIN_NOTE
+        if st["after_tip"]:
+            # Ordinary "Tip moved back to edit an earlier feature", not breakage.
+            entry["after_tip"] = st["after_tip"]
+        if st["cycle"]:
+            entry["basefeature_cycle"] = True
+        bodies.append(entry)
+    return bodies
 
 # Properties worth reporting when present (most are FreeCAD Quantities).
 _REPORTED_PROPS = ("Length", "Width", "Height", "Radius", "Radius1", "Radius2", "Angle")
@@ -67,6 +108,9 @@ def _run_get_objects(args):
         objects.append(info)
 
     result = {"document": doc.Label, "object_count": len(objects), "objects": objects}
+    bodies = _body_chains(doc)
+    if bodies:
+        result["bodies"] = bodies
     scene_bbox = _document_bbox(doc)
     if scene_bbox.XMin <= scene_bbox.XMax:
         result["bounding_box"] = _bbox_dict(scene_bbox)

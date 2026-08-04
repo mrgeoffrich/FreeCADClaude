@@ -40,6 +40,92 @@ def _solver_constraint_indices(values):
     return out
 
 
+# ---- the Body's feature chain ----------------------------------------------
+# A PartDesign Body's shape is the run of solid features linked tip->base by
+# BaseFeature. A feature can sit in the Body, recompute cleanly, report a
+# perfectly good shape of its own -- and contribute NOTHING, because the chain no
+# longer runs through it. Nothing else surfaces that: it has no error state, and
+# the volume diff only looks at features whose own contribution moved.
+#
+# ShapeBinder/SubShapeBinder derive from Part::Feature, not PartDesign::Feature
+# (FreeCAD 1.1, ShapeBinder.h:46,89), so the filter below already excludes the
+# reference geometry that legitimately lives in a Body outside the chain.
+# Measured over 58 bodies in real documents: zero features off-chain for any
+# reason other than a deliberately moved-back Tip, which is classified apart.
+
+
+def _is_solid_feature(obj):
+    """True for the features that belong in a Body's tip chain."""
+    try:
+        return bool(obj.isDerivedFrom("PartDesign::Feature"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _walk_base_chain(obj, stop=None):
+    """``(names, cycle)`` walking BaseFeature from ``obj`` inclusive, tip-first.
+
+    Stops early -- with the name included -- on ``stop``, which is how a feature
+    is tested for sitting downstream of the Tip. ``cycle`` is True when the walk
+    revisits a feature: the actual DAG cycle, checked rather than inferred.
+    """
+    names, seen, cur = [], set(), obj
+    while cur is not None:
+        name = getattr(cur, "Name", None)
+        if name is None:
+            break
+        if name in seen:
+            return names, True
+        seen.add(name)
+        names.append(name)
+        if stop is not None and name == stop:
+            break
+        try:
+            cur = getattr(cur, "BaseFeature", None)
+        except Exception:  # noqa: BLE001 - a deleted/odd object is not a cycle
+            break
+    return names, False
+
+
+def _body_states(doc):
+    """{Name: {label, tip, chain, orphans, after_tip, cycle}} for every Body.
+
+    ``chain`` is the solid features that actually reach the Tip, base-first --
+    the order they build in. ``orphans`` are solid features in the Body the chain
+    never reaches AND that aren't downstream of the Tip either: a genuine side
+    branch, contributing nothing. ``after_tip`` are the ones that ARE downstream
+    of the Tip -- the ordinary "Tip moved back to edit an earlier feature" state,
+    kept apart so it reads as context rather than as breakage.
+    """
+    states = {}
+    if doc is None:
+        return states
+    for body in doc.Objects:
+        try:
+            if (getattr(body, "TypeId", "") or "") != "PartDesign::Body":
+                continue
+            tip_name = getattr(getattr(body, "Tip", None), "Name", None)
+            chain, cycle = _walk_base_chain(getattr(body, "Tip", None))
+            chain.reverse()  # base -> tip: the order they build in
+            in_chain = set(chain)
+            orphans, after_tip = [], []
+            for member in getattr(body, "Group", None) or []:
+                name = getattr(member, "Name", None)
+                if name is None or name in in_chain or not _is_solid_feature(member):
+                    continue
+                reached, member_cycle = _walk_base_chain(member, stop=tip_name)
+                cycle = cycle or member_cycle
+                downstream = bool(tip_name) and tip_name in reached
+                (after_tip if downstream else orphans).append(name)
+            states[body.Name] = {
+                "label": body.Label, "tip": tip_name, "chain": chain,
+                "orphans": orphans, "after_tip": after_tip, "cycle": cycle,
+            }
+        except Exception:  # noqa: BLE001
+            continue
+    return states
+
+
 # ---- recompute diagnostics -------------------------------------------------
 # Names already summarised, so a persistently-broken feature isn't re-announced
 # on every subsequent tool call.
@@ -107,20 +193,7 @@ def _on_basefeature_cycle(obj):
     This is the actual DAG cycle, checked rather than inferred. Cheap: the chain
     is a handful of links and it stops the moment it repeats itself.
     """
-    seen = set()
-    cur = obj
-    while cur is not None:
-        name = getattr(cur, "Name", None)
-        if name is None:
-            return False
-        if name in seen:
-            return True
-        seen.add(name)
-        try:
-            cur = getattr(cur, "BaseFeature", None)
-        except Exception:  # noqa: BLE001 - a deleted/odd object is not a cycle
-            return False
-    return False
+    return _walk_base_chain(obj)[1]
 
 
 def _pinned_subelements(obj):
@@ -234,20 +307,74 @@ def _is_subtractive_feature(obj):
     return tid.startswith("PartDesign::") and any(m in tid for m in _SUBTRACTIVE_MARKERS)
 
 
+#: Measured shape facts, keyed by (object name, OCCT shape hash). Sound to cache
+#: because they are a pure function of the shape: a rebuilt shape gets a new hash
+#: and therefore misses. Keyed on the name as well as the hash so a hash
+#: collision can't hand one object another's numbers.
+#:
+#: This is what makes the richer snapshot cheaper than the old thin one. Measured
+#: on a 10-feature chain: hashing the whole chain is 0.03 ms, against 99 ms to
+#: read Volume/Solids and 51 ms to check validity. A typical call rebuilds 1-3
+#: features of 30, so everything else is a cache hit -- and note the ordering
+#: that follows, Volume being TWICE the cost of isValid(): validity was never the
+#: expensive part, we were just already paying more for less.
+_shape_metrics_cache = {}
+_METRICS_CACHE_CAP = 512
+
+
+def _shape_metrics(name, shape):
+    """Volume/topology counts/bbox/validity for ``shape``, cached by its hash."""
+    key = None
+    try:
+        key = (name, shape.hashCode())
+        hit = _shape_metrics_cache.get(key)
+        if hit is not None:
+            return hit
+    except Exception:  # noqa: BLE001 - no usable hash: just measure it
+        key = None
+    try:
+        bb = shape.BoundBox
+        metrics = {
+            "volume": shape.Volume,
+            "solids": len(shape.Solids),
+            "faces": len(shape.Faces),
+            "edges": len(shape.Edges),
+            "vertexes": len(shape.Vertexes),
+            "bbox": tuple(round(v, 4) for v in (bb.XMin, bb.XMax, bb.YMin,
+                                                bb.YMax, bb.ZMin, bb.ZMax)),
+            "valid": bool(shape.isValid()),
+        }
+    except Exception:  # noqa: BLE001
+        return None
+    if key is not None:
+        if len(_shape_metrics_cache) >= _METRICS_CACHE_CAP:
+            _shape_metrics_cache.clear()  # bounded; a cold cache only costs a re-measure
+        _shape_metrics_cache[key] = metrics
+    return metrics
+
+
 def _feature_states(doc):
-    """{Name: {label, typeid, contribution, new_solids, old_solids}} for every
-    PartDesign SOLID feature (Pad/Pocket/Revolution/.../Fillet/pattern -- anything
-    derived from PartDesign::Feature, which excludes the Body container, datums
-    and sketches).
+    """{Name: {label, typeid, contribution, old_solids, new_solids, faces, edges,
+    vertexes, bbox, valid}} for every PartDesign SOLID feature (Pad/Pocket/
+    Revolution/.../Fillet/pattern -- anything derived from PartDesign::Feature,
+    which excludes the Body container, datums and sketches).
 
     ``contribution`` is what the feature itself added (+) or removed (-) from the
     running solid: its Shape.Volume minus its BaseFeature's (0 for the body's
     first feature). ``old_solids``/``new_solids`` are the disconnected-solid count
-    before and after it. Best-effort per object; anything unreadable is skipped.
+    before and after it.
+
+    The rest is the shape FINGERPRINT, and it exists because volume alone is a
+    lossy way to ask "did this change": a feature that was re-topologised, moved,
+    or left invalid at constant volume was invisible to the old diff. Topology
+    counts and the bbox close that; ``valid`` closes the case where the shape is
+    geometrically broken while every other number looks right. Best-effort per
+    object; anything unreadable is skipped.
     """
     states = {}
     if doc is None:
         return states
+    measured = {}
     for obj in doc.Objects:
         try:
             if not obj.isDerivedFrom("PartDesign::Feature"):
@@ -257,22 +384,26 @@ def _feature_states(doc):
         shape = getattr(obj, "Shape", None)
         if shape is None or shape.isNull():
             continue
-        try:
-            new_solids, vol = len(shape.Solids), shape.Volume
-        except Exception:  # noqa: BLE001
-            continue
-        base_shape = getattr(getattr(obj, "BaseFeature", None), "Shape", None)
-        if base_shape is not None and not base_shape.isNull():
-            try:
-                base_vol, old_solids = base_shape.Volume, len(base_shape.Solids)
-            except Exception:  # noqa: BLE001
-                base_vol, old_solids = 0.0, 0
-        else:
-            base_vol, old_solids = 0.0, 0
-        states[obj.Name] = {
+        metrics = _shape_metrics(obj.Name, shape)
+        if metrics is not None:
+            measured[obj.Name] = (obj, metrics)
+    for name, (obj, metrics) in measured.items():
+        base = getattr(obj, "BaseFeature", None)
+        base_name = getattr(base, "Name", None)
+        base_metrics = measured[base_name][1] if base_name in measured else None
+        if base_metrics is None and base is not None:
+            base_shape = getattr(base, "Shape", None)
+            if base_shape is not None and not base_shape.isNull():
+                base_metrics = _shape_metrics(base_name or "", base_shape)
+        states[name] = {
             "label": obj.Label, "typeid": obj.TypeId,
-            "contribution": vol - base_vol,
-            "new_solids": new_solids, "old_solids": old_solids,
+            "contribution": metrics["volume"] - (base_metrics["volume"]
+                                                 if base_metrics else 0.0),
+            "old_solids": base_metrics["solids"] if base_metrics else 0,
+            "new_solids": metrics["solids"],
+            "faces": metrics["faces"], "edges": metrics["edges"],
+            "vertexes": metrics["vertexes"], "bbox": metrics["bbox"],
+            "valid": metrics["valid"],
         }
     return states
 
@@ -333,15 +464,17 @@ def feature_snapshot(tool_name):
     """State before a mutating tool runs, for post_tool_notes to diff against
     afterwards -- or None for read-only tools (nothing they do changes geometry).
 
-    Bundles PartDesign solid-feature states and Sketcher sketch states so the
-    reply can flag both what the operation added/removed AND what each new or
-    edited sketch actually looks like (extents, constraint state, closure)."""
+    Bundles PartDesign solid-feature states, Sketcher sketch states and each
+    Body's tip chain, so the reply can flag what the operation added/removed,
+    what each new or edited sketch looks like (extents, constraint state,
+    closure), AND whether it changed which features reach the Tip."""
     if tool_name not in MUTATING_TOOLS:
         return None
     import FreeCAD
 
     doc = FreeCAD.ActiveDocument
-    return {"features": _feature_states(doc), "sketches": _sketch_states(doc)}
+    return {"features": _feature_states(doc), "sketches": _sketch_states(doc),
+            "bodies": _body_states(doc)}
 
 
 def _wrong_direction_hint(obj):
@@ -411,6 +544,10 @@ def _format_feature_change(obj, st):
     else:
         vol_part = "no volume change"
     line = f"{st['label']} ({typ}): {vol_part} · solids {old_solids}→{new_solids}"
+    if not st.get("valid", True):
+        # The detail is in summarize_validity_changes; this just stops the
+        # per-feature line reading as a clean result on its own.
+        line += " · shape INVALID"
 
     escalations = []
     if changed_nothing and _is_subtractive_feature(obj):
@@ -461,14 +598,359 @@ def summarize_feature_changes(before):
     lines = []
     for name, st in after.items():
         prev = prev_states.get(name)
-        if prev is not None and (
-            round(prev["contribution"], 6) == round(st["contribution"], 6)
-            and prev["new_solids"] == st["new_solids"]
-        ):
+        if prev is not None and _same_fingerprint(prev, st):
             continue  # untouched by this operation
         obj = doc.getObject(name) if doc is not None else None
         lines.append(_format_feature_change(obj, st))
     return "\n".join(lines)
+
+
+#: Fingerprint fields compared exactly. ``contribution`` is compared separately,
+#: rounded, because it's a float. A feature is "touched by this operation" iff one
+#: of these moved -- which is why a re-topologised or moved feature at constant
+#: volume is now reported, where the old volume-only test skipped it silently.
+_FINGERPRINT_FIELDS = ("new_solids", "faces", "edges", "vertexes", "bbox", "valid")
+
+
+def _same_fingerprint(a, b):
+    """True when two feature states describe the same shape."""
+    if round(a.get("contribution", 0.0), 6) != round(b.get("contribution", 0.0), 6):
+        return False
+    return all(a.get(k) == b.get(k) for k in _FINGERPRINT_FIELDS)
+
+
+#: What silently moves a dress-up up the chain. Verified in FreeCAD 1.1:
+#: DressUp::onChanged (FeatureDressUp.cpp:276) reassigns BaseFeature to whatever
+#: Base was just pointed at. So `fillet.Base = (other_feature, [...])` is not the
+#: edge-list edit it reads as -- it re-parents the feature. Carried INLINE rather
+#: than cited, per the measured read rate on reference files: a note that has to
+#: be followed to be useful mostly isn't.
+_DRESSUP_BASE_RULE = (
+    "Most common cause: assigning a dress-up's Base (Fillet/Chamfer/Thickness) a "
+    "DIFFERENT feature. FreeCAD reassigns BaseFeature to match, so that moves the "
+    "dress-up up the chain and drops everything that was in between. If you were "
+    "re-deriving stale EdgeNN names, keep Base on the SAME feature it already "
+    "has: recompute that feature first, THEN read the edge names off its Shape "
+    "(reading them off a not-yet-recomputed shape is what makes the fix look like "
+    "it failed)."
+)
+
+
+def _label_of(doc, name):
+    """A feature's Label for a note, falling back to its internal name."""
+    obj = doc.getObject(name) if doc is not None else None
+    return getattr(obj, "Label", None) or name
+
+
+def _chain_labels(doc, names):
+    """Chain rendered for a note: labels where resolvable, arrow-joined."""
+    if not names:
+        return "(empty)"
+    return " → ".join(_label_of(doc, n) for n in names)
+
+
+def summarize_chain_changes(before):
+    """Note when this call changed WHICH features reach a Body's Tip, or "".
+
+    The one structural break nothing else catches. A dropped feature keeps a
+    valid shape and recomputes without error -- it just stops contributing, so
+    neither the Invalid scan nor the volume diff says a word. Measured on the
+    session that prompted this: two features left the chain on call 3 of 40 and
+    the damage wasn't noticed until call 30.
+
+    Reports only features that LEFT (a feature joining is every ordinary
+    creation) and that still exist (one the call deleted is not a break). The
+    pre-call chain is echoed back because that is the thing most expensive to
+    recover later: once the break is noticed, the only chain still in context is
+    the broken one, and a repair then rebuilds toward a guess.
+
+    Two other ways a chain shrinks are NOT breakage and must not read as it: the
+    Tip deliberately moved back to edit an earlier feature (those features are
+    still linked, just past the Tip -- reported as a plain line), and the Tip
+    left dangling by a scripted delete, which needs its own fix and not this
+    one's. Both were false alarms until the pristine-document tests caught them.
+    """
+    if before is None:
+        return ""
+    import FreeCAD
+
+    doc = FreeCAD.ActiveDocument
+    after = _body_states(doc)
+    prev_states = before.get("bodies", {}) if isinstance(before, dict) else {}
+    notes = []
+    for name, st in after.items():
+        prev = prev_states.get(name)
+        if prev is None:
+            continue  # Body created by this call: nothing to compare against
+        now, past_tip = set(st["chain"]), set(st["after_tip"])
+        left = [n for n in prev["chain"]
+                if n not in now and doc is not None and doc.getObject(n) is not None]
+        dropped = [n for n in left if n not in past_tip]
+        moved_back = [n for n in left if n in past_tip]
+        new_cycle = st["cycle"] and not prev["cycle"]
+        lost_tip = bool(prev["tip"]) and not st["tip"]
+
+        lines = []
+        if lost_tip:
+            lines.append(
+                f"⚠ {st['label']} no longer has a Tip, so the Body builds NO shape "
+                "and every feature in it is inert. Deleting the tip feature with "
+                "doc.removeObject does not move the Tip back -- set body.Tip to "
+                "whichever feature should now be last."
+            )
+        elif new_cycle:
+            lines.append(
+                f"⚠ {st['label']}'s BaseFeature chain now loops back on itself. "
+                "Reassign the older feature's BaseFeature straight back to its true "
+                "predecessor -- reordering Body.Group reproduces the cycle instead of "
+                f"fixing it. Full writeup: "
+                f"{os.path.join(REFS_DIR, 'partdesign-body-tip-cycle-gotcha.md')}."
+            )
+        elif dropped:
+            lines.append(
+                f"⚠ {len(dropped)} feature(s) dropped out of {st['label']}'s tip "
+                f"chain: {', '.join(_label_of(doc, n) for n in dropped)}. They still "
+                "exist and "
+                "still recompute cleanly on their own branch -- they just no longer "
+                "contribute to the Body's shape, and nothing else will flag that."
+            )
+        elif moved_back:
+            # Deliberate: Tip stepped back to edit an earlier feature. Worth one
+            # plain line (a scripted Tip move is easy to leave behind), not a ⚠.
+            lines.append(
+                f"{st['label']}'s Tip moved back to {_label_of(doc, st['tip'])}: "
+                f"{', '.join(_label_of(doc, n) for n in moved_back)} now sit after the "
+                "Tip and "
+                "stop contributing to its shape until the Tip moves forward again."
+            )
+        else:
+            continue
+
+        lines.append(f"Chain before: {_chain_labels(doc, prev['chain'])}")
+        lines.append(f"Chain now:    {_chain_labels(doc, st['chain'])}")
+        if dropped and not lost_tip and not new_cycle:
+            lines.append(_DRESSUP_BASE_RULE)
+            lines.append(
+                "To repair: reassign BaseFeature along the 'before' order above, then "
+                "re-derive each dress-up's edges bottom-up, recomputing each base "
+                "before reading its Shape."
+            )
+        notes.append("\n    ".join(lines))
+    return "\n\n".join(notes)
+
+
+#: What usually produces an invalid shape, by the feature type that produced it.
+#: Substring-matched on TypeId so each whole family is covered at once, and
+#: ordered most-specific first (Loft/Pipe before the generic additive/subtractive
+#: entries). Carried inline for the same measured reason as the rest.
+_INVALID_CAUSE_HINTS = (
+    ("Loft", "loft sections that cross, twist, or pair up mismatched vertices. "
+             "Check the sections are ordered along the sweep, wound the same way "
+             "and built in the same vertex order, and that consecutive ones "
+             "aren't so close (or so differently shaped) that the interpolated "
+             "surface doubles back. Ruled=True removes that interpolation "
+             "entirely and is the quickest way to tell if it's the cause."),
+    ("Pipe", "a sweep path with a corner tighter than the profile can turn "
+             "through without the surface folding back on itself."),
+    ("Fillet", "a radius larger than the local curvature or than an adjacent "
+               "face is wide, so the rolling ball cuts past the far side. Shrink "
+               "it, or drop the tight edges from the selection."),
+    ("Chamfer", "a size larger than an adjacent face is wide."),
+    ("Thickness", "a wall thicker than the smallest internal radius."),
+    ("Draft", "a draft angle steep enough to invert a face."),
+)
+
+#: How much of the localisation to spell out. Enough to point at the region
+#: without pasting a face dump into the reply.
+_INVALID_SUBSHAPE_LIMIT = 3
+
+
+def _invalid_cause_hint(typeid):
+    """The likely-cause sentence for the feature type, or "" if we have none."""
+    for marker, hint in _INVALID_CAUSE_HINTS:
+        if marker in (typeid or ""):
+            return "Most likely cause for a %s: %s" % (typeid.split("::")[-1], hint)
+    return ""
+
+
+def _box(bb):
+    """A BoundBox as a plain 6-tuple, so boxes can be unioned and compared."""
+    return (bb.XMin, bb.XMax, bb.YMin, bb.YMax, bb.ZMin, bb.ZMax)
+
+
+def _union_box(a, b):
+    if a is None:
+        return b
+    return (min(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]),
+            max(a[3], b[3]), min(a[4], b[4]), max(a[5], b[5]))
+
+
+def _boxes_overlap(a, b, tol=1e-6):
+    return (a[0] <= b[1] + tol and b[0] <= a[1] + tol
+            and a[2] <= b[3] + tol and b[2] <= a[3] + tol
+            and a[4] <= b[5] + tol and b[4] <= a[5] + tol)
+
+
+def _operation_region(obj):
+    """World-space box of what this feature actually operates on, or None.
+
+    Exists to stop the cause hint asserting something the geometry contradicts.
+    The replay that this was built against named a Fillet working on the plate at
+    Z 48+ while every bad face sat at Z 0..14 in the lofted foot -- so "your
+    radius is too big" would have been confidently wrong, which this repo has
+    already learned once (see _pre_existing_failure_note) costs a turn to argue
+    with. A dress-up's region is its pinned sub-elements; an additive/subtractive
+    feature's is its tool shape.
+    """
+    try:
+        base = getattr(obj, "Base", None)
+        if isinstance(base, (tuple, list)) and len(base) == 2 and base[0] is not None:
+            shape = getattr(base[0], "Shape", None)
+            if shape is not None and not shape.isNull():
+                edges, box = shape.Edges, None
+                for sub in base[1] or []:
+                    name = str(sub).lstrip("?")
+                    if not name.startswith("Edge"):
+                        continue
+                    try:
+                        index = int(name[4:]) - 1
+                    except ValueError:
+                        continue
+                    if 0 <= index < len(edges):
+                        box = _union_box(box, _box(edges[index].BoundBox))
+                if box is not None:
+                    return box
+        add = getattr(obj, "AddSubShape", None)
+        if add is not None and not add.isNull():
+            return _box(add.BoundBox)
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def _invalid_subshapes(shape):
+    """``(text, bad_box)`` -- where the invalidity actually sits, in world coords.
+
+    A bare False is unactionable, so this names the faces/edges that fail their
+    own check and roughly where they are. It only ever runs on an already-invalid
+    shape (rare), so the per-sub-shape checks stay off the hot path -- which is
+    also why this deliberately does NOT call Shape.check(): the BOP check can run
+    for seconds on a large solid, and this executes on the GUI thread.
+
+    A self-intersection can leave every individual face and edge valid while the
+    shell is broken, so "nothing individually bad" is a real answer and is
+    reported as one rather than as an empty result.
+    """
+    try:
+        faces, edges = shape.Faces, shape.Edges
+        bad_faces = [i for i, f in enumerate(faces, 1) if not f.isValid()]
+        bad_edges = [i for i, e in enumerate(edges, 1) if not e.isValid()]
+    except Exception:  # noqa: BLE001
+        return "", None
+    if not bad_faces and not bad_edges:
+        return ("No single face or edge is individually bad, so the fault is at "
+                "the shell/solid level -- typically surfaces that intersect each "
+                "other."), None
+    parts, box = [], None
+    if bad_faces:
+        shown = []
+        for i in bad_faces:
+            bb = _box(faces[i - 1].BoundBox)
+            box = _union_box(box, bb)
+            if len(shown) < _INVALID_SUBSHAPE_LIMIT:
+                shown.append("Face%d (X %.1f..%.1f, Y %.1f..%.1f, Z %.1f..%.1f)"
+                             % (i, bb[0], bb[1], bb[2], bb[3], bb[4], bb[5]))
+        more = ("" if len(bad_faces) <= _INVALID_SUBSHAPE_LIMIT
+                else " (+%d more)" % (len(bad_faces) - _INVALID_SUBSHAPE_LIMIT))
+        parts.append("%d of %d faces fail their own check: %s%s"
+                     % (len(bad_faces), len(faces), "; ".join(shown), more))
+    for i in bad_edges:
+        box = _union_box(box, _box(edges[i - 1].BoundBox))
+    if bad_edges:
+        parts.append("%d edge(s) too (Edge%s)"
+                     % (len(bad_edges),
+                        ", Edge".join(str(i) for i in bad_edges[:6])))
+    return "Where: " + "; ".join(parts) + ".", box
+
+
+def summarize_validity_changes(before):
+    """Note the feature whose shape stopped being geometrically valid, or "".
+
+    The silent failure the volume diff was blind to by construction: an invalid
+    solid recomputes without error, keeps its solid count, and reports a
+    plausible volume, so every existing gate passes it. Found on the eval run
+    that followed the tip-chain work -- the agent signed off "document recomputes
+    clean, one solid" while the tip shape failed OCCT validation.
+
+    Reports the FIRST such feature in each Body's tip chain, not the set:
+    invalidity introduced upstream is inherited by everything after it, so a list
+    would name four innocent features alongside the guilty one. Rare enough to be
+    worth saying: 1 of 57 bodies across real documents has an invalid tip shape.
+    """
+    if before is None:
+        return ""
+    import FreeCAD
+
+    doc = FreeCAD.ActiveDocument
+    after = _feature_states(doc)
+    prev = before.get("features", {}) if isinstance(before, dict) else {}
+    # A feature this call CREATED has no prior state; an invalid one is still
+    # worth reporting, so absence counts as "was fine".
+    newly = {n for n, st in after.items()
+             if not st["valid"] and prev.get(n, {}).get("valid", True)}
+    if not newly:
+        return ""
+
+    notes, claimed = [], set()
+    for bst in _body_states(doc).values():
+        hits = [n for n in bst["chain"] if n in newly]
+        if not hits:
+            continue
+        claimed.update(hits)
+        notes.append(_format_invalid_feature(doc, hits[0], after[hits[0]], hits[1:]))
+    for name in (n for n in newly if n not in claimed):
+        notes.append(_format_invalid_feature(doc, name, after[name], []))
+    return "\n\n".join(n for n in notes if n)
+
+
+def _format_invalid_feature(doc, name, st, inherited):
+    """The note for one feature that produced an invalid shape."""
+    obj = doc.getObject(name) if doc is not None else None
+    shape = getattr(obj, "Shape", None)
+    lines = [
+        "⚠ %s (%s) produced an INVALID shape. It recomputes without error, keeps "
+        "its solid count and reports a plausible volume, so nothing else flags "
+        "this -- but an invalid solid slices and prints unpredictably, and later "
+        "booleans on it tend to fail in confusing ways."
+        % (st["label"], st["typeid"].split("::")[-1]),
+    ]
+    usable = shape is not None and not shape.isNull()
+    where, bad_box = _invalid_subshapes(shape) if usable else ("", None)
+    if where:
+        lines.append(where)
+    if inherited:
+        lines.append(
+            "%d downstream feature(s) inherit it (%s) -- fix this one and they "
+            "clear; they are not separately broken."
+            % (len(inherited), ", ".join(_label_of(doc, n) for n in inherited)))
+
+    # Only name a cause when the bad geometry is actually in the region this
+    # feature touched. Otherwise say so: a wrong cause costs a turn to argue with.
+    region = _operation_region(obj) if obj is not None else None
+    if bad_box is not None and region is not None and not _boxes_overlap(bad_box, region):
+        lines.append(
+            "The bad geometry is NOT where this feature operates (it works on "
+            "X %.1f..%.1f, Y %.1f..%.1f, Z %.1f..%.1f), so its own parameters are "
+            "probably not the cause -- more likely it re-tessellated marginal "
+            "geometry it inherited. Find the upstream feature that owns the bad "
+            "region and check that one first." % region)
+    else:
+        hint = _invalid_cause_hint(st["typeid"])
+        if hint:
+            lines.append(hint)
+    lines.append("Re-check with shape.isValid() after the fix -- a clean "
+                 "recompute is not the same thing.")
+    return "\n    ".join(lines)
 
 
 def _format_sketch_change(st):
@@ -590,7 +1072,11 @@ _PARTDESIGN_ESSENTIALS = (
     "- Fillet/Chamfer/Thickness take Base as ONE LinkSub tuple -- "
     "(feature, ['Edge3', 'Edge7']) -- plus Radius / Size+Angle / Value. Those "
     "literal edge names are positional and renumber when an earlier feature "
-    "changes, so derive them from the shape rather than hardcoding indices.\n"
+    "changes, so derive them from the shape rather than hardcoding indices -- "
+    "but from the dress-up's OWN base feature, recomputed first. Pointing Base "
+    "at a DIFFERENT feature also reassigns BaseFeature to it, which moves the "
+    "dress-up up the chain and silently drops every feature in between out of "
+    "the Body's shape.\n"
     "- Patterns (LinearPattern/PolarPattern/Mirrored) repeat Originals, a link "
     "LIST. PartDesign::Boolean takes its tool Bodies in Group.\n"
     "- Recompute between dependent steps: a feature built against a "
@@ -646,6 +1132,8 @@ def post_tool_notes(tool_name, before=None):
     if tool_name == "get_diagnostics":
         return ""
     notes = [summarize_new_failures(before),
+             summarize_chain_changes(before),
+             summarize_validity_changes(before),
              summarize_feature_changes(before),
              summarize_sketch_changes(before),
              _partdesign_reference_note(before)]

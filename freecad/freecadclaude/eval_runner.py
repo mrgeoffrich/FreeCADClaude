@@ -89,7 +89,16 @@ def run():
         gui_bridge.start()
         freecad_tools._save_steps["on"] = True  # snapshot each build step to steps/
 
-        if FreeCAD.ActiveDocument is None:
+        # Editing an EXISTING model is a different problem from building one from
+        # scratch -- an established feature chain, stale sub-element references,
+        # dress-ups pinned to features that renumber -- and a from-empty case
+        # cannot reach it. run.py hands over a per-run COPY, so opening it in
+        # place (and letting the agent save into it) can't touch the source.
+        doc_path = os.environ.get("FREECADCLAUDE_EVAL_DOC") or ""
+        if doc_path:
+            FreeCAD.openDocument(doc_path)
+            report["document"] = doc_path
+        elif FreeCAD.ActiveDocument is None:
             FreeCAD.newDocument("Eval")
 
         panel = chat_panel.get_panel()

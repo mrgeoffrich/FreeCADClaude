@@ -76,7 +76,7 @@ infra modules import nothing from `tools_*` (that's why `_ERROR_FLAGS` and
 | Module | Role |
 |---|---|
 | `__init__.py` | The `TOOLS` registry, `list_schemas()`, and the facade re-exports. |
-| `tools_document.py` | `get_objects`, `get_selection`. |
+| `tools_document.py` | `get_objects`, `get_selection`. `get_objects` also returns a `bodies` section — each `PartDesign::Body`'s **tip chain**, base-first (see `diagnostics._body_states`). That's the only place a Body's build order is visible, and it's in the tool the model already calls first; a feature missing from the chain contributes nothing however healthy it looks. Costs ~518 bytes of a 15.7 KB payload on a 68-object/3-body document. |
 | `tools_python.py` | `run_python` (+ its syntax precheck). |
 | `tools_inspect.py` | `inspect_api`. |
 | `tools_sketch.py` | `get_sketch`, `view_sketch_svg` (+ the GeoId overlay). |
@@ -91,7 +91,7 @@ infra modules import nothing from `tools_*` (that's why `_ERROR_FLAGS` and
 | `gui_state.py` | The user's current GUI context: what they have open in an editor (`_active_edit_object` & co) and what they have selected (`_selected_objects`, used by `get_sketch`/`view_sketch_svg`/`export` for their no-`name` fallback). |
 | `visibility.py` | Show only the captured objects, then restore. |
 | `render.py` | The offscreen view, its camera, the PNG grab, `_last_capture`. `_offscreen_shot` is the context manager all three raster tools enter — it owns the setup/teardown (isolate visibility, suspend selection, size the view; restore all of it plus the GUI doc's `Modified` flag on *every* exit path, early `return` included). That restore is what keeps a capture read-only, so it lives here once rather than in three copied `finally` blocks. It also holds everything `capture_view` and `cutaway` share *around* that view — they differ only in what happens inside it, so their whole front half (`_capture_setup`: active doc, the required `objects` list → visibility keep-set, camera plan, size, crop extents) and back half (`_camera_angle_note`/`_shown_extents_note`) live here, as do the schema properties describing those args (`_objects_schema_prop`, `_CAMERA_SCHEMA_PROPS`, `_SIZE_SCHEMA_PROPS`). Keep it that way: the two tools must not describe or handle the same knob differently. |
-| `diagnostics.py` | What a mutating call changed, and what it broke (`post_tool_notes`). Also where a scripting reference gets **cited**, when the condition it documents is the one just detected — see "Just-in-time reference pointers" below. `_broke_an_existing_feature` is that trigger for the tip-cycle gotcha: a newly-Invalid feature that already existed in the `before` snapshot (a feature the call *created* failing is ordinary and the traceback covers it). |
+| `diagnostics.py` | What a mutating call changed, and what it broke (`post_tool_notes`). Also where a scripting reference gets **cited**, when the condition it documents is the one just detected — see "Just-in-time reference pointers" below. `_broke_an_existing_feature` is that trigger for the tip-cycle gotcha: a newly-Invalid feature that already existed in the `before` snapshot (a feature the call *created* failing is ordinary and the traceback covers it). `_body_states`/`_walk_base_chain` are the **structural** view — which features actually reach a Body's Tip — used by both `summarize_chain_changes` (the before/after diff) and `get_objects`. They live here, not in `tools_document`, because infra must not import from `tools_*`. `_shape_metrics` is the hash-keyed measurement cache every snapshot goes through; see the fingerprint note under "Just-in-time reference pointers" before adding a field to it. |
 
 Importing the package imports every submodule, so **no submodule may `import
 FreeCAD` at module level** — that would break the "importable from any thread for
@@ -386,7 +386,58 @@ second is the design rule now:
    was rewritten to match (it used to be a bare "read this file", ignored 10
    times out of 11). A note that has to be followed to be useful mostly isn't.
 
-The three notes, and what each one is:
+**The snapshot is a shape FINGERPRINT, and it is cached by OCCT shape hash.**
+`_feature_states` records `(contribution, solids, faces, edges, vertexes, bbox,
+valid)` per feature, not just volume+solids — because volume alone is a lossy
+way to ask "did this change": a feature re-topologised, moved, or left invalid at
+constant volume was invisible to the old diff. `_shape_metrics` caches those
+measurements under `(object name, Shape.hashCode())`, which is sound because they
+are a pure function of the shape — a rebuilt shape gets a new hash and misses.
+Measured on a 10-feature chain: hashing the chain is **0.03 ms**, reading
+`Volume`/`Solids` is **99 ms**, `isValid()` is **51 ms** — so validity was never
+the expensive part, `Volume` was, and we were already paying it. Net effect on a
+23-feature document, per `run_python` call (two passes): **741 ms → 0.4 ms** when
+nothing rebuilt, ~140 ms when a mid-chain feature does. The richer snapshot is
+several times *cheaper* than the thin one it replaced, and that matters because
+this runs on the GUI thread.
+
+The five notes, and what each one is:
+
+- `diagnostics.summarize_chain_changes(before)` fires when a call changed **which
+  features reach a Body's Tip**. This is the one structural break nothing else
+  catches: a dropped feature keeps a valid shape and recomputes without error, it
+  just stops contributing — so neither the Invalid scan nor the volume diff says
+  a word. Measured on the session that prompted it: two features left the chain
+  on `run_python` call **3 of 40** and it wasn't noticed until call **30**. The
+  note echoes the **pre-call chain** back, because that's what's most expensive
+  to recover later — once the break is spotted, the only chain still in context
+  is the broken one, and the repair then rebuilds toward a guess (that session's
+  repair invented an order the document had never had). Three shrink causes are
+  *not* breakage and are classified apart, each found by the pristine-document
+  tests rather than reasoned about: a feature the call deleted, the Tip
+  deliberately moved back (plain line, no ⚠ — those features are still linked,
+  just past the Tip), and a Tip left dangling by `doc.removeObject` (its own ⚠,
+  since "re-link via BaseFeature" would be the wrong fix). It also subsumes the
+  tip-cycle gotcha below: a scripted `newObject` that wires a cycle now trips
+  this on the very call that does it.
+
+- `diagnostics.summarize_validity_changes(before)` fires when a feature's shape
+  stops being **geometrically valid**. The failure the volume diff was blind to by
+  construction: an invalid solid recomputes without error, keeps its solid count
+  and reports a plausible volume, so every other gate passes it. Found by the
+  eval that followed the tip-chain work — the agent signed off *"document
+  recomputes clean, one solid"* on a tip shape that fails OCCT validation, and
+  `isValid()` was called **nowhere** in the package. Three things make it usable
+  rather than a nag: it reports the **first** such feature in the tip chain, not
+  the set (invalidity is inherited downstream, so a list names innocents);
+  `_invalid_subshapes` localises it to specific faces/edges with world extents,
+  since a bare `False` is unactionable; and `_operation_region` **cross-checks
+  before naming a cause** — on the replay it caught a `Fillet` working at Z 48..55
+  whose bad faces were all at Z 0..14, and said so instead of asserting "your
+  radius is too big". Base rate is low enough to be worth saying: **1 of 57**
+  bodies across real documents has an invalid tip shape. Deliberately does *not*
+  call `Shape.check()` — the BOP check can run for seconds, and this is the GUI
+  thread.
 
 - `diagnostics.summarize_new_failures(before)` escalates when
   `_broke_an_existing_feature` holds (a previously-fine feature went Invalid) and
@@ -518,9 +569,31 @@ and that may be fine.
   (`movePoint`, `setGeometry`, `getDoF()` — none exist). Both branches now run.
   `Sketcher.SketchObject` also isn't an importable class; `_describe_by_type_id`
   resolves that (and any `Type::String`) to a live instance in the document.
+- **Assigning a dress-up's `Base` a DIFFERENT feature silently re-parents it,
+  cutting every feature in between out of the Body.** `DressUp::onChanged`
+  (`FeatureDressUp.cpp:276`) sets `BaseFeature` to whatever `Base` was just
+  pointed at — so `fillet.Base = (other_feature, [...])`, which reads as an
+  edge-list edit, is a chain edit. One such line (`SoleFillet.Base` moved from
+  `HandlingFillet` to `FootFlareL`, while re-deriving stale `EdgeNN` names) took
+  two features out of a real document's tip chain; they kept recomputing cleanly
+  on their own branch, so nothing errored, and the damage went unnoticed for 27
+  more `run_python` calls. **A dress-up's `Base[0]` must always be its own
+  immediate predecessor.** To fix stale edge names, keep `Base` on the same
+  feature: recompute *that* feature first, then read the names off its `Shape` —
+  reading them off a not-yet-recomputed shape is what made the correct fix look
+  like it had failed and prompted the object swap. Now detected by
+  `summarize_chain_changes`, and stated inline in `_PARTDESIGN_ESSENTIALS`.
+- **`doc.removeObject()` on the feature a Body's `Tip` points at leaves `Tip`
+  dangling**, and the Body then builds no shape at all while every feature in it
+  still recomputes fine. Set `body.Tip` to whichever feature should now be last.
 - **Scripted `body.newObject(...)` onto a Body that has a datum feature (e.g. a
   `PartDesign::Plane`) sitting in `Group` between the current Tip and its
-  predecessor can wire a circular `BaseFeature`.** Adding a `PartDesign::Fillet`
+  predecessor can wire a circular `BaseFeature`.** (`Body::setBaseProperty` picks
+  the new feature's neighbours with `getPrevSolidFeature`/`getNextSolidFeature`,
+  which walk **`Group` order**, not the chain — so a Body whose `Group` order and
+  chain disagree is the precondition. That disagreement is common and normally
+  harmless: 34% of 58 bodies measured across real documents, which is why it is
+  *not* worth flagging on its own.) Adding a `PartDesign::Fillet`
   this way left the *previous* tip (`MirroredTopCut`) with `BaseFeature` rewired
   to point at the *new* `Fillet`, while `Fillet.BaseFeature` correctly pointed
   back at `MirroredTopCut` — a two-node cycle. Symptom: the older feature reports
