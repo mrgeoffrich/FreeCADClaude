@@ -25,9 +25,17 @@ _VALID_MODELS = {mid for _, mid in MODELS}
 
 #: Reasoning effort passed to the CLI as --effort. Pinning it stops the addon
 #: inheriting your global Claude Code effortLevel (which can be xhigh/max and
-#: makes turns think for a long time). Override via the "Effort" preference.
+#: makes turns think for a long time). Chosen in the chat panel's effort
+#: selector, same (label, id) shape as MODELS.
 DEFAULT_EFFORT = "medium"
-_VALID_EFFORT = ("low", "medium", "high", "xhigh", "max")
+EFFORTS = (
+    ("Low", "low"),
+    ("Medium", "medium"),
+    ("High", "high"),
+    ("X-High", "xhigh"),
+    ("Max", "max"),
+)
+_VALID_EFFORT = {eid for _, eid in EFFORTS}
 
 #: The system prompt lives in system_prompt.md alongside this module so it's
 #: easy to read/edit as plain text; loaded once at import time. Its {REFS_DIR}
@@ -111,6 +119,12 @@ def get_effort():
         (params.GetString("Effort", DEFAULT_EFFORT) or DEFAULT_EFFORT).strip().lower()
     )
     return effort if effort in _VALID_EFFORT else DEFAULT_EFFORT
+
+
+def save_effort(effort):
+    """Persist the selected effort so it's remembered across restarts and picked
+    up by build_config()/get_effort() the next time a worker is created."""
+    FreeCAD.ParamGet(PARAM_PATH).SetString("Effort", effort)
 
 
 def get_skills_dir():

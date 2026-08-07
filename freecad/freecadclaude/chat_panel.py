@@ -202,6 +202,17 @@ class ChatWidget(QtWidgets.QWidget):
         self.model_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
         control_row.addWidget(self.model_combo)
+        self.effort_combo = QtWidgets.QComboBox(controls)
+        self.effort_combo.setToolTip(
+            "Reasoning effort: how long Claude thinks before acting "
+            "(changeable mid-chat; applies from the next message)"
+        )
+        for label, effort_id in agent_config.EFFORTS:
+            self.effort_combo.addItem(label, effort_id)  # effort id stored as itemData
+        idx = self.effort_combo.findData(agent_config.get_effort())
+        self.effort_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.effort_combo.currentIndexChanged.connect(self._on_effort_changed)
+        control_row.addWidget(self.effort_combo)
         self.files_button = QtWidgets.QPushButton("Files", controls)
         self.files_button.setToolTip("Open the FreeCADClaude captures/exports folder")
         self.files_button.clicked.connect(self._open_artifacts)
@@ -519,6 +530,17 @@ class ChatWidget(QtWidgets.QWidget):
         from . import agent_config
 
         agent_config.save_model(self.model_combo.currentData())
+
+    def _on_effort_changed(self, _index):
+        """Persist the selected effort and push it to a running worker. The CLI
+        takes --effort on every invocation, so this is not locked for the
+        conversation the way the model is."""
+        from . import agent_config
+
+        effort = self.effort_combo.currentData()
+        agent_config.save_effort(effort)
+        if self._worker is not None:
+            self._worker.set_effort(effort)
 
     def _open_artifacts(self):
         """Open the FreeCADClaude captures/exports folder in the file manager."""

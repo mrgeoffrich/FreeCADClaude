@@ -329,6 +329,12 @@ class AgentWorker(QtCore.QObject):
         Read fresh each turn by _build_argv, so it takes effect on the next turn."""
         self._config["model"] = model
 
+    def set_effort(self, effort):
+        """Set the reasoning effort for subsequent turns (called from the GUI
+        thread). --effort is passed on every CLI invocation, so unlike the model
+        this can change mid-conversation; it applies from the next turn."""
+        self._config["effort"] = effort
+
     def cancel(self):
         """Terminate the in-flight CLI turn (safe to call from the GUI thread)."""
         self._cancelled = True
