@@ -52,12 +52,13 @@ chat panel (GUI thread)
 ## Tools
 
 Registry: `freecad_tools.TOOLS` = name → `{schema, run, precheck?}`. Current set:
-`get_objects`, `describe_objects`, `get_selection`, `get_sketch`,
+`get_objects`, `describe_objects`, `get_selection`, `document_notes`, `get_sketch`,
 `view_sketch_svg`, `capture_view`,
 `capture_user_view`, `crop_view`, `cutaway`, `annotate_view`, `read_annotation`,
 `export`, `inspect_api`,
-`get_diagnostics`, `run_python` (the sole document-mutating tool —
-the general Sketcher/PartDesign/Part path).
+`get_diagnostics`, `run_python` (the only tool that touches geometry —
+the general Sketcher/PartDesign/Part path; `document_notes` mutates the
+document too, but only its own notes object).
 
 **There is no approval gate.** `run_python` used to open a confirmation dialog
 per call (with a "Run all this session" button). It was removed — in practice the
@@ -79,6 +80,8 @@ infra modules import nothing from `tools_*` (that's why `_ERROR_FLAGS` and
 | `__init__.py` | The `TOOLS` registry, `list_schemas()`, and the facade re-exports. |
 | `tools_document.py` | `get_objects` (the shallow survey), `describe_objects` (the deep read on named objects), `get_selection` — see "The survey/detail split" below. `get_objects` also returns a `bodies` section — each `PartDesign::Body`'s **tip chain**, base-first (see `diagnostics._body_states`). That's the only place a Body's build order is visible, and it's in the tool the model already calls first; a feature missing from the chain contributes nothing however healthy it looks. Costs ~475 bytes of a 7.3 KB payload on a 68-object/3-body document. |
 | `tools_python.py` | `run_python` (+ its syntax precheck). |
+| `tools_notes.py` | `document_notes` — read (no args) or replace (`text`) the document's standing notes. |
+| `doc_notes.py` | Where those notes live and how staleness is judged — see "Document notes" below. |
 | `tools_inspect.py` | `inspect_api`. |
 | `tools_sketch.py` | `get_sketch`, `view_sketch_svg` (+ the GeoId overlay). |
 | `tools_capture.py` | `capture_view`, `capture_user_view`, `crop_view`. |
@@ -184,6 +187,20 @@ running twice on every `run_python` call on the GUI thread, and two more GProp
 reads there would make every mutating call pay for something only this tool wants.
 Caching them here took a 9-object describe from 173 ms to 2 ms on a repeat (361 ms
 cold, which is the honest price of `Volume`/`Area`/`isValid` on real solids).
+
+**Document notes** (`document_notes`, storage in `doc_notes.py`): free text carried
+inside the FCStd saying what the model is for, how its parts relate and how it is
+to be printed — the context no geometry states. It lives in a `ClaudeNotes`
+`App::TextDocument` so the user can open and edit it in FreeCAD's own text tab.
+`get_objects` returns it, which is why the read needs no prompt instruction; the
+write is prompted, backed by a staleness flag raised when a top-level part has
+been added or removed since the notes were stamped. Feature-level churn inside a
+Body does not count, since notes about purpose survive it. The stamp is a pair of
+dynamic properties created with `Prop_Output` (attr `8`): a plain property write
+marks its object touched, and the next recompute then rebuilds that object and
+everything downstream of it. `_top_level_parts` excludes `PartDesign::Feature`
+even when one sits at top level — `removeObject` on a Body leaves its features
+behind, and an orphan would otherwise read as a new part.
 
 **Sketch editing** (`get_sketch`, read-only): every Sketcher mutation is addressed
 by **GeoId** (`moveGeometry`, `addConstraint`) or **constraint index** (`setDatum`,

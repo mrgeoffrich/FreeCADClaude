@@ -18,6 +18,7 @@ The tools themselves live in the ``tools_*`` submodules, one per concern, over
 a base of shared infrastructure:
 
     session      artifact folders, the per-conversation session dir
+    doc_notes    the document's standing context notes, and their staleness
     geometry     bounding boxes, world-space crop extents
     svg          framing/cropping an SVG projection
     gui_state    what the user has open in an editor
@@ -69,6 +70,11 @@ from .tools_document import (  # _REPORTED_PROPS re-exported for eval_runner
 )
 from .tools_export import _EXPORT_SCHEMA, _run_export
 from .tools_inspect import _INSPECT_API_SCHEMA, _run_inspect_api
+from .tools_notes import (
+    _DOCUMENT_NOTES_SCHEMA,
+    _precheck_document_notes,
+    _run_document_notes,
+)
 from .tools_python import _RUN_PYTHON_SCHEMA, _precheck_python, _run_python
 from .tools_sketch import (
     _GET_SKETCH_SCHEMA,
@@ -88,6 +94,11 @@ TOOLS = {
         "precheck": _precheck_describe_objects,
     },
     "get_selection": {"schema": _GET_SELECTION_SCHEMA, "run": _run_get_selection},
+    "document_notes": {
+        "schema": _DOCUMENT_NOTES_SCHEMA,
+        "run": _run_document_notes,
+        "precheck": _precheck_document_notes,
+    },
     "get_sketch": {"schema": _GET_SKETCH_SCHEMA, "run": _run_get_sketch},
     "view_sketch_svg": {"schema": _VIEW_SKETCH_SVG_SCHEMA, "run": _run_view_sketch_svg},
     "capture_view": {"schema": _CAPTURE_VIEW_SCHEMA, "run": _run_capture_view},

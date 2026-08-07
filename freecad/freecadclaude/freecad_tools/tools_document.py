@@ -18,6 +18,7 @@ against.
 """
 
 from .diagnostics import _body_states, _ERROR_FLAGS, _shape_metrics
+from .doc_notes import notes_block
 from .geometry import _bbox_dict, _document_bbox, _MAX_SANE_EXTENT
 from .gui_state import _active_edit_summary
 
@@ -28,7 +29,11 @@ _GET_OBJECTS_SCHEMA = {
         "and one compact entry per object -- internal name, label, type, the "
         "container it sits in, key dimensions, and visibility (as JSON). Call "
         "this first to see what's there and to get the internal names every "
-        "other tool takes. For a PartDesign document it also returns each Body's "
+        "other tool takes. It also returns the document's standing 'notes' when "
+        "it has any -- the free text saying what the model is for, how its parts "
+        "relate and how it is to be printed; read that before planning anything, "
+        "since none of it is derivable from the geometry. For a PartDesign "
+        "document it also returns each Body's "
         "'chain': the features that actually build its shape, in order -- read "
         "that before editing an existing Body, since it is the only place the "
         "build order is visible and a feature missing from it contributes "
@@ -261,8 +266,14 @@ def _run_get_objects(args):
         objects.append(_survey_object(obj, _container_name(obj),
                                       by_owner.get(obj.Name)))
 
-    result = {"document": doc.Label, "object_count": len(doc.Objects),
-              "objects": objects}
+    result = {"document": doc.Label}
+    # First, ahead of the object list: the standing notes are the context the
+    # rest of the payload is read against, and they carry what no geometry can.
+    notes = notes_block(doc)
+    if notes:
+        result["notes"] = notes
+    result["object_count"] = len(doc.Objects)
+    result["objects"] = objects
     if loose_origin:
         result["origin"] = loose_origin
     if origin_of:
