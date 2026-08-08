@@ -8,9 +8,9 @@ That folder is also the CLI's working directory, so
 ``prepare_session_workspace`` copies the skills and the scripting references
 into it.
 
-Also the one spelling of the two paths that aren't artifacts but that several
-modules need to agree on: ``PARAM_PATH`` (the preferences root) and ``REFS_DIR``
-(the bundled scripting references).
+Also the one spelling of the paths that aren't artifacts but that several
+modules need to agree on: ``PARAM_PATH`` (the preferences root), ``REFS_DIR``
+(the bundled scripting references) and ``ref_path`` (how they are cited).
 """
 
 import os
@@ -28,14 +28,29 @@ _DEFAULT_ARTIFACTS_DIR = os.path.join(os.path.expanduser("~"), "FreeCADClaude")
 #: tree, so every preference under it would just look unset.
 PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/FreeCADClaude"
 
-#: The bundled run_python scripting references (read-only assets, not artifacts) --
-#: absolute, so a citation resolves wherever the CLI's cwd happens to be. One
-#: spelling again: agent_config substitutes it into the system prompt's {REFS_DIR}
-#: and the tools cite paths under it in their just-in-time notes, so a second copy
-#: could drift and hand Claude a path that doesn't resolve.
+#: The bundled run_python scripting references (read-only assets, not artifacts).
+#: This is where prepare_session_workspace copies them FROM; nothing shows this
+#: path to Claude, which sees the copy under the session folder.
 REFS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "references"
 )
+
+#: Where that copy lands in the session folder, and therefore how a reference is
+#: cited: the CLI's cwd is the session folder, so a relative path is the same
+#: string in every conversation -- which is what lets the system prompt, built
+#: once per worker, name the same files as a tool note built mid-conversation.
+#: Forward slash on every platform; the CLI resolves it.
+REFS_REL = "references"
+
+
+def ref_path(name):
+    """A bundled scripting reference as Claude sees it: relative to the CLI's cwd.
+
+    agent_config substitutes REFS_REL into the system prompt's {REFS_DIR} and the
+    tools cite paths through here in their just-in-time notes, so the two cannot
+    name the same file differently.
+    """
+    return REFS_REL + "/" + name
 
 
 def artifacts_dir():
@@ -115,15 +130,17 @@ def prepare_session_workspace(skills_project=None):
 
     The CLI runs each turn with this folder as its working directory, so the
     assets have to be inside it: the bundled scripting references as
-    ``references/``, and the skills project's skills as ``.claude/skills/``
+    :data:`REFS_REL`, and the skills project's skills as ``.claude/skills/``
     (the only path the CLI discovers them on). Copies rather than links --
     a symlink needs privileges on Windows.
 
-    Best effort. A copy that fails still returns the folder so the turn runs;
-    the references are cited by their absolute :data:`REFS_DIR` path anyway.
+    Best effort, but the references are cited relative to this folder, so a
+    failed copy leaves those citations pointing at nothing. Everything else the
+    conversation writes here fails with it, so treat it as the folder being
+    unusable rather than as a case to fall back for.
     """
     folder = session_dir()
-    _copy_assets(REFS_DIR, os.path.join(folder, "references"))
+    _copy_assets(REFS_DIR, os.path.join(folder, REFS_REL))
     if skills_project:
         _copy_assets(
             os.path.join(skills_project, ".claude", "skills"),

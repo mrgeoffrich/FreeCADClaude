@@ -9,8 +9,6 @@ get_sketch the only way to learn a sketch's structure is a pile of exploratory
 run_python dumps, each one a wasted round-trip.
 """
 
-import os
-
 from .diagnostics import _solver_constraint_indices
 from .geometry import (
     _EXTENT_SCHEMA_PROPS,
@@ -19,7 +17,7 @@ from .geometry import (
     _extent_args,
 )
 from .gui_state import _active_edit_object, _is_open_in_editor, _selected_objects
-from .session import REFS_DIR, _artifact_path, active_session_id
+from .session import _artifact_path, active_session_id, ref_path
 from .svg import (
     _SVG_VIEWBOX_RE,
     _SVG_XFORM_RE,
@@ -403,7 +401,7 @@ _EDITING_RULES = (
     "tearing the profile in half. degrees_of_freedom above says whether this sketch "
     "is parametric enough to rescale at all.\n"
     "- API forms, external geometry and the solver-state checks: read "
-    f"{os.path.join(REFS_DIR, 'sketcher-scripting.md')}"
+    f"{ref_path('sketcher-scripting.md')}"
 )
 
 #: Session id this process last appended _EDITING_RULES for -- so the rules land

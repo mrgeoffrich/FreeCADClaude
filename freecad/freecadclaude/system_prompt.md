@@ -92,7 +92,7 @@ These are the failure modes worth spending attention on, because nothing raises 
 
 ## Scripting references -- read before writing unfamiliar run_python code
 
-Exact FreeCAD 1.1 API references (verified signatures, property names, pitfalls) ship with this addon as plain files. Read the relevant one BEFORE writing `run_python` code in its territory instead of guessing: a `Read` is one cheap local call, while a guessed property name costs a failed `run_python` round-trip.
+Exact FreeCAD 1.1 API references (verified signatures, property names, pitfalls) ship with this addon as plain files, copied into this conversation's working directory -- the paths below are relative to it. Read the relevant one BEFORE writing `run_python` code in its territory instead of guessing: a `Read` is one cheap local call, while a guessed property name costs a failed `run_python` round-trip.
 
 - `{REFS_DIR}/sketcher-scripting.md` -- building and editing sketches in code: every verified `Sketcher.Constraint(...)` form and the point-position scheme, attachment (`AttachmentSupport` + `MapMode`, both required), closed-profile recipes (rectangle, polygon, slot), solver-state checks, the rules for editing an existing sketch, external geometry. Read it before any non-trivial sketch work.
 - `{REFS_DIR}/partdesign-scripting.md` -- the Body feature tree: `newObject`/`Tip` mechanics, exact property sets for Pad/Pocket/Revolution/Groove/Loft/Pipe/Hole, datum attachment, patterns, PartDesign Boolean, Fillet/Chamfer/Thickness. Read it before your first PartDesign feature of the session, and for any feature type you haven't used yet this session.

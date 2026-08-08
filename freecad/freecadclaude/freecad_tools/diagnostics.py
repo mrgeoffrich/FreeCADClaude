@@ -11,9 +11,7 @@ is read, whereas the same pointer sitting in the system prompt asks Claude to
 remember it at a moment it has no reason to notice.
 """
 
-import os
-
-from .session import REFS_DIR, active_session_id
+from .session import active_session_id, ref_path
 
 # A failed recompute flags the object Invalid/Error (the red marks in the tree)
 # WITHOUT raising, so a tool can "succeed" while a feature is broken.
@@ -243,7 +241,7 @@ def _pre_existing_failure_note(new):
             f"Its BaseFeature chain loops back on itself ({', '.join(cyclic)}) -- "
             "the cycle a scripted newObject wires when a datum sits between the "
             "Tip and its predecessor. Read "
-            f"{os.path.join(REFS_DIR, 'partdesign-body-tip-cycle-gotcha.md')} "
+            f"{ref_path('partdesign-body-tip-cycle-gotcha.md')} "
             "before trying anything else: the fix is to reassign the older "
             "feature's BaseFeature straight back to its true predecessor, and "
             "reordering Body.Group reproduces the cycle instead of fixing it."
@@ -269,7 +267,7 @@ def _pre_existing_failure_note(new):
         "same symptom: topological naming (a Fillet/Chamfer/Thickness pinning "
         "literal EdgeNN names that an earlier change renumbered -- much the more "
         "common) and a BaseFeature cycle from a scripted newObject, covered in "
-        f"{os.path.join(REFS_DIR, 'partdesign-body-tip-cycle-gotcha.md')}."
+        f"{ref_path('partdesign-body-tip-cycle-gotcha.md')}."
     )
 
 
@@ -704,7 +702,7 @@ def summarize_chain_changes(before):
                 "Reassign the older feature's BaseFeature straight back to its true "
                 "predecessor -- reordering Body.Group reproduces the cycle instead of "
                 f"fixing it. Full writeup: "
-                f"{os.path.join(REFS_DIR, 'partdesign-body-tip-cycle-gotcha.md')}."
+                f"{ref_path('partdesign-body-tip-cycle-gotcha.md')}."
             )
         elif dropped:
             lines.append(
@@ -1088,7 +1086,7 @@ _PARTDESIGN_ESSENTIALS = (
     "not-yet-recomputed Profile fails or builds on stale topology.\n"
     "- Revolution/Groove, Loft/Pipe, Hole's ~25 properties, datum attachment "
     "and MultiTransform: "
-    f"{os.path.join(REFS_DIR, 'partdesign-scripting.md')}"
+    f"{ref_path('partdesign-scripting.md')}"
 )
 
 

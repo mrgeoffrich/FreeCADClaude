@@ -12,7 +12,7 @@ import sys
 
 import FreeCAD
 
-from .freecad_tools import PARAM_PATH, REFS_DIR
+from .freecad_tools import PARAM_PATH, REFS_REL
 
 DEFAULT_MODEL = "claude-opus-5"
 
@@ -40,14 +40,16 @@ _VALID_EFFORT = {eid for _, eid in EFFORTS}
 
 #: The system prompt lives in system_prompt.md alongside this module so it's
 #: easy to read/edit as plain text; loaded once at import time. Its {REFS_DIR}
-#: placeholder becomes the absolute path of the bundled references/ dir (the
-#: run_python scripting references the prompt tells Claude to Read on demand),
-#: imported from freecad_tools rather than rebuilt here so the paths the prompt
-#: cites and the ones the tools' just-in-time notes cite can't drift apart.
+#: placeholder becomes the references folder as the CLI sees it -- relative to
+#: its cwd, which is the session folder the references are copied into. Relative
+#: is what makes one substitution good for every conversation: the prompt is
+#: built once per worker while the session folder changes on "New". Taken from
+#: freecad_tools rather than spelt again here so the paths the prompt cites and
+#: the ones the tools' just-in-time notes cite can't drift apart.
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 _SYSTEM_PROMPT_PATH = os.path.join(_MODULE_DIR, "system_prompt.md")
 with open(_SYSTEM_PROMPT_PATH, "r", encoding="utf-8") as _f:
-    SYSTEM_PROMPT = _f.read().strip().replace("{REFS_DIR}", REFS_DIR)
+    SYSTEM_PROMPT = _f.read().strip().replace("{REFS_DIR}", REFS_REL)
 
 #: Addon root = three levels up from this file (.../FreeCADClaude/freecad/freecadclaude).
 _ADDON_ROOT = os.path.dirname(
