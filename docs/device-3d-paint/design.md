@@ -1,5 +1,28 @@
 # Device 3D paint — technical design
 
+**Read `spikes.md` first. It measured five statements in this document to be
+wrong**, and they are load-bearing rather than cosmetic:
+
+| Where | What this says | What is true |
+|---|---|---|
+| Decision 2, step 1 | a cylinder's seam "is already an edge" | a closed face shares its seam vertices, so no cut angle separates them; seam triangles must be split, or 46.3% of cylinders flip |
+| Decision 2, step 2 | toroids go to the generic planar path | 38.1% of them flip there; unrolled as a tube, none do — and fillets are toroids |
+| Decision 2, step 3 | flips are a winding-sign test | unweighted it flags 1e-7 mm² slivers; it must be area-weighted |
+| Decision 2 | plane/cylinder/cone are "most of a machined part" | 63.6%, or 76.4% with toroids; B-splines are 23.6% and hold the residual risk |
+| everywhere | `mesh.Topology` is in world coordinates | it is object-local; `getGlobalPlacement() · Placement⁻¹` is required or every mark is silently offset |
+
+Together the first three are the difference between **23.3% and 2.49%** of faces
+degrading to fill-only. Two further findings have no home in the text below:
+`LinearDeflection = diag/1200` is not reproducible, because `BoundBox` shrinks
+~1% once a shape has been tessellated while `hashCode()` does not change; and a
+face can ship with an atlas rectangle and no triangles to paint on.
+
+The design's shape survives all of it — texture over a per-BRep-face atlas, the
+three invariants, the phases. Nothing below is rewritten; the corrections live in
+`spikes.md` with their measurements.
+
+---
+
 Send a part from the live document to a tablet as a plain grey solid, let the
 user **paint on its actual surface** with a stylus, send it back, and have
 FreeCAD re-render the paint from angles chosen to show it.
