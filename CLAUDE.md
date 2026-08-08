@@ -36,17 +36,17 @@ chat panel (GUI thread)
 | `Init.py` / `InitGui.py` | Workbench registration (App/GUI). InitGui also has the eval hook. |
 | `freecad/freecadclaude/chat_panel.py` | The dock, Markdown transcript (streamed), buttons, worker wiring. |
 | `freecad/freecadclaude/plan_panel.py` | Second dock: Plan (subagent output) + live task checklist. |
-| `freecad/freecadclaude/flow_layout.py` | `FlowLayout` — a wrapping row layout, used for the chat panel's control strip (model + effort combos, Files/Device/New/Stop/Send). A `QHBoxLayout`'s minimum width is the *sum* of its children's, and a `QPushButton`'s own minimum is ~80px however short its label — so that strip alone floored the dock at **428px** (measured back when the row was model + Files/New/Stop/Send; the row contributed 420 of it, and every button added since would have added another ~80) even though the transcript needs 88 and the input 90. Wrapping makes the layout's minimum the *widest single item* while its `sizeHint` stays the one-row width, so the dock opens wide but can now be dragged to ~98. Rows are flush right, matching where the strip sits. |
+| `freecad/freecadclaude/flow_layout.py` | `FlowLayout` — a wrapping row layout, used for the chat panel's control strip (model + effort combos, Files/Device/New/Stop/Send). A `QHBoxLayout`'s minimum width is the *sum* of its children's, and a `QPushButton`'s own minimum is ~80px however short its label, so a single non-wrapping strip sets the dock's floor far above what the transcript and input need. Wrapping makes the layout's minimum the *widest single item* while its `sizeHint` stays the one-row width, so the dock opens wide and still drags narrow. Rows are flush right, matching where the strip sits. |
 | `freecad/freecadclaude/dock_panel.py` | The singleton dock shell both panels subclass (`DockPanel`): lazy creation, reuse-by-`objectName` across a workbench reload, `instance()`/`widget`. Subclasses supply the inner widget and, via `_on_created`, what happens to a fresh dock (chat raises itself; the plan dock tabs in behind it). |
-| `freecad/freecadclaude/agent_worker.py` | Drives the `claude` CLI per turn; parses stream-json → Qt signals. |
+| `freecad/freecadclaude/agent_worker.py` | Drives the `claude` CLI per turn; parses stream-json → Qt signals. `_handle_tool_use` **surfaces a tool call by default** and special-cases only the exceptions, so a tool added to the allow-list appears in the transcript without a change here — the old allow-list shape let `Write`/`Glob`/`Grep` run invisibly. `_tool_label` picks the detail arg (path basename, pattern, subagent type); an unmapped name falls back to its own lowercased name. `TaskCreate`/`TaskUpdate` stay out of the transcript because the plan dock's checklist already shows them call for call. A `Plan` subagent is the one id in **both** `_plan_ids` and `_chat_tool_ids` — `_handle_tool_result` must not `elif` those two branches, or the transcript entry never gets its result. |
 | `freecad/freecadclaude/agent_config.py` | Model, system prompt (loaded from `system_prompt.md`), CLI flags (tools/mcp/cwd/skills). |
 | `freecad/freecadclaude/system_prompt.md` | The system prompt text itself, edited as plain Markdown. Its `{REFS_DIR}` placeholder is replaced by `agent_config` at load with the absolute path of `references/`. |
-| `freecad/freecadclaude/references/` | run_python scripting references (sketcher / partdesign / part-draft) the system prompt tells Claude to `Read` on demand — progressive disclosure without a skill gate (the old `freecad-run-python` skill collapsed into these + the prompt's execution-contract section). |
+| `freecad/freecadclaude/references/` | run_python scripting references (sketcher / partdesign / part-draft) the system prompt tells Claude to `Read` on demand — progressive disclosure without a skill gate. The prompt's execution-contract section covers the rest. |
 | `freecad/freecadclaude/gui_bridge.py` | In-FreeCAD socket server; runs tools on the GUI thread; run_python arg precheck. |
 | `freecad/freecadclaude/freecad_tools/` | The tools, as a package — see its own map below. `__init__.py` holds the `TOOLS` registry and re-exports the facade the rest of the addon imports (`TOOLS`, `list_schemas`, `feature_snapshot`, `post_tool_notes`, the session-dir helpers), so `from . import freecad_tools` still reaches everything. |
-| `freecad/freecadclaude/device_server.py` | The LAN HTTP server behind the chat panel's **Device** button: serves `device_ui/` to a phone/tablet and takes marked-up images back. Stdlib only — no Qt, no FreeCAD, **not even indirectly**; see "Device annotation" below for why that import list is the design. |
-| `freecad/freecadclaude/device_ui/` | The built web app — **committed build output**, whose source is `web/`. See the build-relationship note below before touching either. |
-| `freecad/freecadclaude/qr.py` | The pairing QR: byte mode, EC level L, versions 3–6, fixed mask 0. Imports no Qt (returns a boolean matrix; `chat_panel._qr_pixmap` paints it), so it's unit-testable headlessly — which is the only way this kind of code can be checked at all. |
+| `freecad/freecadclaude/device_server.py` | The LAN HTTP server behind the chat panel's **Device** button: serves `device_ui/` to a phone or tablet and takes marked-up images back. Stdlib only — no Qt, no FreeCAD, not even indirectly; see "Device annotation" below for what that import list buys. |
+| `freecad/freecadclaude/device_ui/` | The built web app — committed build output, whose source is `web/`. See "Device annotation" before touching either. |
+| `freecad/freecadclaude/qr.py` | The pairing QR: byte mode, EC level L, versions 3–6, fixed mask 0. Imports no Qt (returns a boolean matrix; `chat_panel._qr_pixmap` paints it), so it is unit-testable headlessly. |
 | `freecad/freecadclaude/_deps.py` | Locates the `claude` CLI. |
 | `freecad/freecadclaude/eval_runner.py` | Unattended end-to-end eval (triggered by env var). |
 | `mcp_server.py` | Stdlib-only MCP stdio server the CLI spawns; relays to the bridge. |
@@ -66,15 +66,12 @@ Registry: `freecad_tools.TOOLS` = name → `{schema, run, precheck?}`. Current s
 the general Sketcher/PartDesign/Part path; `document_notes` mutates the
 document too, but only its own notes object).
 
-**There is no approval gate.** `run_python` used to open a confirmation dialog
-per call (with a "Run all this session" button). It was removed — in practice the
-first dialog of every session was answered with "Run all", so it cost one click
-and bought nothing. Tool calls now execute as soon as they arrive. What still
+**There is no approval gate.** Tool calls execute as soon as they arrive. What
 stands between a bad call and a damaged document is the transaction (a raising
 call rolls back whole, newly-created objects removed) and, optionally, the
 `SaveSteps` snapshots. Note the scope this gives up: `run_python` is arbitrary
 Python in the FreeCAD process, so it can touch the filesystem, not just the
-document. That's the deliberate trade for a personal-use addon.
+document. That is the trade for a personal-use addon.
 
 The package is one `tools_*` module per concern over a base of shared
 infrastructure. Dependencies run **tools → infra only** — keep it that way; the
@@ -93,7 +90,7 @@ infra modules import nothing from `tools_*` (that's why `_ERROR_FLAGS` and
 | `tools_sketch.py` | `get_sketch`, `view_sketch_svg` (+ the GeoId overlay). |
 | `tools_capture.py` | `capture_view`, `capture_user_view`, `crop_view`. |
 | `tools_annotate.py` | `annotate_view`, `read_annotation` — the draw-on-the-screenshot round trip. |
-| `tools_device.py` | `send_to_device`, `read_device_image` — the same round trip, but through the tablet in the user's hand. Also `device_upload_dir()`, re-exported for `chat_panel`; it is the whole of the no-FreeCAD seam (see below). No rendering code of its own — it enters `render._offscreen_shot` like the capture tools do. |
+| `tools_device.py` | `send_to_device`, `read_device_image` — the same round trip through a phone or tablet on the LAN. Also `device_upload_dir()`, re-exported for `chat_panel`; it is the whole of the no-FreeCAD seam described under "Device annotation". No rendering code of its own — it enters `render._offscreen_shot` like the capture tools do. |
 | `tools_cutaway.py` | `cutaway` (+ clip-plane resolution). |
 | `tools_export.py` | `export`. |
 | `session.py` | Artifact folders: the per-conversation session dir, the script/step archives (`_session_subdir`/`_safe_name` build every artifact path), plus the two paths that aren't artifacts but that several modules must agree on: `PARAM_PATH` (the preferences root) and `REFS_DIR` (the bundled `references/`). Both are single-spelled here and imported by `agent_config` rather than re-declared — `agent_config` substitutes `REFS_DIR` into the prompt's `{REFS_DIR}` while the tools cite paths under it in their notes, so a second copy could drift and hand Claude a path that doesn't resolve. `active_session_id()` is how a tool remembers "already said this in this conversation" without inventing its own notion of when one starts. |
@@ -127,56 +124,51 @@ reasons about, not something it can visually see.
 Besides this MCP registry, a few of the CLI's own built-in tools are always
 enabled (`agent_config.build_config`'s `builtin_tools`): `Read` (the SVG file
 from `view_sketch_svg`, skill reference files, and the bundled
-`references/*.md` scripting references), `Write` (author plain-text
-files, e.g. `freecad-lofi-sketch`'s SVGs), and `Glob`/`Grep` (file search — find
+`references/*.md` scripting references), `Write`/`Edit` (author plain-text
+files whole or patch them in place, e.g. `freecad-lofi-sketch`'s SVGs), and
+`Glob`/`Grep` (file search — find
 files by name/path, search their contents; so Claude can locate a STEP/STL to
 import or a previous export before Reading it). All run inside the `claude` CLI
-process itself, not the MCP bridge; all are read-only except `Write`, which
-authors files on disk but never touches the live document. `Glob`/`Grep` used to
-be gated behind a configured skills project — they're now always-on (decoupled
-from `_SKILL_TOOLS`, which is now just `Skill`), since file search is a general
-capability, not a skill-only one.
+process itself, not the MCP bridge; all are read-only except `Write`/`Edit`,
+which reach the filesystem but never the live document. `Glob`/`Grep` are
+always on, independent of `_SKILL_TOOLS` (which covers only `Skill`), since file
+search is a general capability, not a skill-only one.
 
-**The survey/detail split** (`get_objects` → `describe_objects`): `get_objects`
-used to carry the detail for *every* object at once. Measured over the 34 logged
-calls it came to **15.9 KB a call** (up to 31 KB) — and it is called about **once
-per session**, so it is not a frequency problem, it is one very expensive payload.
-Every trim below was checked against what the logged sessions actually referred to
-again afterwards, not guessed:
+**The survey/detail split** (`get_objects` → `describe_objects`): `get_objects` is
+the cheap survey, called about once per session, so its cost is one large payload
+rather than a frequency problem. Each trim below is checked against what the
+logged sessions actually referred to again afterwards, not guessed:
 
-- **Origin planes and axes were 38% of the payload and carry no information.**
-  592 of 1,419 logged objects are the `App::Origin`/`App::Plane`/`App::Line`/
-  `App::Point` set every Body and Std Part gets; every entry is identical
-  boilerplate whose bounding box is literally **±1e100**. But the *names* matter —
+- **Origin planes and axes are a large share of the payload and carry no
+  information.** The `App::Origin`/`App::Plane`/`App::Line`/`App::Point` set
+  every Body and Std Part gets is identical boilerplate whose bounding box is
+  literally **±1e100**. But the *names* matter —
   a multi-body document numbers them (`XY_Plane002`) and picking the wrong suffix
-  is a logged error (`KeyError: 'XY_Plane'`) — and the flat list never said which
-  Body owned which. So they're collapsed onto their owner's entry as `origin`
+  is a logged error (`KeyError: 'XY_Plane'`) — and a flat list doesn't say which
+  Body owns which. So they're collapsed onto their owner's entry as `origin`
   (`_origin_owners` walks each `App::Origin`'s `OriginFeatures` rather than
-  guessing from names): fewer bytes *and* a mapping that wasn't there before.
+  guessing from names): fewer bytes *and* the ownership mapping.
   `_ORIGIN_NOTE` explains the resulting gap between `object_count` and the
   entries, because an unexplained gap reads as missing objects and costs exactly
   the exploratory `run_python` this tool exists to prevent.
-- **Per-feature bounding boxes are dead weight; sketch ones are not.** Of the
-  non-integer bbox numbers that only an in-body feature carried, **505 were never
-  referred to again and 82 were — 76 of those 82 from sketches**. In-body feature
-  boxes are also 29% exact duplicates of each other (a chain all bounding the same
+- **Per-feature bounding boxes are dead weight; sketch ones are not.** A bbox
+  only an in-body feature carries is almost never referred to again, and the ones
+  that are come mostly from sketches. In-body feature boxes
+  are also largely duplicates of each other (a chain all bounding the same
   growing solid, which the Body's own entry reports). So `_reported_bbox` skips
   anything derived from `PartDesign::Feature` and keeps everything else.
-- `position` was `[0,0,0]` on **82%** of objects, `label` usually repeats `name`,
-  and `visible` only matters when true — all three are now conditional.
+- `position` is `[0,0,0]` on most objects, `label` usually repeats `name`,
+  and `visible` only matters when true — all three are conditional.
 - Output is **compact JSON** (`separators=(",", ":")`), not `indent=2`: the
-  indentation alone was a third of the payload, and this is a bulk list Claude
+  indentation alone costs a third of the payload, and this is a bulk list Claude
   reads rather than parses.
 
-Net: **72% smaller** on real saved documents (a 68-object/3-body model goes 25.0 KB
-→ 7.3 KB), and `get_objects` itself runs in ~2.4 ms.
-
-`describe_objects(names=[...])` is where the detail went, and it is deliberately
-allowed to be slow and large — you name the handful you care about. It answers the
-object-level half of what `run_python` was being used for: **42% of the 499 logged
-`run_python` calls are pure read-only inspection** (no mutation at all), and the
-object-level themes were bbox 92, volume 37, chain/tip 29, validity 17, properties
-15. So it returns full placement *including rotation*, the world bbox, shape
+`describe_objects(names=[...])` is where the detail lives, and it is allowed to be
+slow and large — you name the handful you care about. It answers the
+object-level half of what `run_python` is otherwise used for: a large share of
+logged `run_python` calls are pure read-only inspection with no mutation at all,
+asking mostly for bbox, volume, chain/tip, validity and properties. So it returns
+full placement *including rotation*, the world bbox, shape
 metrics (solids/faces/edges/vertexes, volume, area, centre of mass, `isValid`),
 dimensions, attachment (`AttachmentSupport`/`MapMode`/`AttachmentOffset`),
 dependency links **both ways** (`depends_on` walked generically off
@@ -193,8 +185,8 @@ And `_extra_metrics` (area + centre of mass) is a **separate** hash-keyed cache
 from `diagnostics._shape_metrics` on purpose — that one feeds the fingerprint diff
 running twice on every `run_python` call on the GUI thread, and two more GProp
 reads there would make every mutating call pay for something only this tool wants.
-Caching them here took a 9-object describe from 173 ms to 2 ms on a repeat (361 ms
-cold, which is the honest price of `Volume`/`Area`/`isValid` on real solids).
+Caching them here makes a repeat describe near-free; the cold call still pays the
+honest price of `Volume`/`Area`/`isValid` on real solids.
 
 **Document notes** (`document_notes`, storage in `doc_notes.py`): free text carried
 inside the FCStd saying what the model is for, how its parts relate and how it is
@@ -232,7 +224,7 @@ unlabelled wires and omit construction/external geometry entirely. So `get_sketc
 is the only way to edit an existing sketch without guessing: it returns every
 geometry element with its GeoId/coords/construction flag, every constraint with its
 index/operands/datum, a `constraints_by_geoId` reverse index, the solver state, and
-external geometry. `view_sketch_svg` now overlays GeoId labels + the omitted
+external geometry. `view_sketch_svg` overlays GeoId labels + the omitted
 construction/external geometry + the origin on top of importSVG's exact paths
 (`_annotate_sketch_svg`, positioned from the wrapper `<g transform>` it parses out,
 so it composes with `_flat_crop_svg`). Three verified facts the code depends on:
@@ -263,9 +255,9 @@ offscreen-render + inline-PNG path, but with a Coin `SoClipPlane` inserted at th
 root of the throwaway view's scene graph (world coords; discarded with the view,
 so the document and the user's real view are untouched) to slice the model open
 and reveal internal features. The cut is *hollow* (the exposed interior surfaces,
-not a filled cross-section — Coin's clip doesn't cap); a capped section would mean
-a geometry Boolean cut on temporary objects, deliberately not done to keep the
-tool non-mutating like `capture_view`. Both share `_resolve_camera_args`/
+not a filled cross-section — Coin's clip doesn't cap); a capped section would need
+a geometry Boolean cut on temporary objects, which would stop the tool being
+non-mutating like `capture_view`. Both share `_resolve_camera_args`/
 `_apply_camera_plan` for the `view`/`azimuth`/`elevation` angle handling.
 `capture_user_view` is the other sibling, for the opposite situation: instead of
 an auto-framed offscreen camera Claude controls, it screenshots the user's *own*
@@ -301,66 +293,64 @@ wherever the user has since orbited to. Editor is `open -a Preview` (macOS) /
 preference under `PARAM_PATH`.
 
 **Device annotation** (`device_server.py` + `qr.py` + `tools_device.py` +
-`device_ui/`, source in `web/`): the same round trip again, but the image editor
-is a phone or tablet on the LAN. `send_to_device` renders a capture and
-*publishes* it; the paired page shows it over SSE, the user draws with a stylus
-and places **dimensions**; `read_device_image` returns the flattened PNG inline
-plus the annotation document verbatim. Design docs: `docs/device-annotation-{design,plan}.md`.
+`device_ui/`, source in `web/`): the same round trip, with a phone or tablet on
+the LAN as the editor. `send_to_device` renders a capture and publishes it; the
+paired page shows it over SSE, the user draws with a stylus and places
+**dimensions**; `read_device_image` returns the flattened PNG inline plus the
+annotation document verbatim. The server runs only while the chat panel's
+**Device** button says so. Design docs: `docs/device-annotation-{design,plan}.md`.
 
-- **The HTTP server never calls into FreeCAD, and the import list is how that is
-  enforced.** `device_server.py` imports no FreeCAD and no Qt, not even
-  indirectly — so the invariant is true by construction rather than by
-  discipline, and the whole module is testable under a bare interpreter. What it
-  buys: no `gui_bridge` marshalling in the server, no way for a LAN request to
-  freeze the GUI thread, and a one-sentence security story (the worst a
-  token-holder can do is read pushed captures and write image files into one
-  folder — a long way from `run_python`). What it costs is that **every path and
-  every preference has to be passed in**: `<session>/mobile/` walks
-  `session_dir` → `artifacts_dir` → a FreeCAD preference, so the GUI thread
-  resolves it (`tools_device.device_upload_dir()`, from `chat_panel._on_device`
-  on start and from `send_to_device` on every publish) and hands over a string.
-  Same for `idle_timeout`. When you are tempted to have a handler "just look
-  something up", that is the line.
-- **`device_ui/` is committed build output.** Users install from the `main`
-  branch as a plain file copy: no Node, no npm, no build step. Whatever is in
-  that folder *is* the app they get. **Any change under `web/` must be rebuilt
-  and committed in the same commit** (`npm ci && npm run build`) — `RELEASE.md`
-  makes it a release step too. The build is deterministic (fixed asset names, no
-  hashes, no code splitting), so a rebuild that changes nothing produces no diff.
-- **Plain HTTP, so the token crosses the LAN in clear.** Accepted, and stated
-  plainly in `README.md`/`SECURITY.md` rather than implied away. It also caps the
+- **The HTTP server never calls into FreeCAD, and its import list is what
+  enforces that.** `device_server.py` imports no FreeCAD and no Qt, not even
+  indirectly, so the module is testable under a bare interpreter, a LAN request
+  cannot freeze the GUI thread, and the worst a token-holder can do is read
+  pushed captures and write image files into one folder. The cost is that every
+  path and preference is passed *in*: `<session>/mobile/` is resolved on the GUI
+  thread (`tools_device.device_upload_dir()`, from `chat_panel._on_device` on
+  start and from `send_to_device` on every publish) and handed over as a string,
+  and `idle_timeout` the same way. A handler that "just looks something up"
+  crosses that line.
+- **`device_ui/` is committed build output.** Users install from `main` as a
+  plain file copy — no Node, no build step — so whatever is in that folder is the
+  app they get. Rebuild it (`npm ci && npm run build`) and commit it in the same
+  commit as any `web/` change; `RELEASE.md` repeats this as a release step. The
+  build is deterministic (fixed asset names, no hashes, no code splitting), so a
+  rebuild that changes nothing produces no diff.
+- **Plain HTTP, so the token crosses the LAN in clear.** Accepted for a
+  personal-use addon and stated in `README.md`/`SECURITY.md`. It also caps the
   client: `getUserMedia` needs a secure context, so there is no in-page
-  viewfinder — but `<input type="file" capture="environment">` opens the camera
-  app over plain HTTP and always has, which is the actual requirement.
-- **Idle auto-stop, and what counts as idle.** The clock runs only while **no
-  request is in flight**, and an `/api/events` stream is in flight for as long as
-  the page is open — so the timeout is "the tablet went away", not a deadline the
-  user has to beat while drawing. `_serving()` therefore brackets the *dispatch*,
-  never `handle_one_request`: with keep-alive a handler spends most of its life
-  blocked reading the next request, and counting that would keep the server up
-  for ever. Default 30 min, `DeviceIdleMinutes` preference, negative to disable.
+  viewfinder, but `<input type="file" capture="environment">` opens the camera
+  app over plain HTTP.
+- **Idle auto-stop counts only time with no request in flight**, and an
+  `/api/events` stream is in flight for as long as the page is open — so the
+  timeout means "the tablet went away", not a deadline the user has to beat while
+  drawing. `_serving()` brackets the *dispatch*, never `handle_one_request`: with
+  keep-alive a handler spends most of its life blocked reading the next request,
+  and counting that would keep the server up for ever. Default 30 min,
+  `DeviceIdleMinutes` preference, negative to disable.
 - **"New" clears the server's state** (`reset_session`, from `chat_panel._on_new`
-  after the new session id is minted). The feed deliberately outlives `stop()` —
-  `read_device_image` is routinely called after the user has stopped the server —
-  which is right within a conversation and wrong across two: otherwise the next
-  chat's `read_device_image` answers with the previous chat's marked-up capture,
-  and its uploads land in the previous session's folder.
-- **Measurement is a division, not an estimate, and the caveat travels with it.**
+  after the new session id is minted). The feed outlives `stop()` on purpose,
+  since `read_device_image` is routinely called after the user has stopped the
+  server; without the reset the next chat's `read_device_image` would answer with
+  the previous chat's capture and its uploads would land in the previous
+  session's folder.
+- **Measurement is a division, and the caveat travels with it.**
   `mm_per_px = cam.height / rendered_height_px` off the ortho camera, read in
-  `render._capture_optics` **inside** the offscreen view and **last** (`_fit_render_size`
-  can re-frame the camera and change the pixel height in the same call). An
-  oblique camera **downgrades** confidence rather than dropping the number:
-  Claude has to tell "no measurement" from "a measurement you shouldn't machine
-  to", and an absent field makes those identical. Hence `send_to_device` defaults
-  face-on where `capture_view` defaults iso.
+  `render._capture_optics` inside the offscreen view and last — `_fit_render_size`
+  can re-frame the camera and change the pixel height in the same call. An
+  oblique camera downgrades confidence rather than dropping the number, so Claude
+  can tell "no measurement" from "a measurement you shouldn't machine to"; an
+  absent field makes those identical. `measured_mm` and `target_mm` stay separate
+  facts, and with no scale a dimension reads in pixels. Hence `send_to_device`
+  defaults face-on where `capture_view` defaults iso.
 
 **Draw style** (`style` on both `capture_view` and `cutaway`, schema shared via
 `render._STYLE_SCHEMA_PROPS`): `shaded` (default), `xray`, `wireframe`.
 `_force_draw_style` is the single place the viewer's override mode is set — and
-that override is *why* a ViewObject's `DisplayMode` has no effect on a capture
-(it deliberately outranks per-object modes so a shot can't inherit e.g. `Points`
-from one object). Measured the confusing way first: `DisplayMode` read back as
-`Wireframe` while the render came out shaded. `wireframe` is therefore a per-view
+that override is *why* a ViewObject's `DisplayMode` has no effect on a capture: it
+outranks per-object modes so a shot can't inherit e.g. `Points` from one object.
+Expect `DisplayMode` to read back as something the render doesn't show.
+`wireframe` is therefore a per-view
 override — no document mutation, dies with the throwaway view. `xray` has no
 draw-style equivalent, so it goes through `Transparency` (60%; at 80 the form
 dissolves into the background) and must be restored.
@@ -368,38 +358,31 @@ dissolves into the background) and must be restored.
 **`_shot_appearance` saves in one pass and applies in a second, and that split is
 load-bearing.** Setting `Transparency` on a Body **propagates to the features
 inside it**, so a save-then-set-as-you-go loop reads an already-propagated value
-for objects it reaches later and "restores" them to the shot's value. That leaked
-60% transparency onto 4 objects of a real document before the split was added.
+for objects it reaches later and "restores" them to the shot's value, leaking the
+shot's transparency into the document.
 The same hazard applies to any ViewObject property that propagates — record
 everything before changing anything. Note also what the override does *not* cover:
 `Hidden Line` renders identically to `Shaded` on FreeCAD 1.1 (no edge lines), so
 it isn't offered.
 
 **A crop defaults its omitted axes to the SHOWN objects, and the image is shaped
-to the geometry** — both learned from one session where Claude could not get a
-usable picture of a 122×6.6mm door and gave up on looking at it entirely
-(*"raster crops aren't helping on an 18:1 strip; I'll analyse the geometry
-numerically instead"*), which is what led to the ~1,700-`slice()` call that froze
-the GUI for 2m46s. Two separate causes:
-- `_apply_extent_crop` called `_document_bbox(doc)` with no `names`, so an axis
-  the caller didn't specify defaulted to the **whole document** — cropping x on
-  one object out of 36 blew y and z out to everything else in the file. The door
-  (Y 114..120.6) got framed against the document's Y −6.6..120.6, landing at 4.9%
-  of frame height jammed on the top edge: a *narrower* crop rendered worse than
-  no crop. Predicted-vs-observed framing matched to within 1% on both axes, and
-  `_shown_extents_note` had been reporting the right box while the camera framed
-  a different one. `_framed_box(doc, keep_names, extents)` is now the single
+to the geometry.** Both matter most on long thin parts, which are otherwise
+unphotographable:
+- An axis the caller doesn't specify must default to the shown objects, not the
+  whole document. Defaulting to the document lets a crop on one axis blow the
+  other two out to everything else in the file, so a *narrower* crop renders
+  worse than no crop. `_framed_box(doc, keep_names, extents)` is the single
   definition of "the box a capture frames", used by both the framing and the
   auto-size so they cannot disagree.
-- Even framed correctly, an 18:1 part in a fixed 4:3 image is 6.8% geometry and
-  ~90% black. `render._fit_render_size` now shapes the *image* to the box's
+- Even framed correctly, a long thin part in a fixed 4:3 image is mostly black.
+  `render._fit_render_size` shapes the *image* to the box's
   on-screen aspect (`_screen_half_extents` off the live camera basis — it must
   run after `_apply_camera_plan`, since how wide a box looks depends on where the
   camera ended up). Same 1.23 MP budget and 1568px long-edge ceiling, clamped to
   `_MAX_AUTO_ASPECT` 4:1; 4:3 input still yields exactly 1280×960, so ordinary
   parts are untouched. An explicit `width`/`height` disables it, and every
   unclear case (no ortho camera, degenerate box, framing refused) falls back to
-  the old size — it can only improve a shot or leave it alone.
+  the fixed size — it can only improve a shot or leave it alone.
 `view_sketch_svg` (exact SVG; for
 3D pass `view=front/top/...` → `TechDraw.projectToSVG` orthographic) is for
 reasoning about exact coordinates as text, not for looking at the shape — its
@@ -439,14 +422,24 @@ turn that would mint one).
 project dir (so its `.claude/skills` load) else a temp dir.
 
 - `--tools ""` disables ALL built-ins (incl. `Skill`). We enable a safe set:
-  `Read` and `Write` (always — skill reference files and plain-text file
+  `Read`, `Write` and `Edit` (always — skill reference files and plain-text file
   authoring), `Glob`/`Grep` (always — file search), the `Task*` family (todo +
-  Plan subagent), and `Skill` when a skills project is configured. `Bash`/`Edit`
-  stay OFF — the only path that mutates the *live FreeCAD document* is
-  `run_python`; `Write` can create/overwrite arbitrary files on
-  disk but never touches the document.
+  Plan subagent), `Skill` when a skills project is configured, and `PowerShell`
+  on Windows only (`_SHELL_TOOLS`, empty elsewhere — the name doesn't resolve on
+  macOS and needs an opt-in on Linux). The only path that mutates the *live
+  FreeCAD document* is `run_python`; the rest reach the filesystem but never the
+  document. A shell is not extra reach — `run_python` is already arbitrary
+  Python in the FreeCAD process — but it runs in the CLI subprocess, so unlike
+  `run_python` it can't block the GUI thread. `Bash` stays off: one shell is
+  enough and PowerShell is the one matching the deploy target.
+- An unrecognised name in `--tools` is **dropped silently**, with no warning and
+  no error — a renamed or misspelt tool degrades capability invisibly. The
+  `system` init event in `stream.jsonl` lists what the CLI actually resolved;
+  that is the only place a drop shows up.
 - The subagent launcher is reported as `Agent` in tool_use even though enabled via
   `Task`; `Agent` is in the allow-list so subagents (e.g. `Plan`) don't prompt.
+  The CLI treats the two names as aliases, so listing both in `--tools` is
+  redundant, not additive.
 
 ## Dev workflow
 
@@ -460,15 +453,12 @@ project dir (so its `.claude/skills` load) else a temp dir.
   functions, parsing). GUI-only bits (FreeCADGui, QApplication) need
   `QT_QPA_PLATFORM=offscreen` and may lack fonts/`activeView`. Give `freecadcmd`
   an **absolute** path — with a relative one it runs nothing and still exits 0.
-  The device-feature scripts (`eval/test_device_server.py`,
-  `test_device_tools.py`, `test_qr.py`, `test_capture_scale.py`) are the ones
-  worth re-running after touching any of it; the first three also run under a
-  plain `python3` (nothing they import touches FreeCAD at module level —
-  `test_device_tools` skips its one no-active-document check there).
+  After touching the device feature, re-run `eval/test_device_server.py`,
+  `test_device_tools.py`, `test_qr.py` and `test_capture_scale.py`; the first
+  three also run under a plain `python3`.
 - **The web app:** `cd web && npm ci` once, then `npx vitest run` and
-  `npm run build`. The build writes `freecad/freecadclaude/device_ui/`, which is
-  **committed** — rebuild and commit it in the same commit as any `web/` change
-  (see "Device annotation" above).
+  `npm run build`. The build writes the committed `freecad/freecadclaude/device_ui/`
+  — rebuild and commit it alongside any `web/` change.
 - **End-to-end eval:** `python3 eval/run.py [-p ... -e <regex>]` (cross-platform
   — one stdlib-only script, no venv needed) — launches FreeCAD, runs a prompt
   through the real agent, snapshots the doc to
@@ -514,57 +504,45 @@ project dir (so its `.claude/skills` load) else a temp dir.
 ## Just-in-time reference pointers
 
 **A "read this file before you do X" instruction in the system prompt is close to
-a no-op, and this was measured, not assumed.** Across the 33 logged sessions that
-ran `run_python` since the `references/` files landed (12 Jul 2026 — the same
-commit that told Claude to read them), `sketcher-scripting.md` was read **zero
-times** despite ~16 of those sessions doing sketch work, `part-draft-recipes.md`
-zero times, and `partdesign-scripting.md` 4 times against ~14 sessions doing
-PartDesign work. `inspect_api` was called 46 times over the same period. Two
-reasons, and only one is a wording problem:
+a no-op.** Measured against the logged sessions, reference files told about in the
+prompt go essentially unread however much work their territory sees. Two reasons,
+and only one is a wording problem:
 
 1. The trigger fires on a moment the model can't observe — "before writing
    unfamiliar code" asks it to notice it's about to do something it doesn't know
    well, which is exactly the judgement an over-confident model skips.
 2. `inspect_api` is a genuinely better answer for a signature (ground truth from
-   the running install, and it can't drift), so it wins. That means a reference
-   only earns its keep for what `inspect_api` *can't* return — pitfalls, the
-   both-required property pairs, the recipes. Chasing a 100% read rate would be
-   chasing the wrong number.
+   the running install, and it can't drift), so it wins. A reference only earns
+   its keep for what `inspect_api` *can't* return — pitfalls, the both-required
+   property pairs, the recipes. Chasing a 100% read rate would be chasing the
+   wrong number.
 
-So the pointer is attached to a **detected condition** instead, arriving with the
+So a pointer is attached to a **detected condition** instead, arriving with the
 evidence in a tool result — the same channel that makes the `⚠` notes work.
 
-**That fixed when the pointer arrives, not whether the file gets opened — also
-measured.** Over the 13 logged sessions since the triggers landed (30 Jul,
-`a2e79f9`), the pointer notes fired **11 times across 9 sessions** — the trigger
-mechanism works — but were followed by a `Read` of the cited file **once**, with
-**171 `run_python` calls** running past an unopened reference. That is the same
-near-zero read rate the prompt-based instruction got. Two conclusions, and the
-second is the design rule now:
+**Better timing changes when a pointer arrives, not whether the file gets
+opened.** The condition triggers fire reliably, and are still almost never
+followed by a `Read` of the cited file. Two rules follow:
 
 1. A pointer's read rate is roughly independent of how well-timed it is. Don't
    spend another round of wording on it.
-2. **Carry the payload, cite the file only for the tail.** `_EDITING_RULES` was
-   already built this way and is the one that works: it fired in 6 sessions and
-   needed zero reads, because the four rules are *in* the note and only the API
-   forms/external-geometry residue is behind the link. `_PARTDESIGN_ESSENTIALS`
-   was rewritten to match (it used to be a bare "read this file", ignored 10
-   times out of 11). A note that has to be followed to be useful mostly isn't.
+2. **Carry the payload, cite the file only for the tail.** `_EDITING_RULES` is
+   the model: it needs no reads at all, because the four rules are *in* the note
+   and only the API forms/external-geometry residue sits behind the link.
+   `_PARTDESIGN_ESSENTIALS` follows the same shape. A note that has to be
+   followed to be useful mostly isn't.
 
 **The snapshot is a shape FINGERPRINT, and it is cached by OCCT shape hash.**
 `_feature_states` records `(contribution, solids, faces, edges, vertexes, bbox,
-valid)` per feature, not just volume+solids — because volume alone is a lossy
-way to ask "did this change": a feature re-topologised, moved, or left invalid at
-constant volume was invisible to the old diff. `_shape_metrics` caches those
+valid)` per feature, not just volume+solids — volume alone is a lossy way to ask
+"did this change", since a feature can re-topologise, move, or go invalid at
+constant volume. `_shape_metrics` caches those
 measurements under `(object name, Shape.hashCode())`, which is sound because they
 are a pure function of the shape — a rebuilt shape gets a new hash and misses.
-Measured on a 10-feature chain: hashing the chain is **0.03 ms**, reading
-`Volume`/`Solids` is **99 ms**, `isValid()` is **51 ms** — so validity was never
-the expensive part, `Volume` was, and we were already paying it. Net effect on a
-23-feature document, per `run_python` call (two passes): **741 ms → 0.4 ms** when
-nothing rebuilt, ~140 ms when a mid-chain feature does. The richer snapshot is
-several times *cheaper* than the thin one it replaced, and that matters because
-this runs on the GUI thread.
+Hashing a chain is orders of magnitude cheaper than reading `Volume`/`Solids`, so
+validity is not the expensive part; `Volume` is, and the diff pays it anyway.
+With the cache, a call that rebuilds nothing costs almost nothing, which matters
+because this runs on the GUI thread.
 
 The five notes, and what each one is:
 
@@ -572,47 +550,40 @@ The five notes, and what each one is:
   features reach a Body's Tip**. This is the one structural break nothing else
   catches: a dropped feature keeps a valid shape and recomputes without error, it
   just stops contributing — so neither the Invalid scan nor the volume diff says
-  a word. Measured on the session that prompted it: two features left the chain
-  on `run_python` call **3 of 40** and it wasn't noticed until call **30**. The
+  a word, and a break can go unnoticed for dozens of calls. The
   note echoes the **pre-call chain** back, because that's what's most expensive
-  to recover later — once the break is spotted, the only chain still in context
-  is the broken one, and the repair then rebuilds toward a guess (that session's
-  repair invented an order the document had never had). Three shrink causes are
-  *not* breakage and are classified apart, each found by the pristine-document
-  tests rather than reasoned about: a feature the call deleted, the Tip
-  deliberately moved back (plain line, no ⚠ — those features are still linked,
-  just past the Tip), and a Tip left dangling by `doc.removeObject` (its own ⚠,
-  since "re-link via BaseFeature" would be the wrong fix). It also subsumes the
-  tip-cycle gotcha below: a scripted `newObject` that wires a cycle now trips
-  this on the very call that does it.
+  to recover later: once the break is spotted, the only chain still in context is
+  the broken one, and a repair then rebuilds toward a guessed order. Three shrink
+  causes are *not* breakage and are classified apart: a feature the call deleted,
+  the Tip moved back on purpose (plain line, no ⚠ — those features are still
+  linked, just past the Tip), and a Tip left dangling by `doc.removeObject` (its
+  own ⚠, since "re-link via BaseFeature" would be the wrong fix). It also
+  subsumes the tip-cycle gotcha below: a scripted `newObject` that wires a cycle
+  trips this on the very call that does it.
 
 - `diagnostics.summarize_validity_changes(before)` fires when a feature's shape
-  stops being **geometrically valid**. The failure the volume diff was blind to by
+  stops being **geometrically valid**. The failure the volume diff is blind to by
   construction: an invalid solid recomputes without error, keeps its solid count
-  and reports a plausible volume, so every other gate passes it. Found by the
-  eval that followed the tip-chain work — the agent signed off *"document
-  recomputes clean, one solid"* on a tip shape that fails OCCT validation, and
-  `isValid()` was called **nowhere** in the package. Three things make it usable
+  and reports a plausible volume, so every other gate passes it and the model
+  signs off on a document that "recomputes clean, one solid" while its tip shape
+  fails OCCT validation. Three things make it usable
   rather than a nag: it reports the **first** such feature in the tip chain, not
   the set (invalidity is inherited downstream, so a list names innocents);
   `_invalid_subshapes` localises it to specific faces/edges with world extents,
   since a bare `False` is unactionable; and `_operation_region` **cross-checks
-  before naming a cause** — on the replay it caught a `Fillet` working at Z 48..55
-  whose bad faces were all at Z 0..14, and said so instead of asserting "your
-  radius is too big". Base rate is low enough to be worth saying: **1 of 57**
-  bodies across real documents has an invalid tip shape. Deliberately does *not*
+  before naming a cause**, so a `Fillet` whose bad faces sit nowhere near the
+  region it worked on is reported as such rather than blamed for its radius.
+  An invalid tip shape is rare across real documents, so treat the note as a real
+  finding rather than routine noise. It does *not*
   call `Shape.check()` — the BOP check can run for seconds, and this is the GUI
   thread.
 
 - `diagnostics.summarize_new_failures(before)` escalates when
   `_broke_an_existing_feature` holds (a previously-fine feature went Invalid) and
   hands off to `_pre_existing_failure_note`, which **works out which cause it is
-  before naming one**. It used to assert the tip cycle outright from that
-  symptom, and that was wrong: measured, the note fired in 2 sessions since it
-  landed and *neither* was a cycle (no `must be a DAG` in either log), while in
-  one Claude had to overrule it — *"its `Base` pins literal edge names
-  (`Edge4…Edge18`)… Not a BaseFeature [cycle]"*. The symptom is shared with
-  **topological naming**, which is much the more common cause. So now:
+  before naming one**. The symptom does not identify the cause: it is shared
+  between a tip cycle and **topological naming**, and topological naming is much
+  the more common of the two. So:
   `_on_basefeature_cycle` follows `BaseFeature` and reports the cycle only when
   the chain actually repeats; `_pinned_subelements` detects a dress-up
   hardcoding `EdgeNN` names and names topological naming instead, with the
@@ -622,34 +593,30 @@ The five notes, and what each one is:
 - `tools_sketch._editing_rules_note()` appends the rules for changing an existing
   sketch to the **first `get_sketch` of each conversation** (keyed on
   `active_session_id()`, so "New" re-arms it). A `get_sketch` call *is* "I am
-  about to edit a sketch", so it's the one moment those rules are relevant; they
-  used to cost 700 always-loaded words in the prompt and then, briefly, sat in the
-  file with the 0% read rate.
+  about to edit a sketch", so it's the one moment those rules are relevant.
 - `diagnostics._partdesign_reference_note(before)` delivers
   `_PARTDESIGN_ESSENTIALS` the first time a conversation leaves a
   `PartDesign::Body` in the document. The trigger is the **Body**, not a feature,
   because a Body is usually created in its own call — which puts the note ahead
-  of the first feature rather than after it. Its contents were picked from the
-  errors actually logged (`KeyError: 'XY_Plane'`, a feature object passed where
+  of the first feature rather than after it. Its contents track the errors the
+  logs actually show (`KeyError: 'XY_Plane'`, a feature object passed where
   `newObject` wants a type string, `Tip` read as `None`, `Transformed`/
-  `SubElementNames` guessed on a pattern, `Body: object is not allowed`), not
-  from what the reference happens to cover; `partdesign-scripting.md` is cited at
+  `SubElementNames` guessed on a pattern, `Body: object is not allowed`, link
+  properties read back as objects rather than tuples), not what the reference
+  happens to cover; `partdesign-scripting.md` is cited at
   the end for Revolution/Groove, Loft/Pipe, Hole, datums and MultiTransform.
 
-**Both the trigger and the decision not to add one were measured**, over the same
-logged sessions (33 with `run_python`, 325 calls, 9% of calls hitting a traceback):
+Which references get a trigger is decided on measurement, comparing each one's
+territory on how early its work starts, how much work follows, and how often that
+work errors.
 
-| Reference | Sessions | First call at | More followed | Error rate |
-|---|---|---|---|---|
-| `partdesign-scripting.md` | 14/33 | run_python #2 (median) | 11/14 sessions | **17%** — ~2× baseline |
-| `part-draft-recipes.md` | 10/33 | #4 (median) | 3/10 sessions | **3%** — below baseline |
-
-So PartDesign work is where wrong-property guesses actually cost something, and a
-pointer there front-runs more work in 11 of 14 sessions. Part-primitive/Draft work
-errored once in 37 calls and in 7 of 10 sessions nothing followed the first call —
-a pointer there would be noise, so `part-draft-recipes.md` deliberately has no
-trigger and is reachable only from the prompt's reference list. Don't add one "for
-symmetry" without re-running the numbers.
+PartDesign is where wrong-property guesses actually cost something: it errors at
+well above the baseline rate, starts early in a session, and most sessions that
+create one feature go on to create more, so a pointer there front-runs real work.
+Part-primitive/Draft work errors below baseline and usually stops after the first
+call — a pointer there would be noise, so `part-draft-recipes.md` has
+no trigger and is reachable only from the prompt's reference list. Don't add one
+"for symmetry" without re-running the numbers.
 
 When you add a reference file, ask which observable condition should cite it, and
 whether the work it covers actually fails. If neither, expect it not to be read —
@@ -672,52 +639,53 @@ and that may be fine.
 - Waiting for a turn on the GUI thread must use a **nested `QEventLoop`**, never
   `sleep` — otherwise the bridge can't marshal tool calls and it deadlocks.
 - Spawn the CLI with `creationflags=CREATE_NO_WINDOW` + piped stdio, or a console
-  window pops up (and historically hung) under the windowed FreeCAD process.
+  window pops up under the windowed FreeCAD process and can hang it.
 - `run_python` runs inside an `openTransaction`/`commit` (undoable); on error it
   aborts AND removes newly-added objects (undo may be off in some contexts).
 - **A loop of Part shape operations doesn't run slowly — it freezes FreeCAD, and
   nothing can preempt it.** `run_python` executes on the GUI thread, so a call
-  that takes minutes is minutes of a dead application. Measured: a session that
-  ran `while x <= 151.5: ymax(x); x += 0.1` — ~1,700 `Shape.slice()` calls on a
-  725-face solid at ~96 ms each — held the GUI thread for **2m46s**. Three
-  things follow, and all three are now handled:
+  that takes minutes is minutes of a dead application — a sampling loop of
+  `Shape.slice()` over a real solid will hold it for minutes. Three things follow,
+  and all three are handled:
   - `tools_python._heavy_loop_note` (a `run_python` precheck) refuses the call
     statically, before it reaches the GUI thread, when a heavy op runs inside a
     loop of unknown or >50 trip count. It resolves calls through locally-defined
-    helpers, because the expensive call is usually one level down — in the
-    measured case the `slice()` was inside `def ymax`, not in the loop body, so
-    a lexical check would have missed the exact thing worth catching. The
-    threshold is sized off the logged sessions (the loops that read fine sampled
-    7 and 11 Z-heights; the ones that froze ran 183/245/1,206), and `# slow-ok`
+    helpers, because the expensive call is usually one level down: the `slice()`
+    sits inside a helper rather than in the loop body, where a lexical check
+    would miss it. The
+    threshold separates the sampling loops that read fine from the ones that
+    froze, and `# slow-ok`
     anywhere in the code skips it — a loop that must run costs one round-trip,
     which is the point.
   - **`isInside` belongs on that heavy list even though it looks like a cheap
-    point test**, and it was missed once for exactly that reason (a session
-    froze the GUI for >5 min sampling a wall profile with it). FreeCAD's
+    point test.** FreeCAD's
     `TopoShapePy::isInside` builds a fresh `BRepClass3d_SolidClassifier` on
-    *every* call, so it walks the whole solid per point: sampled under the
-    freeze, **1462 of 2206 stacks were in the classifier's constructor** before
-    any classifying happened. Measured cost is linear in face count —
-    0.06 ms @ 10 faces, 0.54 @ 130, **2.80 @ 568** — so it degrades silently as
+    *every* call, so it walks the whole solid per point; under a sampled freeze
+    most stacks sit in the classifier's constructor before any classifying
+    happens. Cost is linear in face count, so it degrades silently as
     the model gets real. The one-shot form is a boolean against a line:
     `shape.common(Part.makeLine(a, b)).Edges` returns the material intervals
-    along the whole line in one call (**210×** faster than the 1,071-point scan
-    it replaced, and exact rather than quantised to the step). For a height or
+    along the whole line in one call, orders of magnitude faster than a point
+    scan and exact rather than quantised to the step. For a height or
     width profile, `shape.slices(dir, [d1, …])` is one call for all planes and
-    gives every coordinate, not the few that got sampled (**9×**, and all 65
-    probed heights matched the point scan exactly).
+    gives every coordinate, not the few that got sampled.
+  - Those one-shot forms return a `Part.Compound` — a `Part.Shape` subclass, not
+    a Python sequence, so no iteration and no `len()`; contents come from
+    `.childShapes()`/`.SubShapes` (one level) or `.Solids`/`.Wires`/`.Edges`
+    (flattened). `slices()` returns every wire from every plane in one flat
+    compound, not one per distance, so `zip(distances, result)` fails twice over.
+    `_heavy_loop_note` states both, since it is what recommends these calls.
   - The bridge's `GuiBusyTimeout` (`_GUI_CALL_TIMEOUT`, 600 s) reports the call
     as **still running**, not failed. It is not a cancellation — the call keeps
     going and still commits — so the message's job is to stop the obvious
     response ("resend it"), which would queue a second copy behind the first and
     apply the same change twice.
-  - `mcp_server._CALL_TIMEOUT` (900 s) must stay **above** that 600 s. It was
-    120 s, which is how the incident got worse than slow: the socket gave up 46 s
-    before the work finished, the reply landed on a closed socket and was
-    dropped by `_handle`'s `except OSError`, and Claude was told a call had
-    failed that in fact succeeded. Whoever times out first has to be the side
-    that can describe what's happening — that's the bridge. That dropped-reply
-    path now warns into the report view via `gui_bridge._warn`.
+  - `mcp_server._CALL_TIMEOUT` (900 s) must stay **above** that 600 s. If the
+    socket gives up first, the reply lands on a closed socket, gets dropped by
+    `_handle`'s `except OSError`, and Claude is told a call failed that in fact
+    succeeded. Whoever times out first has to be the side that can describe
+    what's happening — that's the bridge. The dropped-reply path warns into the
+    report view via `gui_bridge._warn`.
 - Box `Length`/etc. are `Quantity` objects (`str` → "20.0 mm"); use the numeric
   input or `.Value`.
 - **Assigning `sketch.Geometry` to move constrained geometry silently mangles it.**
@@ -725,28 +693,25 @@ and that may be fine.
   constraints (overwrite a line to 6mm while a `DistanceX=10` holds it and FreeCAD
   keeps it 10mm, flinging the start point to -3.08). `moveGeometry` only shifts
   *underconstrained* geometry, by its own contract. The only correct way to move
-  constrained geometry is `setDatum(constraintIndex, value)`. This burned a whole
-  real session (undo → retry → mangle → undo) before `get_sketch` existed.
-- `inspect_api` on a document-object *instance* used to hide its methods: it took
-  the `PropertiesList` branch and the `elif` meant `dir()` was never walked, so a
-  sketch's 201 methods and its non-property attributes (`DoF`, `ConflictingConstraints`)
-  were undiscoverable — the model could only guess names, and guessed wrong
-  (`movePoint`, `setGeometry`, `getDoF()` — none exist). Both branches now run.
+  constrained geometry is `setDatum(constraintIndex, value)`.
+- `inspect_api` on a document-object *instance* must walk **both** branches: the
+  `PropertiesList` one and `dir()`. A sketch's methods and its non-property
+  attributes (`DoF`, `ConflictingConstraints`) live only in the latter, and
+  without them the model can only guess names — `movePoint`, `setGeometry`,
+  `getDoF()` do not exist.
   `Sketcher.SketchObject` also isn't an importable class; `_describe_by_type_id`
   resolves that (and any `Type::String`) to a live instance in the document.
 - **Assigning a dress-up's `Base` a DIFFERENT feature silently re-parents it,
   cutting every feature in between out of the Body.** `DressUp::onChanged`
   (`FeatureDressUp.cpp:276`) sets `BaseFeature` to whatever `Base` was just
   pointed at — so `fillet.Base = (other_feature, [...])`, which reads as an
-  edge-list edit, is a chain edit. One such line (`SoleFillet.Base` moved from
-  `HandlingFillet` to `FootFlareL`, while re-deriving stale `EdgeNN` names) took
-  two features out of a real document's tip chain; they kept recomputing cleanly
-  on their own branch, so nothing errored, and the damage went unnoticed for 27
-  more `run_python` calls. **A dress-up's `Base[0]` must always be its own
+  edge-list edit, is a chain edit. The features it cuts out keep recomputing
+  cleanly on their own branch, so nothing errors and the damage stays invisible.
+  **A dress-up's `Base[0]` must always be its own
   immediate predecessor.** To fix stale edge names, keep `Base` on the same
-  feature: recompute *that* feature first, then read the names off its `Shape` —
-  reading them off a not-yet-recomputed shape is what made the correct fix look
-  like it had failed and prompted the object swap. Now detected by
+  feature: recompute *that* feature first, then read the names off its `Shape`.
+  Reading them off a not-yet-recomputed shape makes the correct fix look like it
+  failed, which is what tempts the object swap. Detected by
   `summarize_chain_changes`, and stated inline in `_PARTDESIGN_ESSENTIALS`.
 - **`doc.removeObject()` on the feature a Body's `Tip` points at leaves `Tip`
   dangling**, and the Body then builds no shape at all while every feature in it
@@ -756,30 +721,20 @@ and that may be fine.
   predecessor can wire a circular `BaseFeature`.** (`Body::setBaseProperty` picks
   the new feature's neighbours with `getPrevSolidFeature`/`getNextSolidFeature`,
   which walk **`Group` order**, not the chain — so a Body whose `Group` order and
-  chain disagree is the precondition. That disagreement is common and normally
-  harmless: 34% of 58 bodies measured across real documents, which is why it is
-  *not* worth flagging on its own.) Adding a `PartDesign::Fillet`
-  this way left the *previous* tip (`MirroredTopCut`) with `BaseFeature` rewired
-  to point at the *new* `Fillet`, while `Fillet.BaseFeature` correctly pointed
-  back at `MirroredTopCut` — a two-node cycle. Symptom: the older feature reports
-  `Invalid` after a successful-looking `run_python` call, and a forced recompute
-  on it throws `RuntimeError: The graph must be a DAG`. Fix by reassigning the
-  older feature's `BaseFeature` directly back to its true predecessor
-  (`doc.MirroredTopCut.BaseFeature = doc.Pocket001`) — do **not** try to fix it via
+  chain disagree is the precondition. That disagreement is common across real
+  documents and normally harmless, so it is *not* worth flagging on its own.)
+  The new feature's `BaseFeature` points back correctly while the *previous* tip
+  gets rewired forward to the new feature — a two-node cycle. Symptom: the older
+  feature reports `Invalid` after a successful-looking `run_python` call, and a
+  forced recompute on it throws `RuntimeError: The graph must be a DAG`. Fix by
+  reassigning the older feature's `BaseFeature` directly back to its true
+  predecessor — do **not** try to fix it via
   `Body.insertObject`/`Group` reordering, which reproduces the same cycle (and can
-  duplicate the `Group` entry). See
-  `freecad/freecadclaude/references/partdesign-body-tip-cycle-gotcha.md` for the
-  full incident writeup.
-- **QR version 6 is TWO error-correction blocks, not one** — and a wrong encoder
-  does not look wrong. The design doc originally claimed versions 1–6 at level L
-  are all single-block, which is false at 6, and a single-block version 6
-  produces a *structurally perfect* symbol (finders, timing, format bits, quiet
-  zone all correct) that zxing decodes as **nothing at all**. Reading the code
-  would never have caught it; `eval/test_qr.py` did, because it pins four full
-  reference matrices generated by the `qrcode` package and independently decoded
-  back with `zxing-cpp` — neither of which is a dependency of the addon or of the
-  test. That indirection is the whole value of the test. (`segno` was tried as a
-  third source and disagrees on padding alone: it appends a whole zero byte when
-  the stream already ends on a codeword boundary, where the spec appends none.)
-  What *is* true is that every block in versions 3–6 is the same size, so
-  `_interleave` is a `zip` with no group-1/group-2 split.
+  duplicate the `Group` entry). Worked example in
+  `freecad/freecadclaude/references/partdesign-body-tip-cycle-gotcha.md`.
+- **QR version 6 at EC level L is two error-correction blocks, not one**, and a
+  single-block version 6 produces a structurally perfect symbol that decoders
+  read as nothing at all. `eval/test_qr.py` pins full reference matrices from
+  `qrcode` and decodes them back with `zxing-cpp` — neither a dependency of the
+  addon — which is the only reason this surfaced. Blocks are equal-sized across
+  versions 3–6, so `_interleave` is a `zip` with no group-1/group-2 split.

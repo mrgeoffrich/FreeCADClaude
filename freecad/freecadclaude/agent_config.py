@@ -8,6 +8,7 @@ also assembles the ``--mcp-config`` that points the CLI at our MCP server
 
 import json
 import os
+import sys
 
 import FreeCAD
 
@@ -62,14 +63,16 @@ _ADDON_ROOT = os.path.dirname(
 DEFAULT_SKILLS_DIR = _ADDON_ROOT
 
 #: Task/todo tracking tools (always enabled) so the agent can plan and track
-#: multi-step modeling work. "Task" is the subagent launcher; the rest are the
-#: todo-list family. These have no system side effects.
+#: multi-step modeling work. "Task" is the subagent launcher (the CLI also
+#: accepts "Agent" as an alias for it, and reports its use under that name);
+#: the rest are the todo-list family. These have no system side effects.
+#: TaskOutput is deprecated by the CLI in favour of reading the task's output
+#: file with Read, so it is not enabled.
 _TASK_TOOLS = [
     "Task",
     "TaskCreate",
     "TaskGet",
     "TaskList",
-    "TaskOutput",
     "TaskStop",
     "TaskUpdate",
 ]
@@ -80,23 +83,36 @@ _TASK_TOOLS = [
 #: it doesn't need Read. Read-only.
 _READ_TOOLS = ["Read"]
 
-#: Write is always on (like Read) so Claude can author plain-text files
-#: directly -- currently used by freecad-lofi-sketch's concept SVGs. Runs
+#: File-authoring tools, always on (like Read): Write creates or replaces a
+#: file, Edit does an in-place string replacement in one -- e.g. iterating on
+#: freecad-lofi-sketch's concept SVGs without rewriting them whole. Both run
 #: inside the claude CLI process itself (not the MCP bridge/GUI thread) and
-#: never touches the live FreeCAD document -- Bash and Edit stay OFF; run_python
-#: remains the only path that mutates the document.
-_WRITE_TOOLS = ["Write"]
+#: reach the filesystem but never the live FreeCAD document. Bash stays OFF;
+#: run_python remains the only path that mutates the document.
+_WRITE_TOOLS = ["Write", "Edit"]
 
 #: File-search tools, always on so Claude can look for files on disk (find by
 #: name with Glob, search contents with Grep) -- e.g. locate a STEP to import or
 #: a previous export. Read-only, like Read: they discover paths but never mutate.
-#: Bash/Edit stay OFF -- the only mutation path to the live document is the
+#: Bash stays OFF -- the only mutation path to the live document is the
 #: run_python tool.
 _SEARCH_TOOLS = ["Glob", "Grep"]
 
 #: Extra built-in tool enabled only when a skills project is configured: Skill
 #: loads the bundled skills (Glob/Grep it may need are already always-on above).
 _SKILL_TOOLS = ["Skill"]
+
+#: The CLI's Windows shell tool, for the odd job Python is clumsy at (invoking a
+#: slicer CLI, unzipping a STEP archive). Windows-only: the name does not
+#: resolve on macOS and needs a separate opt-in on Linux, and the CLI drops an
+#: unrecognised --tools name silently rather than erroring, so offering it
+#: elsewhere would be a no-op that reads as a live capability.
+#:
+#: It grants no reach run_python lacks -- that is already arbitrary Python in
+#: the FreeCAD process -- and runs in the CLI subprocess, so unlike run_python
+#: it cannot block the GUI thread. Bash stays off: one shell is enough, and
+#: this is the one that matches the deploy target.
+_SHELL_TOOLS = ["PowerShell"] if sys.platform == "win32" else []
 
 
 def get_model():
@@ -170,11 +186,12 @@ def build_config(cli_path, bridge_port, bridge_token):
 
     skills_dir = get_skills_dir()
     builtin_tools = (
-        list(_TASK_TOOLS)
+        list(_TASK_TOOLS)  # always available
         + list(_READ_TOOLS)
         + list(_WRITE_TOOLS)
         + list(_SEARCH_TOOLS)
-    )  # always available
+        + list(_SHELL_TOOLS)  # Windows only; empty elsewhere
+    )
     if skills_dir:
         builtin_tools += _SKILL_TOOLS
     allowed_tools += builtin_tools
