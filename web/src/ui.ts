@@ -8,8 +8,9 @@
 // their behaviour, and hands `main.ts` a small typed surface. No component
 // framework: there is no application state here that would benefit from one.
 
-/** Which drawing tool is armed: freehand ink, or a two-point dimension. */
-export type Tool = "pen" | "dimension";
+/** Which drawing tool is armed: freehand ink, a two-point dimension, or the
+ * eraser (which rubs out whole strokes -- ink is stored as vectors). */
+export type Tool = "pen" | "dimension" | "eraser";
 
 const WELCOME_KEY = "fc-welcome-seen";
 
@@ -65,6 +66,8 @@ export interface Ui {
   onUndo: () => void;
   onClear: () => void;
   onSend: () => void;
+  /** Put the image back on the contain-fit after a pinch. */
+  onFit: () => void;
   /** What the incoming-capture banner's Load button does. */
   onLoadIncoming: () => void;
   /** The value sheet's Done, with the target the user typed (null if they left
@@ -83,6 +86,8 @@ export interface Ui {
   setSendEnabled(enabled: boolean): void;
   /** Reflect the armed tool in the toolbar. */
   setTool(tool: Tool): void;
+  /** Show the fit button only once there is something to fit back. */
+  setZoomed(zoomed: boolean): void;
   openValue(info: ValueSheetInfo): void;
   openCalibrate(): void;
   /** Enables the "Latest view from FreeCAD" source once /api/latest has
@@ -129,9 +134,11 @@ export function mountUi(doc: Document = document): Ui {
 
   const penButton = need<HTMLButtonElement>(doc, "t-pen");
   const dimButton = need<HTMLButtonElement>(doc, "t-dim");
+  const eraseButton = need<HTMLButtonElement>(doc, "t-erase");
   const sourceButton = need<HTMLButtonElement>(doc, "t-source");
   const undoButton = need<HTMLButtonElement>(doc, "t-undo");
   const clearButton = need<HTMLButtonElement>(doc, "t-clear");
+  const fitButton = need<HTMLButtonElement>(doc, "t-fit");
 
   const valueSheet = need(doc, "sheet-value");
   const valueMeasured = need(doc, "val-measured");
@@ -172,6 +179,7 @@ export function mountUi(doc: Document = document): Ui {
     onUndo: () => {},
     onClear: () => {},
     onSend: () => {},
+    onFit: () => {},
     onLoadIncoming: () => {},
     onValueDone: () => {},
     onValueDelete: () => {},
@@ -200,6 +208,11 @@ export function mountUi(doc: Document = document): Ui {
     setTool(tool) {
       penButton.setAttribute("aria-pressed", String(tool === "pen"));
       dimButton.setAttribute("aria-pressed", String(tool === "dimension"));
+      eraseButton.setAttribute("aria-pressed", String(tool === "eraser"));
+    },
+
+    setZoomed(zoomed) {
+      fitButton.hidden = !zoomed;
     },
 
     openValue(info) {
@@ -282,14 +295,16 @@ export function mountUi(doc: Document = document): Ui {
     });
   }
 
-  penButton.addEventListener("click", () => {
-    ui.setTool("pen");
-    ui.onTool("pen");
-  });
-  dimButton.addEventListener("click", () => {
-    ui.setTool("dimension");
-    ui.onTool("dimension");
-  });
+  for (const [button, tool] of [
+    [penButton, "pen"],
+    [dimButton, "dimension"],
+    [eraseButton, "eraser"],
+  ] as const) {
+    button.addEventListener("click", () => {
+      ui.setTool(tool);
+      ui.onTool(tool);
+    });
+  }
 
   /** A blank input means "no target", not zero -- the sheet's own text says so
    * ("leave it blank to just point it out"), and Number("") is 0. */
@@ -329,6 +344,7 @@ export function mountUi(doc: Document = document): Ui {
 
   undoButton.addEventListener("click", () => ui.onUndo());
   clearButton.addEventListener("click", () => ui.onClear());
+  fitButton.addEventListener("click", () => ui.onFit());
   sendButton.addEventListener("click", () => ui.onSend());
   bannerLoad.addEventListener("click", () => {
     ui.hideBanner();

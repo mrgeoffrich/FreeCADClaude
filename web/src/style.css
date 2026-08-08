@@ -53,21 +53,26 @@ body {
 /* ── work area ──────────────────────────────────────────────────── */
 .work { flex: 1; display: flex; min-height: 0; }
 
+/* Scrolls rather than squashing: eight 48px targets don't fit the work area of
+   a phone held in landscape, and a shrunk tap target is worse than one you
+   have to scroll to. */
 .toolbar {
   width: 64px; flex: none; background: var(--panel);
   border-right: 1px solid var(--line);
   display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 0;
+  overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none;
 }
+.toolbar::-webkit-scrollbar { display: none; }
 .tool {
-  width: var(--tap); height: var(--tap); border-radius: 12px;
+  width: var(--tap); height: var(--tap); flex: none; border-radius: 12px;
   border: 1px solid transparent; background: transparent; color: var(--muted);
   display: grid; place-items: center; cursor: pointer; position: relative;
 }
 .tool svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .tool[aria-pressed="true"] { background: var(--panel-2); border-color: var(--accent); color: var(--accent); }
 .tool:disabled { opacity: .35; cursor: default; }
-.toolbar .spacer { flex: 1; }
-.toolbar .rule { width: 32px; height: 1px; background: var(--line); margin: 4px 0; }
+.toolbar .spacer { flex: 1 0 8px; }
+.toolbar .rule { width: 32px; height: 1px; flex: none; background: var(--line); margin: 4px 0; }
 
 .canvaswrap {
   flex: 1; min-width: 0; position: relative;

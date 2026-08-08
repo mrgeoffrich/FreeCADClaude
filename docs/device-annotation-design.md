@@ -44,7 +44,8 @@ extents the image can't hold). This extends it rather than replacing it.
   reserves `snapped_to` for it; the Coin work is a later phase.
 - Point labels, callouts, shape tools, text tool. Handwriting covers all of them
   and Claude reads it off the image.
-- Pixel eraser. Vector strokes plus undo cover v1; stroke-erase is a later add.
+- Pixel eraser. The eraser rubs out whole strokes, which is what vector ink
+  supports without its own compositing layer.
 - Layers, selection, transform, multi-image compositing.
 - Blank graph-paper sheet (draw a concept from scratch). Wanted, but it needs its
   own scale story; it lands after dimensions work.
@@ -281,11 +282,15 @@ canvas (or the browser steals the gesture to scroll), `getCoalescedEvents()` (a
 them), rendering at `devicePixelRatio`, and `e.pressure` mapped to stroke width
 through perfect-freehand.
 
-**Pinch-zoom is not in v1, but its coordinate transform is.** All annotation
-coordinates are stored in image space and passed through a view transform
-(`{scale, tx, ty}`, identity in v1) at render and hit-test time. The transform
-existing from day one is what makes adding the gesture a contained change instead
-of a refactor of everything that touches a coordinate.
+**Every annotation coordinate is stored in image space** and passed through a
+view transform (`{scale, tx, ty}`) at render and hit-test time. Pinch-zoom
+landed after v1 as `clampView` plus a `setView` call, which is what the
+transform existing from day one bought: a contained change instead of a
+refactor of everything that touches a coordinate.
+
+**Navigation is two fingers, never one.** A single contact is a drawing stroke
+on a penless phone and a resting palm on a tablet, so panning off it would move
+the image while the user is marking it up.
 
 ## Security
 
