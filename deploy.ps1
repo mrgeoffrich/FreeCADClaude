@@ -57,9 +57,10 @@ New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 
 # Copy everything except build/VCS cruft, the deploy/install scripts, and the
 # source-side vendor dir (deps live in the deployed copy, installed in place).
-# 'web' is the device UI's Vite SOURCE (and its node_modules); its build output
-# lives inside freecad/freecadclaude/device_ui and copies with the package.
-$exclude = @('__pycache__', '.git', '.gitignore', '.gitattributes', 'deploy.ps1', 'install_deps.ps1', 'vendor', 'eval', 'web')
+# 'web' and 'gcode_web' are the two web apps' Vite SOURCES (and their
+# node_modules); their build output lives inside
+# freecad/freecadclaude/{device_ui,gcode_ui} and copies with the package.
+$exclude = @('__pycache__', '.git', '.gitignore', '.gitattributes', 'deploy.ps1', 'install_deps.ps1', 'vendor', 'eval', 'web', 'gcode_web')
 Get-ChildItem -Path $Source -Force | Where-Object { $exclude -notcontains $_.Name } | ForEach-Object {
     Copy-Item -Path $_.FullName -Destination $Dest -Recurse -Force
 }
