@@ -66,6 +66,46 @@ way from `run_python`. Anything that raises that ceiling is a genuine finding:
 - the server starting, or staying up, without the user pressing the button (it
   is off by default and stops itself when idle).
 
+## The slicer, and the toolpath viewer's loopback server
+
+Two things here reach outside FreeCAD, and they are worth separating because
+only one of them is new exposure.
+
+**Launching the slicer is not new reach.** `slice_model` starts Bambu Studio as
+a background subprocess with a command line the addon built. `run_python`
+already executes arbitrary Python inside the FreeCAD process, so anything that
+can ask for a slice can already start any process it likes — "the addon ran an
+external program" is therefore expected behaviour rather than a vulnerability.
+The addon refuses to build a command line for a binary it does not recognise,
+but that is to avoid opening a modal dialog on your desktop with no error text,
+not a security boundary.
+
+**The viewer's HTTP server is new surface, and it is the smallest kind.**
+`view_gcode` and the chat panel's **Slicer** button start a listener bound to
+`127.0.0.1` on an OS-assigned port, serving the built viewer plus the G-code
+that has been published to it and the slicer settings file. Nothing off this
+machine can connect. It still carries a fresh per-start token — in the page URL,
+in an `X-FC-Token` header, or in the cookie set on an authenticated page load —
+because a loopback listener is reachable by every other process on the machine.
+It stops when FreeCAD quits, and a restart mints a new token.
+
+**Known and accepted, so not a finding:** the token is in the page URL and so in
+the browser's history; there is no TLS, which on loopback is a different
+proposition from the LAN server above; and there is no idle timeout, since it is
+started by a tool rather than by an exposure decision.
+
+**Worth reporting.** `gcode_server.py` has the same central invariant as
+`device_server.py`: **it never calls into FreeCAD**, importing neither FreeCAD
+nor Qt, with every path handed in by a tool on the GUI thread. So:
+
+- a request path that reaches FreeCAD, the document, or the `gui_bridge` token;
+- a way past the token gate, or a way to bind it to anything but `127.0.0.1`;
+- a way to read or write outside the served viewer directory and the settings
+  file — the static tree is realpath-contained by `web_static.resolve` and a
+  published G-code is fetched by an id we minted, never by a client path;
+- a `PUT /api/slicer/config` that stores a value the validator should refuse, or
+  that reaches a file other than `~/FreeCADClaude/slicer.json`.
+
 ## Supported versions
 
 Only the latest `main` is supported; there are no backported fixes.

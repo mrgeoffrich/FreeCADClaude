@@ -1,0 +1,91 @@
+{
+    "error_string": "Success.",
+    "export_time": 0,
+    "layer_height": 0.20000000298023224,
+    "plate_index": 0,
+    "prepare_time": 17,
+    "return_code": 0,
+    "sliced_plates": [
+        {
+            "feature_type_times": {
+                "Bottom surface": 18.875051498413086,
+                "Bridge": 16.882057189941406,
+                "Brim": 49.541603088378906,
+                "Custom": 1.0475096702575684,
+                "Inner wall": 393.2542419433594,
+                "Internal solid infill": 33.97197723388672,
+                "Outer wall": 445.709716796875,
+                "Overhang wall": 15.03587532043457,
+                "Skirt": 2.8240952491760254,
+                "Sparse infill": 641.0020141601563,
+                "Top surface": 20.318763732910156,
+                "Travel": 174.8177947998047,
+                "Undefined": 174.58544921875
+            },
+            "filament_change_times": 0,
+            "filaments": [
+                {
+                    "filament_id": "",
+                    "id": 1,
+                    "main_used_g": 0.0,
+                    "total_used_g": 0.0
+                }
+            ],
+            "generate_support_material_time": 6,
+            "id": 1,
+            "infill_time": 14,
+            "layer_filament_change": 0,
+            "main_predication": 1812.245361328125,
+            "make_perimeters_time": 38,
+            "obj_cached_cnt": 0,
+            "objects": [
+                {
+                    "bbox": {
+                        "depth": 10.00000286102295,
+                        "height": 60.0,
+                        "width": 10.000003814697266,
+                        "x": 103.97532653808594,
+                        "y": 100.9999771118164,
+                        "z": 0.0
+                    },
+                    "id": 13,
+                    "name": "Object_3",
+                    "triangle_count": 12
+                },
+                {
+                    "bbox": {
+                        "depth": 17.206045150756836,
+                        "height": 30.0,
+                        "width": 17.206045150756836,
+                        "x": 85.3969955444336,
+                        "y": 94.42161560058594,
+                        "z": 0.0
+                    },
+                    "id": 9,
+                    "name": "Object_2",
+                    "triangle_count": 156
+                },
+                {
+                    "bbox": {
+                        "depth": 10.000001907348633,
+                        "height": 10.0,
+                        "width": 9.999999046325684,
+                        "x": 101.21141052246094,
+                        "y": 89.00000762939453,
+                        "z": 0.0
+                    },
+                    "id": 5,
+                    "name": "Object_1",
+                    "triangle_count": 12
+                }
+            ],
+            "sliced_time": 174,
+            "sliced_time_with_cache": 104,
+            "total_predication": 1813.060546875,
+            "triangle_count": 180,
+            "warning_message": ""
+        }
+    ],
+    "sparse_infill_density": 20.0,
+    "wall_loops": 2
+}

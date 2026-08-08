@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 import { describe, expect, it } from "vitest";
 
-import { markWelcomeSeen, welcomeSeen } from "../src/ui";
+import { markWelcomeSeen, msgbarCollapsed, setMsgbarCollapsed, welcomeSeen } from "../src/ui";
 
 /** localStorage stand-in -- the tests run in node, with no DOM. */
 function fakeStorage(seed: Record<string, string> = {}) {
@@ -25,5 +25,23 @@ describe("first-run help", () => {
 
   it("ignores a value it didn't write", () => {
     expect(welcomeSeen(fakeStorage({ "fc-welcome-seen": "" }))).toBe(false);
+  });
+});
+
+describe("message bar", () => {
+  it("starts expanded -- a message nobody can see is worse than a bar in the way", () => {
+    expect(msgbarCollapsed(fakeStorage())).toBe(false);
+  });
+
+  it("stays folded across reloads, which is the point on a small screen", () => {
+    const storage = fakeStorage();
+    setMsgbarCollapsed(storage, true);
+    expect(msgbarCollapsed(storage)).toBe(true);
+  });
+
+  it("unfolds again, and remembers that too", () => {
+    const storage = fakeStorage({ "fc-msgbar-collapsed": "1" });
+    setMsgbarCollapsed(storage, false);
+    expect(msgbarCollapsed(storage)).toBe(false);
   });
 });

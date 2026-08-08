@@ -29,6 +29,11 @@ subscription; intended for personal use.*
 > until you press the button, and it stops itself when idle — see
 > [Annotating on a phone or tablet](#annotating-on-a-phone-or-tablet).
 >
+> **Slicing:** Claude can hand your parts to **Bambu Studio** — each one stood up
+> the way it prints — and open the resulting toolpath in your desktop browser.
+> That launches the slicer as a background process and serves the viewer on
+> `127.0.0.1`; see [Slicing and the toolpath viewer](#slicing-and-the-toolpath-viewer).
+>
 > ⚠️ **Tool calls are not gated by a confirmation prompt.** `run_python` executes
 > as soon as Claude asks for it, and it is ordinary Python inside the FreeCAD
 > process — so it can reach the filesystem, not just your document. This is a
@@ -82,6 +87,10 @@ FreeCADClaude/
     ├── gui_bridge.py       # In-FreeCAD socket server; runs tools on the GUI thread
     ├── device_server.py    # LAN HTTP server for the phone/tablet annotation page
     ├── device_ui/          # BUILT web app (committed; source is web/, see RELEASE.md)
+    ├── gcode_server.py     # Loopback HTTP server for the G-code viewer + slicer settings
+    ├── gcode_ui/           # BUILT viewer (committed; source is gcode_web/, see RELEASE.md)
+    ├── slicer_runner.py    # Drives Bambu Studio as a subprocess; preset discovery
+    ├── web_static.py       # Static-file resolution shared by both servers
     ├── qr.py               # Stdlib QR encoder for the pairing code
     ├── freecad_tools/      # The tools: registry (__init__.py), one tools_*.py per
     │                       #   concern, over shared infra (session/geometry/svg/
@@ -238,6 +247,57 @@ a plain file copy with no Node at the far end. If you change anything under
 
 ```bash
 cd web && npm ci && npx vitest run && npm run build
+```
+
+## Slicing and the toolpath viewer
+
+Ask Claude to slice, and it exports the parts you name as one multi-object 3MF —
+each **stood up the way it prints**, from the build direction recorded on it —
+hands that to **Bambu Studio**, and reports the layer count, the print estimate,
+where the time goes by feature type and the filament used. Then `view_gcode`
+opens the toolpath in your own browser: an interactive 3D view with per-feature
+colours and a layer slider.
+
+Presets come from Bambu Studio's own current selection with the nozzle pinned to
+0.4, so on a machine with Studio set up there is nothing to configure. To change
+the printer, nozzle, process or filament, press **🖨 Slicer** in the chat panel —
+that opens the same page, with the settings drawer, and needs no slice and no
+message to Claude. Your choice is stored in `~/FreeCADClaude/slicer.json` and
+outranks Studio's selection on the next slice.
+
+Each job's artifacts land in `~/FreeCADClaude/<session-id>/slices/<job>/`: the
+3MF that was handed over, the G-code and `result.json` that came back, the
+slicer's log, and a `job.json` recording the exact command line used.
+
+### What it exposes, precisely
+
+- **It launches an external program.** `slice_model` starts Bambu Studio as a
+  hidden background subprocess with a command line the addon built. It runs on a
+  worker thread, so FreeCAD stays usable, and it is killed when you quit FreeCAD
+  mid-slice.
+- **Only Bambu Studio.** A binary the addon does not recognise — OrcaSlicer
+  included — gets no command line at all, and the tool says so. These are GUI
+  applications: a flag one doesn't accept would open a dialog on your desktop
+  and report nothing back.
+- **The viewer server binds `127.0.0.1`, not the LAN.** Nothing off this machine
+  can reach it. It still carries a per-start token, because a loopback listener
+  is reachable by every other process on the machine and this one serves files
+  and rewrites your printer configuration. There is no button and no QR — it
+  starts when a tool or the Slicer button needs it, and stops with FreeCAD.
+- **It cannot reach FreeCAD.** `gcode_server.py` imports no FreeCAD and no Qt,
+  and no request handler calls into either — the same invariant as the device
+  server. G-code files are *pushed* to it by a tool running on the GUI thread.
+
+### Hacking on the viewer
+
+The viewer's source is `gcode_web/` (Vite + TypeScript + Vitest), vendored from
+the [dimensioner](https://github.com/mrgeoffrich/dimensioner) project; the built
+output in `freecad/freecadclaude/gcode_ui/` is **committed to git** for the same
+reason `device_ui/` is. Rebuild and commit it in the same commit as any source
+change, and record the change in `gcode_web/VENDORED.md`:
+
+```bash
+cd gcode_web && npm ci && npx vitest run && npm run build
 ```
 
 ## Evaluation

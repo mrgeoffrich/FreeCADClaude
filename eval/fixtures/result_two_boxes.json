@@ -1,0 +1,76 @@
+{
+    "error_string": "Success.",
+    "export_time": 0,
+    "layer_height": 0.20000000298023224,
+    "plate_index": 0,
+    "prepare_time": 18,
+    "return_code": 0,
+    "sliced_plates": [
+        {
+            "feature_type_times": {
+                "Bottom surface": 16.857717514038086,
+                "Bridge": 8.989313125610352,
+                "Custom": 1.0677659511566162,
+                "Inner wall": 43.681026458740234,
+                "Internal solid infill": 28.233091354370117,
+                "Outer wall": 53.193687438964844,
+                "Skirt": 1.9801886081695557,
+                "Sparse infill": 55.663848876953125,
+                "Top surface": 12.108739852905273,
+                "Travel": 20.561365127563477,
+                "Undefined": 20.349319458007813
+            },
+            "filament_change_times": 0,
+            "filaments": [
+                {
+                    "filament_id": "",
+                    "id": 1,
+                    "main_used_g": 0.0,
+                    "total_used_g": 0.0
+                }
+            ],
+            "generate_support_material_time": 2,
+            "id": 1,
+            "infill_time": 7,
+            "layer_filament_change": 0,
+            "main_predication": 241.2682647705078,
+            "make_perimeters_time": 14,
+            "obj_cached_cnt": 0,
+            "objects": [
+                {
+                    "bbox": {
+                        "depth": 20.0,
+                        "height": 5.0,
+                        "width": 9.999999046325684,
+                        "x": 99.99874114990234,
+                        "y": 90.0,
+                        "z": 0.0
+                    },
+                    "id": 5,
+                    "name": "Object_1",
+                    "triangle_count": 12
+                },
+                {
+                    "bbox": {
+                        "depth": 11.289867401123047,
+                        "height": 8.0,
+                        "width": 11.290082931518555,
+                        "x": 88.35498046875,
+                        "y": 94.35505676269531,
+                        "z": 4.440892098500626e-16
+                    },
+                    "id": 9,
+                    "name": "Object_2",
+                    "triangle_count": 500
+                }
+            ],
+            "sliced_time": 83,
+            "sliced_time_with_cache": 54,
+            "total_predication": 242.12399291992188,
+            "triangle_count": 512,
+            "warning_message": ""
+        }
+    ],
+    "sparse_infill_density": 20.0,
+    "wall_loops": 2
+}

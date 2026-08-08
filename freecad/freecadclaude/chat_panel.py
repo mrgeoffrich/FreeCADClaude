@@ -240,6 +240,12 @@ class ChatWidget(QtWidgets.QWidget):
     #: above, and the same queued hop onto the GUI thread.
     device_idle_stopped = QtCore.Signal(float)
 
+    #: A slice finished, carrying the job's public record. Emitted from the
+    #: slicer's own worker thread -- same reason as the two above. Typed as
+    #: ``object`` rather than ``dict`` so the record crosses unconverted; what is
+    #: read out of it here is only the id, the status and the elapsed time.
+    slice_finished = QtCore.Signal(object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._thread = None
@@ -258,7 +264,9 @@ class ChatWidget(QtWidgets.QWidget):
         self._render_timer.timeout.connect(self._do_render)
         self.device_upload_received.connect(self._on_device_upload)
         self.device_idle_stopped.connect(self._on_device_idle_stopped)
+        self.slice_finished.connect(self._on_slice_finished)
         self._device_quit_hooked = False
+        self._slicer_hooked = False
         self._build_ui()
         self._note(_CAPABILITY_NOTICE)
 
@@ -335,6 +343,15 @@ class ChatWidget(QtWidgets.QWidget):
         )
         self.device_button.clicked.connect(self._on_device)
         control_row.addWidget(self.device_button)
+        # Short label on purpose: this strip's widest item sets the dock's
+        # minimum width (see flow_layout).
+        self.slicer_button = QtWidgets.QPushButton("🖨 Slicer", controls)
+        self.slicer_button.setToolTip(
+            "Open the slicer settings page in your browser: printer, nozzle, "
+            "process, filament, and whether to orient and arrange"
+        )
+        self.slicer_button.clicked.connect(self._on_slicer_settings)
+        control_row.addWidget(self.slicer_button)
         button_row.addWidget(controls)
         layout.addLayout(button_row)
 
@@ -393,6 +410,7 @@ class ChatWidget(QtWidgets.QWidget):
         app = QtWidgets.QApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self._shutdown_worker)
+        self._hook_slicer()
         return True
 
     def _shutdown_worker(self):
@@ -401,6 +419,72 @@ class ChatWidget(QtWidgets.QWidget):
         if self._thread is not None:
             self._thread.quit()
             self._thread.wait(3000)
+
+    def _hook_slicer(self):
+        """Arm the slice-finished note and the slicer's shutdown, once.
+
+        Wired when a chat starts rather than in ``__init__`` because a slice can
+        only be started by a tool call, and guarded by a flag because Qt allows
+        duplicate connections -- a second one here would write the note twice
+        and stop an already-stopped slice.
+        """
+        if self._slicer_hooked:
+            return
+        from . import slicer_runner
+
+        # A bound signal's emit, not a method: the hook fires on the slicer's own
+        # worker thread, and Qt queues a cross-thread emit onto ours.
+        slicer_runner.set_done_hook(self.slice_finished.emit)
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._shutdown_slicer)
+            app.aboutToQuit.connect(self._shutdown_gcode_server)
+        self._slicer_hooked = True
+
+    def _shutdown_slicer(self):
+        """Kill any slice still running on the way out. The slicer's children are
+        held by daemon threads, so quitting mid-slice would otherwise leave one
+        running with nothing left to collect it."""
+        from . import slicer_runner
+
+        try:
+            slicer_runner.terminate_all()
+        except Exception:  # noqa: BLE001 - nothing useful to do while quitting
+            pass
+
+    def _shutdown_gcode_server(self):
+        """Stop the loopback viewer server on the way out, mirroring
+        ``_shutdown_device``. It has no idle watchdog of its own -- it is on
+        127.0.0.1 and started by a tool rather than by a button, so quitting is
+        the only thing that takes it down."""
+        from . import gcode_server
+
+        try:
+            gcode_server.stop()
+        except Exception:  # noqa: BLE001 - nothing useful to do while quitting
+            pass
+
+    def _on_slice_finished(self, record):
+        """A slice landed -- say so in the transcript.
+
+        Runs on the GUI thread (queued from the slicer's worker thread).
+        Deliberately just a note: a slice takes minutes, so Claude is usually
+        between calls or the user has moved on, and this is how they learn it
+        finished without either of them polling for it.
+        """
+        record = record or {}
+        job = record.get("id") or "?"
+        elapsed = int(round(float(record.get("elapsed") or 0.0)))
+        if record.get("status") == "succeeded":
+            self._note(
+                f"🖨️ **slice finished** ({job}) in {elapsed}s. Ask Claude for the "
+                "result (it reads it with `read_slice_result`)."
+            )
+        else:
+            self._note(
+                f"🖨️ **slice failed** ({job}) after {elapsed}s.\n\n"
+                f"*{record.get('error') or 'no reason given'}*"
+            )
 
     # -- sending ---------------------------------------------------------
 
@@ -624,9 +708,10 @@ class ChatWidget(QtWidgets.QWidget):
         self._think_has_text = False
         self._tool_entries.clear()
         self._set_busy(False)
-        # After the clear, not before: its only output is an error note, and a
+        # After the clear, not before: their only output is an error note, and a
         # note written above would be wiped by the very next line.
         self._reset_device_session()
+        self._reset_slice_session()
         try:
             from . import plan_panel
 
@@ -658,6 +743,24 @@ class ChatWidget(QtWidgets.QWidget):
             device_server.reset_session(upload_dir)
         except Exception as exc:  # noqa: BLE001 - "New" must clear the panel regardless
             self._note(f"*Could not reset the device server: {exc}*")
+
+    def _reset_slice_session(self):
+        """Forget the previous conversation's slice jobs.
+
+        The same failure ``_reset_device_session`` prevents: the job table
+        outlives a slice on purpose, so without this ``read_slice_result`` with
+        no argument would answer the new conversation with the old one's job,
+        and its export records would describe parts nobody here has mentioned.
+        A slice still running keeps running -- what is dropped is the handle,
+        not the child.
+        """
+        from . import freecad_tools, slicer_runner
+
+        try:
+            slicer_runner.reset_session()
+            freecad_tools.reset_slice_session()
+        except Exception as exc:  # noqa: BLE001 - "New" must clear the panel regardless
+            self._note(f"*Could not reset the slice jobs: {exc}*")
 
     def _on_model_changed(self, _index):
         """Persist the selected model (only reachable between conversations, since
@@ -743,6 +846,30 @@ class ChatWidget(QtWidgets.QWidget):
             device_server.stop()
         except Exception:  # noqa: BLE001 - nothing useful to do while quitting
             pass
+
+    def _on_slicer_settings(self):
+        """Open the slicer settings page -- the same one ``view_gcode`` opens.
+
+        The printer, nozzle, process and filament are chosen there, and that
+        choice comes before the first slice, so it has to be reachable without
+        asking Claude for a slice first. The server is on 127.0.0.1 and stops
+        with FreeCAD, which is why this needs no pairing dialog and no stop
+        button of its own.
+        """
+        from . import freecad_tools
+
+        self._hook_slicer()  # so quitting takes the listener down with it
+        try:
+            url, note = freecad_tools.open_settings_page()
+        except Exception as exc:  # noqa: BLE001 - report, never raise into Qt
+            url, note = None, repr(exc)
+        if url is None:
+            self._note(f"*Could not open the slicer settings page: {note}*")
+            return
+        self._note(
+            f"🖨️ **Slicer settings** — {note} If it did not appear, open this:"
+            f"\n\n`{url}`"
+        )
 
     def _on_device_idle_stopped(self, timeout):
         """The watchdog stopped the server. Say so, and say why.

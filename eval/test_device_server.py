@@ -43,9 +43,14 @@ import socket
 import sys
 import tempfile
 import time
+import types
 import urllib.parse
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PACKAGE = os.path.join(_ROOT, "freecad", "freecadclaude")
+
+#: A stand-in parent package for the module loaded by path below.
+_SHIM = "_fcc_device_test"
 
 
 def _load_device_server():
@@ -55,10 +60,19 @@ def _load_device_server():
     package pulls in InitGui-adjacent machinery and (via ``__init__``) modules
     that expect a FreeCAD process. The module is deliberately standalone, so
     load it that way and keep the test honest about that.
+
+    It does import one stdlib-only sibling -- ``web_static``, the static serving
+    and path containment it shares with ``gcode_server`` -- and a relative
+    import needs a package to resolve against. The stub below gives it one and
+    nothing else: no ``__init__`` runs, and it can reach only that folder.
     """
-    path = os.path.join(_ROOT, "freecad", "freecadclaude", "device_server.py")
-    spec = importlib.util.spec_from_file_location("_fcc_device_server", path)
+    parent = types.ModuleType(_SHIM)
+    parent.__path__ = [_PACKAGE]
+    sys.modules[_SHIM] = parent
+    path = os.path.join(_PACKAGE, "device_server.py")
+    spec = importlib.util.spec_from_file_location(_SHIM + ".device_server", path)
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 

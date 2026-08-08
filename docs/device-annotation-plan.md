@@ -166,19 +166,16 @@ Depends on everything.
 
 ## Deferred
 
-Unchanged from the design doc, minus QR (now phase 2). Each is independent; none
-blocks the others.
+Unchanged from the design doc, minus QR (phase 2) and the eraser and pinch-zoom
+(both shipped). Each is independent; none blocks the others.
 
 1. **Auto-inject on upload** — the panel appends *"the user sent an image:
    `<path>`"* to the next prompt so Claude looks without being asked.
-2. **Stroke eraser** — cheap now that strokes are vectors: hit-test and delete.
-3. **Pinch-zoom and pan** — two-finger only, unambiguous because touch never
-   draws; the view transform is already in place from phase 3.
-4. **Magnifier loupe** while dragging a dimension endpoint.
-5. **Geometry snapping** (`snapped_to`) — unproject the tap, Coin ray-pick, and a
+2. **Magnifier loupe** while dragging a dimension endpoint.
+3. **Geometry snapping** (`snapped_to`) — unproject the tap, Coin ray-pick, and a
    dimension becomes *"Vertex3 → Vertex7 of Pad001, 24.3mm true 3D"*. The schema
    field exists from phase 5, so it is additive. First thing that breaks the
    "server never calls into FreeCAD" invariant — it belongs in the tool, not the
    HTTP handler.
-6. **Blank graph-paper sheet** — grid as the scale, feeding `freecad-lofi-sketch`
+4. **Blank graph-paper sheet** — grid as the scale, feeding `freecad-lofi-sketch`
    with real dimensions.
