@@ -364,10 +364,14 @@ project dir (so its `.claude/skills` load) else a temp dir.
 - `--tools ""` disables ALL built-ins (incl. `Skill`). We enable a safe set:
   `Read`, `Write` and `Edit` (always — skill reference files and plain-text file
   authoring), `Glob`/`Grep` (always — file search), the `Task*` family (todo +
-  Plan subagent), and `Skill` when a skills project is configured. `Bash`
-  stays OFF — the only path that mutates the *live FreeCAD document* is
-  `run_python`; `Write`/`Edit` can create, overwrite and patch arbitrary files
-  on disk but never touch the document.
+  Plan subagent), `Skill` when a skills project is configured, and `PowerShell`
+  on Windows only (`_SHELL_TOOLS`, empty elsewhere — the name doesn't resolve on
+  macOS and needs an opt-in on Linux). The only path that mutates the *live
+  FreeCAD document* is `run_python`; the rest reach the filesystem but never the
+  document. A shell is not extra reach — `run_python` is already arbitrary
+  Python in the FreeCAD process — but it runs in the CLI subprocess, so unlike
+  `run_python` it can't block the GUI thread. `Bash` stays off: one shell is
+  enough and PowerShell is the one matching the deploy target.
 - An unrecognised name in `--tools` is **dropped silently**, with no warning and
   no error — a renamed or misspelt tool degrades capability invisibly. The
   `system` init event in `stream.jsonl` lists what the CLI actually resolved;

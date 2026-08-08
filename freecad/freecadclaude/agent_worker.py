@@ -35,6 +35,9 @@ _TOOL_LABEL_ARGS = {
     "Grep": ("pattern",),
     "Skill": ("command", "name", "skill"),
     "Agent": ("subagent_type", "description"),
+    # PowerShell's arg name is unverified from a non-Windows box; both
+    # candidates are listed and an unmatched one degrades to a bare label.
+    "PowerShell": ("command", "script"),
     "TaskGet": ("taskId",),
     "TaskStop": ("taskId",),
 }
@@ -117,9 +120,9 @@ class AgentWorker(QtCore.QObject):
         if cfg.get("effort"):
             argv += ["--effort", cfg["effort"]]
         # Built-in tools: a safe allowlist (Skill + read/search + file
-        # authoring) when a skills project is configured, otherwise none. Bash
-        # stays off either way -- the only path that mutates the live FreeCAD
-        # document is the run_python MCP tool.
+        # authoring, plus PowerShell on Windows) when a skills project is
+        # configured, otherwise none. The only path that mutates the live
+        # FreeCAD document is the run_python MCP tool either way.
         builtin = cfg.get("builtin_tools") or []
         if builtin:
             argv += ["--tools", *builtin]

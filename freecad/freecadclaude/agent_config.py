@@ -8,6 +8,7 @@ also assembles the ``--mcp-config`` that points the CLI at our MCP server
 
 import json
 import os
+import sys
 
 import FreeCAD
 
@@ -101,6 +102,18 @@ _SEARCH_TOOLS = ["Glob", "Grep"]
 #: loads the bundled skills (Glob/Grep it may need are already always-on above).
 _SKILL_TOOLS = ["Skill"]
 
+#: The CLI's Windows shell tool, for the odd job Python is clumsy at (invoking a
+#: slicer CLI, unzipping a STEP archive). Windows-only: the name does not
+#: resolve on macOS and needs a separate opt-in on Linux, and the CLI drops an
+#: unrecognised --tools name silently rather than erroring, so offering it
+#: elsewhere would be a no-op that reads as a live capability.
+#:
+#: It grants no reach run_python lacks -- that is already arbitrary Python in
+#: the FreeCAD process -- and runs in the CLI subprocess, so unlike run_python
+#: it cannot block the GUI thread. Bash stays off: one shell is enough, and
+#: this is the one that matches the deploy target.
+_SHELL_TOOLS = ["PowerShell"] if sys.platform == "win32" else []
+
 
 def get_model():
     params = FreeCAD.ParamGet(PARAM_PATH)
@@ -173,11 +186,12 @@ def build_config(cli_path, bridge_port, bridge_token):
 
     skills_dir = get_skills_dir()
     builtin_tools = (
-        list(_TASK_TOOLS)
+        list(_TASK_TOOLS)  # always available
         + list(_READ_TOOLS)
         + list(_WRITE_TOOLS)
         + list(_SEARCH_TOOLS)
-    )  # always available
+        + list(_SHELL_TOOLS)  # Windows only; empty elsewhere
+    )
     if skills_dir:
         builtin_tools += _SKILL_TOOLS
     allowed_tools += builtin_tools
