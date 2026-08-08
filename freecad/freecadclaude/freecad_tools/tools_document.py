@@ -20,6 +20,7 @@ against.
 from .diagnostics import _body_states, _ERROR_FLAGS, _shape_metrics
 from .doc_notes import notes_block
 from .geometry import _bbox_dict, _document_bbox, _MAX_SANE_EXTENT
+from .print_meta import any_direction_set, direction_entry, DIRECTION_NOTE
 from .gui_state import _active_edit_summary
 
 _GET_OBJECTS_SCHEMA = {
@@ -226,6 +227,8 @@ def _survey_object(obj, container, origin_members):
     if bbox is not None:
         info["bounding_box"] = bbox
 
+    info.update(direction_entry(obj))
+
     if origin_members:
         info["origin"] = origin_members
 
@@ -278,6 +281,8 @@ def _run_get_objects(args):
         result["origin"] = loose_origin
     if origin_of:
         result["origin_note"] = _ORIGIN_NOTE
+    if any_direction_set(doc):
+        result["print_direction_note"] = DIRECTION_NOTE
     bodies = _body_chains(doc)
     if bodies:
         result["bodies"] = bodies
@@ -564,6 +569,7 @@ def _describe_one(doc, obj):
     container = _container_name(obj)
     if container:
         entry["in"] = container
+    entry.update(direction_entry(obj))
 
     view = getattr(obj, "ViewObject", None)
     if view is not None:
@@ -661,6 +667,8 @@ def _run_describe_objects(args):
             described.append({"name": name, "error": repr(exc)})
 
     result = {"document": doc.Label, "objects": described}
+    if any("print_direction" in entry for entry in described):
+        result["print_direction_note"] = DIRECTION_NOTE
     if missing:
         result["not_found"] = missing
         result["not_found_note"] = (

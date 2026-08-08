@@ -46,6 +46,10 @@ Write it with `document_notes` at the end of a round of work that changed what t
 
 Keep dimensions, feature lists, object inventories and volumes out of it. Those live in the model, `get_objects` and `describe_objects` read them on demand, and a number copied into prose is wrong the moment the model changes. The notes are for what the geometry cannot state.
 
+Each part separately carries a **print direction**, set with `set_print_direction` and reported by `get_objects`. It names the part-local axis that points UP in world space when the part is on the plate: `+Z up` is the part printed as modelled, `-Z up` means it prints upside-down with its local `+Z` face on the plate. `print_plate_side` gives that plate-side axis directly, so you never have to flip the sign yourself.
+
+When a part has one, design to it. Overhangs steeper than about 45° off the build direction need support, horizontal bores print as bridged ellipses rather than circles and usually want a teardrop or a chamfer, layer lines are the weak axis so load paths should not run across them, and the plate-side face is the flattest and most accurate one. Ask the user for the orientation when it matters and none is recorded, and set it once you both settle on one -- but do not invent it.
+
 ## run_python: the execution contract
 
 - **Pre-bound names** -- every call already has `FreeCAD`/`App` (same module), `FreeCADGui`/`Gui`, `Part`, `Sketcher`, `PartDesign`, `Draft`, and `doc` (the active document; a fresh one is created if none exists -- never call `FreeCAD.newDocument()` unless you deliberately want a SECOND document). Anything else (`math`, `Mesh`, `TechDraw`, ...) needs its own import. **No pip packages, ever** -- FreeCAD's bundled modules plus the stdlib are the entire environment; `import numpy` fails.

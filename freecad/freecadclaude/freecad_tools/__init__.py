@@ -19,6 +19,7 @@ a base of shared infrastructure:
 
     session      artifact folders, the per-conversation session dir
     doc_notes    the document's standing context notes, and their staleness
+    print_meta   per-part build direction: storage, plate side, the legend
     geometry     bounding boxes, world-space crop extents
     svg          framing/cropping an SVG projection
     gui_state    what the user has open in an editor
@@ -72,8 +73,11 @@ from .tools_export import _EXPORT_SCHEMA, _run_export
 from .tools_inspect import _INSPECT_API_SCHEMA, _run_inspect_api
 from .tools_notes import (
     _DOCUMENT_NOTES_SCHEMA,
+    _SET_PRINT_DIRECTION_SCHEMA,
     _precheck_document_notes,
+    _precheck_set_print_direction,
     _run_document_notes,
+    _run_set_print_direction,
 )
 from .tools_python import _RUN_PYTHON_SCHEMA, _precheck_python, _run_python
 from .tools_sketch import (
@@ -98,6 +102,11 @@ TOOLS = {
         "schema": _DOCUMENT_NOTES_SCHEMA,
         "run": _run_document_notes,
         "precheck": _precheck_document_notes,
+    },
+    "set_print_direction": {
+        "schema": _SET_PRINT_DIRECTION_SCHEMA,
+        "run": _run_set_print_direction,
+        "precheck": _precheck_set_print_direction,
     },
     "get_sketch": {"schema": _GET_SKETCH_SCHEMA, "run": _run_get_sketch},
     "view_sketch_svg": {"schema": _VIEW_SKETCH_SVG_SCHEMA, "run": _run_view_sketch_svg},

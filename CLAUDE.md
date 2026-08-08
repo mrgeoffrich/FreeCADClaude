@@ -52,7 +52,8 @@ chat panel (GUI thread)
 ## Tools
 
 Registry: `freecad_tools.TOOLS` = name → `{schema, run, precheck?}`. Current set:
-`get_objects`, `describe_objects`, `get_selection`, `document_notes`, `get_sketch`,
+`get_objects`, `describe_objects`, `get_selection`, `document_notes`,
+`set_print_direction`, `get_sketch`,
 `view_sketch_svg`, `capture_view`,
 `capture_user_view`, `crop_view`, `cutaway`, `annotate_view`, `read_annotation`,
 `export`, `inspect_api`,
@@ -80,8 +81,9 @@ infra modules import nothing from `tools_*` (that's why `_ERROR_FLAGS` and
 | `__init__.py` | The `TOOLS` registry, `list_schemas()`, and the facade re-exports. |
 | `tools_document.py` | `get_objects` (the shallow survey), `describe_objects` (the deep read on named objects), `get_selection` — see "The survey/detail split" below. `get_objects` also returns a `bodies` section — each `PartDesign::Body`'s **tip chain**, base-first (see `diagnostics._body_states`). That's the only place a Body's build order is visible, and it's in the tool the model already calls first; a feature missing from the chain contributes nothing however healthy it looks. Costs ~475 bytes of a 7.3 KB payload on a 68-object/3-body document. |
 | `tools_python.py` | `run_python` (+ its syntax precheck). |
-| `tools_notes.py` | `document_notes` — read (no args) or replace (`text`) the document's standing notes. |
+| `tools_notes.py` | The design-context tools: `document_notes` (read with no args, replace with `text`) and `set_print_direction` (batch). |
 | `doc_notes.py` | Where those notes live and how staleness is judged — see "Document notes" below. |
+| `print_meta.py` | Per-part build direction — the enumeration, the plate-side derivation, `DIRECTION_NOTE`. |
 | `tools_inspect.py` | `inspect_api`. |
 | `tools_sketch.py` | `get_sketch`, `view_sketch_svg` (+ the GeoId overlay). |
 | `tools_capture.py` | `capture_view`, `capture_user_view`, `crop_view`. |
@@ -201,6 +203,20 @@ marks its object touched, and the next recompute then rebuilds that object and
 everything downstream of it. `_top_level_parts` excludes `PartDesign::Feature`
 even when one sits at top level — `removeObject` on a Body leaves its features
 behind, and an orphan would otherwise read as a new part.
+
+**Print direction** (`set_print_direction`, storage in `print_meta.py`): per part,
+the part-local axis that points UP in world space when it is printed. `+Z up` is
+the part as modelled; `-Z up` prints it upside-down with the local `+Z` face on
+the plate. An `App::PropertyEnumeration` rather than free text or a bare vector —
+FreeCAD renders it as a dropdown and rejects an off-list value with `ValueError`,
+and both the value and the list survive a reload. `App::PropertyDirection` holds
+the tilted case and is read only when the enum says `Custom`. Both carry
+`Prop_Output` for the same reason the notes fingerprint does.
+
+Every report pairs the direction with `print_plate_side`, and any payload
+carrying one appends `DIRECTION_NOTE`. The plate side is one negation away from
+the direction, and that is the step that gets reversed under load — reversing it
+puts supports and bridging on the wrong face.
 
 **Sketch editing** (`get_sketch`, read-only): every Sketcher mutation is addressed
 by **GeoId** (`moveGeometry`, `addConstraint`) or **constraint index** (`setDatum`,
