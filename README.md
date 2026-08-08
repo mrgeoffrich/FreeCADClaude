@@ -22,6 +22,13 @@ subscription; intended for personal use.*
 > or overwrite files on disk (but never the live document); every other tool is
 > read-only. `Bash` and `Edit` are disabled.
 >
+> **On a phone or tablet:** press **Device** and the panel starts a small web
+> server *on your local network* and shows a QR code. Scan it and you get a pen
+> canvas: Claude can push a view of the model to it, you circle the boss and
+> write "30mm", and it comes back with the dimensions as real numbers. Off
+> until you press the button, and it stops itself when idle — see
+> [Annotating on a phone or tablet](#annotating-on-a-phone-or-tablet).
+>
 > ⚠️ **Tool calls are not gated by a confirmation prompt.** `run_python` executes
 > as soon as Claude asks for it, and it is ordinary Python inside the FreeCAD
 > process — so it can reach the filesystem, not just your document. This is a
@@ -73,6 +80,9 @@ FreeCADClaude/
     ├── agent_config.py     # Model, system prompt, CLI flags (tools/mcp/cwd/skills)
     ├── system_prompt.md    # The system prompt text
     ├── gui_bridge.py       # In-FreeCAD socket server; runs tools on the GUI thread
+    ├── device_server.py    # LAN HTTP server for the phone/tablet annotation page
+    ├── device_ui/          # BUILT web app (committed; source is web/, see RELEASE.md)
+    ├── qr.py               # Stdlib QR encoder for the pairing code
     ├── freecad_tools/      # The tools: registry (__init__.py), one tools_*.py per
     │                       #   concern, over shared infra (session/geometry/svg/
     │                       #   gui_state/visibility/render/diagnostics)
@@ -170,6 +180,65 @@ project whose `.claude/skills` holds them, via the preference
 `User parameter:BaseApp/Preferences/Mod/FreeCADClaude` → string `SkillsProjectDir`.
 When set, the agent runs with that as its working dir and enables the
 `Skill`/`Read`/`Glob`/`Grep` tools. Leave it unset to keep things locked down.
+
+## Annotating on a phone or tablet
+
+A picture tells Claude *where*; only a dimension with a number tells it *how
+much*. The **Device** button (next to Files) serves a small pen-and-canvas web
+app to a phone or tablet on the same wifi, so you can point at the model with a
+stylus instead of describing it.
+
+1. Press **Device**. A dialog shows a QR code and the URL under it.
+2. Scan it (or type the URL). The page opens already authenticated.
+3. Claude calls `send_to_device` and a rendered view appears on the device;
+   or pick a photo/camera shot on the device instead — a napkin sketch, a part
+   you're copying.
+4. Draw on it. Two taps place a **dimension**: it shows the measured length in
+   millimetres (derived exactly from the capture's orthographic camera) and you
+   can type the target you actually want.
+5. Press **Send**, tell Claude, and it calls `read_device_image` — it sees the
+   marked-up picture inline, plus the dimensions as structured numbers with the
+   camera angle and world extents the shot was taken at.
+
+Images land in `~/FreeCADClaude/<session-id>/mobile/`, alongside the rest of the
+conversation's artifacts.
+
+### What it exposes, precisely
+
+This is the one part of the addon that listens on your **local network** rather
+than on localhost, so it's worth being exact about what that means.
+
+- **Off by default.** Nothing listens until you press Device — not on startup,
+  and not because Claude asked. `send_to_device` with the server down returns a
+  message telling Claude to ask *you* to press the button.
+- **A fresh token per start**, carried in the URL the QR encodes. Every request
+  must have it. Pressing **Stop server** (or quitting FreeCAD) both stops the
+  listener and revokes the token — the next start mints a different one.
+- **It stops itself when nothing is connected.** Default 30 minutes; the clock
+  only runs while no device has the page open, so it won't cut you off
+  mid-drawing. Change it with the integer preference `DeviceIdleMinutes` under
+  `User parameter:BaseApp/Preferences/Mod/FreeCADClaude` (a negative value turns
+  the auto-stop off).
+- **Plain HTTP.** There is no TLS, so **the token crosses your LAN in clear**,
+  and anyone who can watch that traffic — or who guesses a 22-character random
+  secret — can use it. On a home network that is an accepted trade for a
+  personal-use addon; on a shared or public network, don't turn it on.
+- **The server cannot reach FreeCAD.** `device_server.py` imports no FreeCAD and
+  no Qt, and no request handler calls into either. Captures are *pushed* to it by
+  a tool running on FreeCAD's GUI thread. So the worst a token-holder can do is
+  read the captures you have pushed and write image files into the session
+  folder — not run `run_python`, not read your document, not touch the model.
+
+### Hacking on it
+
+The page's source is `web/` (Vite + TypeScript + Vitest); the built output in
+`freecad/freecadclaude/device_ui/` is **committed to git**, because installs are
+a plain file copy with no Node at the far end. If you change anything under
+`web/`, rebuild and commit the output in the same commit:
+
+```bash
+cd web && npm ci && npx vitest run && npm run build
+```
 
 ## Evaluation
 

@@ -77,7 +77,9 @@ fi
 mkdir -p "$DEST"
 
 # Copy everything except build/VCS cruft, the deploy/install scripts, the
-# vendor dir, the eval harness, and stray exports.
+# vendor dir, the eval harness, the device UI's Vite source, and stray exports.
+# Excluding 'web' does NOT exclude the device UI itself: its build output lives
+# inside freecad/freecadclaude/device_ui and copies with the package.
 rsync -a \
     --exclude '__pycache__' \
     --exclude '.git' \
@@ -88,6 +90,7 @@ rsync -a \
     --exclude 'install_deps.ps1' \
     --exclude 'vendor' \
     --exclude 'eval' \
+    --exclude 'web' \
     --exclude '*.stl' \
     "$SOURCE"/ "$DEST"/
 

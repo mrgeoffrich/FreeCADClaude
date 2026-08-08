@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>FreeCADClaude — device annotation UI mockup</title>
+<style>
+  :root {
+    --bg:        #14161a;
+    --canvas:    #1b1e24;
+    --panel:     #21252c;
+    --panel-2:   #2a2f38;
+    --line:      #363c47;
+    --text:      #e6e9ee;
+    --muted:     #9aa3b2;
+    --accent:    #6ea8fe;
+    --ink:       #ff5d5d;
+    --dim:       #ffc14d;
+    --ok:        #57d39a;
+    --tap:       48px;      /* minimum touch target */
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overscroll-behavior: none;
+  }
+
+  /* ── mockup-only chrome ─────────────────────────────────────────── */
+  .mockbar {
+    display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+    padding: 6px 10px; background: #0d0f12; border-bottom: 1px solid var(--line);
+    font-size: 12px; color: var(--muted);
+  }
+  .mockbar b { color: var(--text); font-weight: 600; letter-spacing: .02em; }
+  .mockbar button {
+    font: inherit; color: var(--muted); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px; cursor: pointer;
+  }
+  .mockbar button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #0d0f12; font-weight: 600; }
+
+  /* ── app shell ──────────────────────────────────────────────────── */
+  .app { height: calc(100% - 33px); display: flex; flex-direction: column; position: relative; overflow: hidden; }
+
+  .statusbar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
+    font-size: 13px; min-height: 40px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
+  .dot.off { background: var(--muted); }
+  .statusbar .title { font-weight: 600; }
+  .statusbar .sep { color: var(--line); }
+  .statusbar .scale { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .statusbar .scale.warn { color: var(--dim); }
+  .badge {
+    font-size: 11px; padding: 2px 7px; border-radius: 999px;
+    background: var(--panel-2); color: var(--muted); border: 1px solid var(--line);
+  }
+  .badge.exact { color: var(--ok); border-color: #2c5a45; }
+  .badge.approx { color: var(--dim); border-color: #5a4a24; }
+
+  /* ── work area ──────────────────────────────────────────────────── */
+  .work { flex: 1; display: flex; min-height: 0; }
+
+  .toolbar {
+    width: 64px; flex: none; background: var(--panel);
+    border-right: 1px solid var(--line);
+    display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 0;
+  }
+  .tool {
+    width: var(--tap); height: var(--tap); border-radius: 12px;
+    border: 1px solid transparent; background: transparent; color: var(--muted);
+    display: grid; place-items: center; cursor: pointer; position: relative;
+  }
+  .tool svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .tool[aria-pressed="true"] { background: var(--panel-2); border-color: var(--accent); color: var(--accent); }
+  .tool:disabled { opacity: .35; cursor: default; }
+  .toolbar .spacer { flex: 1; }
+  .toolbar .rule { width: 32px; height: 1px; background: var(--line); margin: 4px 0; }
+
+  .canvaswrap {
+    flex: 1; min-width: 0; position: relative;
+    background: var(--canvas);
+    display: grid; place-items: center; overflow: hidden;
+    touch-action: none;
+  }
+  .canvaswrap svg.sheet { width: 100%; height: 100%; display: block; }
+  .hint {
+    position: absolute; left: 50%; transform: translateX(-50%); bottom: 12px;
+    background: rgba(13,15,18,.85); border: 1px solid var(--line); border-radius: 999px;
+    padding: 6px 14px; font-size: 12.5px; color: var(--muted); pointer-events: none;
+    white-space: nowrap;
+  }
+
+  /* ── send bar ───────────────────────────────────────────────────── */
+  .sendbar {
+    display: flex; gap: 8px; align-items: center; padding: 8px;
+    background: var(--panel); border-top: 1px solid var(--line);
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
+  }
+  .sendbar input {
+    flex: 1; min-width: 0; font: inherit; color: var(--text);
+    background: var(--canvas); border: 1px solid var(--line); border-radius: 10px;
+    padding: 0 12px; height: var(--tap);
+  }
+  .sendbar input::placeholder { color: var(--muted); }
+  .send {
+    height: var(--tap); padding: 0 20px; font: 600 15px/1 inherit;
+    background: var(--accent); color: #0d0f12; border: 0; border-radius: 10px; cursor: pointer;
+  }
+
+  /* ── sheets / overlays ──────────────────────────────────────────── */
+  .scrim { position: absolute; inset: 0; background: rgba(8,9,11,.6); display: grid; align-items: end; }
+  .sheet {
+    background: var(--panel); border-top: 1px solid var(--line);
+    border-radius: 16px 16px 0 0; padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
+    width: 100%; max-width: 560px; margin: 0 auto;
+  }
+  .sheet h2 { margin: 2px 0 2px; font-size: 16px; }
+  .sheet p { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+  .choice {
+    display: flex; align-items: center; gap: 12px; width: 100%;
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
+    color: var(--text); font: inherit; text-align: left; padding: 12px; margin-bottom: 8px; cursor: pointer;
+  }
+  .choice svg { width: 22px; height: 22px; flex: none; fill: none; stroke: var(--accent); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .choice small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row input {
+    flex: 1; font: inherit; color: var(--text); background: var(--canvas);
+    border: 1px solid var(--line); border-radius: 10px; padding: 0 12px; height: var(--tap);
+  }
+  .row .unit { color: var(--muted); font-size: 14px; }
+  .btn {
+    height: var(--tap); padding: 0 18px; font: 600 15px/1 inherit; cursor: pointer;
+    background: var(--accent); color: #0d0f12; border: 0; border-radius: 10px;
+  }
+  .btn.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+
+  .toast {
+    position: absolute; left: 50%; top: 14px; transform: translateX(-50%);
+    background: var(--ok); color: #0d1a14; font-weight: 600; font-size: 13px;
+    padding: 8px 16px; border-radius: 999px;
+  }
+  .banner {
+    position: absolute; left: 50%; top: 12px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 10px; white-space: nowrap;
+    background: var(--panel); border: 1px solid var(--accent); border-radius: 999px;
+    padding: 7px 8px 7px 14px; font-size: 13px;
+  }
+  .banner button { font: 600 13px/1 inherit; background: var(--accent); color: #0d0f12; border: 0; border-radius: 999px; padding: 7px 12px; cursor: pointer; }
+
+  [hidden] { display: none !important; }
+  @media (max-width: 520px) {
+    .toolbar { width: 56px; }
+    .statusbar .scale { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- mockup-only: flip between screens -->
+<div class="mockbar">
+  <b>MOCKUP</b>
+  <span>screen:</span>
+  <button data-screen="annotate" aria-selected="true">Annotate</button>
+  <button data-screen="dimension" aria-selected="false">Placing a dimension</button>
+  <button data-screen="value" aria-selected="false">Set target value</button>
+  <button data-screen="sources" aria-selected="false">Image source</button>
+  <button data-screen="calibrate" aria-selected="false">Calibrate (photo)</button>
+  <button data-screen="incoming" aria-selected="false">New capture arrived</button>
+  <button data-screen="sent" aria-selected="false">Sent</button>
+</div>
+
+<div class="app">
+
+  <div class="statusbar">
+    <span class="dot" id="dot"></span>
+    <span class="title" id="docname">Bracket</span>
+    <span class="sep">·</span>
+    <span id="viewname" style="color:var(--muted)">front view</span>
+    <span class="badge exact" id="conf">exact scale</span>
+    <span class="scale" id="scaletext">0.084 mm/px</span>
+  </div>
+
+  <div class="work">
+    <!-- left-edge toolbar: the pen hand rests on the right, so controls sit
+         where they won't be covered while drawing -->
+    <div class="toolbar">
+      <button class="tool" id="t-source" title="Image source">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M3 16.5l4.8-4.2a2 2 0 0 1 2.6 0L21 20"/></svg>
+      </button>
+      <div class="rule"></div>
+      <button class="tool" id="t-pen" aria-pressed="true" title="Pen">
+        <svg viewBox="0 0 24 24"><path d="M15.5 4.5l4 4L8 20H4v-4z"/><path d="M13.5 6.5l4 4"/></svg>
+      </button>
+      <button class="tool" id="t-dim" aria-pressed="false" title="Dimension">
+        <svg viewBox="0 0 24 24"><path d="M4 8v8M20 8v8M4 12h16"/><path d="M7 10l-3 2 3 2M17 10l3 2-3 2"/></svg>
+      </button>
+      <div class="rule"></div>
+      <button class="tool" id="t-undo" title="Undo">
+        <svg viewBox="0 0 24 24"><path d="M9 7L5 11l4 4"/><path d="M5 11h9a5 5 0 0 1 0 10h-3"/></svg>
+      </button>
+      <button class="tool" id="t-clear" title="Clear">
+        <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2M7 7l1 13h8l1-13"/></svg>
+      </button>
+      <div class="spacer"></div>
+    </div>
+
+    <div class="canvaswrap">
+      <svg class="sheet" viewBox="0 0 900 620" preserveAspectRatio="xMidYMid meet" aria-label="captured view with markup">
+        <!-- ── the base image: a FreeCAD shaded capture (placeholder) ── -->
+        <defs>
+          <linearGradient id="steel" x1="0" y1="0" x2="0.3" y2="1">
+            <stop offset="0" stop-color="#8e97a5"/><stop offset="1" stop-color="#5c6472"/>
+          </linearGradient>
+          <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M0 1l8 4-8 4z" fill="var(--ink)"/>
+          </marker>
+        </defs>
+        <rect width="900" height="620" fill="#1b1e24"/>
+        <g id="part" stroke="#2b3038" stroke-width="2" stroke-linejoin="round">
+          <!-- L-bracket, front elevation -->
+          <path d="M250 130 H470 a24 24 0 0 1 24 24 V400 H650 V470 H250 Z" fill="url(#steel)"/>
+          <!-- slot -->
+          <rect x="300" y="185" width="140" height="46" rx="23" fill="#3a414c" stroke="#262b33"/>
+          <!-- holes -->
+          <circle cx="330" cy="425" r="20" fill="#3a414c" stroke="#262b33"/>
+          <circle cx="470" cy="425" r="20" fill="#3a414c" stroke="#262b33"/>
+          <circle cx="600" cy="425" r="20" fill="#3a414c" stroke="#262b33"/>
+          <!-- rib -->
+          <path d="M494 400 L560 400 L494 300 Z" fill="#6b7482" stroke="#2b3038"/>
+        </g>
+
+        <!-- ── the user's ink (freehand, pixels only — never serialized) ── -->
+        <g id="ink" stroke="var(--ink)" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity=".95">
+          <!-- circled corner -->
+          <path d="M470 128 c46 4 66 26 62 62 c-4 34 -34 44 -58 38 c-26 -6 -36 -32 -26 -56 c9 -22 34 -34 60 -30"/>
+          <!-- arrow + handwriting near the rib -->
+          <path d="M700 250 L585 322" marker-end="url(#arrow)"/>
+          <path d="M706 232 c14 -6 24 -2 22 8 c-2 8 -16 8 -20 2 c-4 -8 6 -14 18 -12" stroke-width="4"/>
+          <text x="700" y="222" fill="var(--ink)" stroke="none" font-size="21" font-family="Segoe Script, Bradley Hand, cursive">fillet this</text>
+        </g>
+
+        <!-- ── a dimension: structured, carries numbers ── -->
+        <g id="dimgroup" stroke="var(--dim)" stroke-width="2.5" fill="none">
+          <path d="M300 258 v26 M440 258 v26"/>            <!-- witness lines -->
+          <path d="M300 272 H440"/>                          <!-- dimension line -->
+          <path d="M308 267 l-8 5 8 5 M432 267 l8 5 -8 5"/>  <!-- ticks -->
+          <circle cx="300" cy="272" r="7" fill="#14161a"/>
+          <circle cx="440" cy="272" r="7" fill="#14161a"/>
+        </g>
+        <g id="dimlabel">
+          <rect x="288" y="286" width="164" height="30" rx="15" fill="#14161a" stroke="var(--dim)" stroke-width="1.5"/>
+          <text x="370" y="306" text-anchor="middle" font-size="15" font-weight="600" fill="var(--dim)"
+                font-family="-apple-system, Segoe UI, Roboto, sans-serif">24.3 → 30 mm</text>
+        </g>
+
+        <!-- dimension being placed: first point down, rubber band to finger -->
+        <g id="dimdraft" hidden stroke="var(--dim)" stroke-width="2.5" fill="none">
+          <circle cx="300" cy="272" r="8" fill="#14161a"/>
+          <path d="M300 272 H520" stroke-dasharray="7 6"/>
+          <circle cx="520" cy="272" r="14" fill="rgba(255,193,77,.18)" stroke="var(--dim)" stroke-width="1.5"/>
+          <rect x="452" y="228" width="136" height="28" rx="14" fill="#14161a" stroke="var(--dim)" stroke-width="1.5"/>
+          <text x="520" y="247" text-anchor="middle" font-size="14" fill="var(--dim)" stroke="none"
+                font-family="-apple-system, Segoe UI, Roboto, sans-serif">38.1 mm</text>
+        </g>
+
+        <!-- calibration: two taps on a photo -->
+        <g id="calmarks" hidden stroke="var(--accent)" stroke-width="2.5" fill="none">
+          <circle cx="300" cy="470" r="9" fill="#14161a"/>
+          <circle cx="650" cy="470" r="9" fill="#14161a"/>
+          <path d="M300 470 H650" stroke-dasharray="8 6"/>
+        </g>
+      </svg>
+
+      <div class="hint" id="hint">Pen draws · touch is ignored while a stylus is in use</div>
+
+      <div class="banner" id="banner" hidden>
+        New capture from FreeCAD — <em style="color:var(--muted);font-style:normal">top view</em>
+        <button>Load</button>
+      </div>
+      <div class="toast" id="toast" hidden>Sent to Claude · 1 dimension, 3 marks</div>
+    </div>
+  </div>
+
+  <div class="sendbar">
+    <input id="caption" placeholder="Say what you want done (optional)" value="slot too narrow, and soften that corner">
+    <button class="send">Send</button>
+  </div>
+
+  <!-- ── image source sheet ── -->
+  <div class="scrim" id="sheet-sources" hidden>
+    <div class="sheet">
+      <h2>Image source</h2>
+      <p>What do you want to mark up?</p>
+      <button class="choice">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 16.5l4.8-4.2a2 2 0 0 1 2.6 0L21 18"/><circle cx="8.5" cy="9" r="1.5"/></svg>
+        <span>Latest view from FreeCAD<small>Bracket · front · exact scale</small></span>
+      </button>
+      <button class="choice">
+        <svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="14" rx="2"/><circle cx="12" cy="13" r="4"/><path d="M8 6l1.5-2h5L16 6"/></svg>
+        <span>Take a photo<small>Opens the camera</small></span>
+      </button>
+      <button class="choice">
+        <svg viewBox="0 0 24 24"><path d="M4 6h6l2 2h8v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1z"/></svg>
+        <span>Choose from device<small>Photos or files — a sketch, a reference, a drawing</small></span>
+      </button>
+      <div class="row" style="justify-content:flex-end;margin-top:4px">
+        <button class="btn ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── calibration sheet ── -->
+  <div class="scrim" id="sheet-calibrate" hidden>
+    <div class="sheet">
+      <h2>Set the scale</h2>
+      <p>This image has no scale. Tap two points you know the real distance between,
+         then type it. Only reliable if the photo is flat-on.</p>
+      <div class="row">
+        <input type="number" inputmode="decimal" value="120" aria-label="real distance">
+        <span class="unit">mm between the two points</span>
+      </div>
+      <div class="row" style="justify-content:flex-end;margin-top:12px">
+        <button class="btn ghost">Skip — no dimensions</button>
+        <button class="btn">Set scale</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── dimension value sheet ── -->
+  <div class="scrim" id="sheet-value" hidden>
+    <div class="sheet">
+      <h2>This dimension</h2>
+      <p>Measured <strong style="color:var(--dim)">24.3 mm</strong> in the image.
+         Type what you want it to be, or leave it blank to just point it out.</p>
+      <div class="row">
+        <input type="number" inputmode="decimal" placeholder="target" value="30" aria-label="target value">
+        <span class="unit">mm</span>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input type="text" placeholder="Note (optional)" value="widen the slot" aria-label="note">
+      </div>
+      <div class="row" style="justify-content:space-between;margin-top:12px">
+        <button class="btn ghost">Delete</button>
+        <button class="btn">Done</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // Mockup-only screen switching. The real app has none of this.
+  const $ = (id) => document.getElementById(id);
+  const screens = {
+    annotate: {},
+    dimension: { hint: "Tap the second point", show: ["dimdraft"], hide: ["dimgroup", "dimlabel"], press: "dim" },
+    value:     { sheet: "sheet-value", press: "dim" },
+    sources:   { sheet: "sheet-sources" },
+    calibrate: {
+      sheet: "sheet-calibrate", show: ["calmarks"], hide: ["ink", "dimgroup", "dimlabel"],
+      doc: "IMG_4821.jpeg", view: "photo from device", conf: ["approx", "approximate"], scale: "tap two points"
+    },
+    incoming:  { banner: true },
+    sent:      { toast: true, hide: ["ink", "dimgroup", "dimlabel"], caption: "" },
+  };
+
+  function apply(name) {
+    const s = screens[name] || {};
+    for (const id of ["dimdraft", "calmarks"]) $(id).hidden = !(s.show || []).includes(id);
+    for (const id of ["ink", "dimgroup", "dimlabel"]) $(id).hidden = (s.hide || []).includes(id);
+    for (const id of ["sheet-sources", "sheet-calibrate", "sheet-value"]) $(id).hidden = s.sheet !== id;
+    $("banner").hidden = !s.banner;
+    $("toast").hidden = !s.toast;
+    $("hint").textContent = s.hint || "Pen draws · touch is ignored while a stylus is in use";
+    $("docname").textContent = s.doc || "Bracket";
+    $("viewname").textContent = s.view || "front view";
+    const [cls, label] = s.conf || ["exact", "exact scale"];
+    $("conf").className = "badge " + cls;
+    $("conf").textContent = label;
+    $("scaletext").textContent = s.scale || "0.084 mm/px";
+    if (s.caption !== undefined) $("caption").value = s.caption;
+    $("t-pen").setAttribute("aria-pressed", String(s.press !== "dim"));
+    $("t-dim").setAttribute("aria-pressed", String(s.press === "dim"));
+  }
+
+  document.querySelectorAll(".mockbar button").forEach((b) => {
+    b.addEventListener("click", () => {
+      document.querySelectorAll(".mockbar button").forEach((o) => o.setAttribute("aria-selected", String(o === b)));
+      apply(b.dataset.screen);
+    });
+  });
+
+  // The toolbar is live enough to feel the hit targets on a real device.
+  $("t-pen").addEventListener("click", () => { $("t-pen").setAttribute("aria-pressed", "true"); $("t-dim").setAttribute("aria-pressed", "false"); });
+  $("t-dim").addEventListener("click", () => { $("t-dim").setAttribute("aria-pressed", "true"); $("t-pen").setAttribute("aria-pressed", "false"); });
+  $("t-source").addEventListener("click", () => { $("sheet-sources").hidden = false; });
+  document.querySelectorAll(".btn.ghost, .choice").forEach((b) =>
+    b.addEventListener("click", () => document.querySelectorAll(".scrim").forEach((s) => (s.hidden = true))));
+</script>
+</body>
+</html>

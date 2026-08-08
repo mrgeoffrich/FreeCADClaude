@@ -105,7 +105,11 @@ def _format_tool_result(text):
 
 
 #: Capture tools whose result carries a PNG we surface as a thumbnail.
-_CAPTURE_TOOLS = {"capture_view", "capture_user_view", "crop_view", "cutaway"}
+#: send_to_device is in here for a slightly different reason from the rest: the
+#: image goes to a tablet, so without the thumbnail the transcript is the one
+#: place the user can't see what Claude actually pushed at them.
+_CAPTURE_TOOLS = {"capture_view", "capture_user_view", "crop_view", "cutaway",
+                  "send_to_device"}
 #: Pull the saved PNG path out of a capture tool's result text. Non-greedy so it
 #: tolerates spaces in the home path and stops at the first ".png"; "." never
 #: crosses the line, and the path always sits on one line.
@@ -119,6 +123,86 @@ def _extract_capture_png(text):
         return None
     path = match.group(1)
     return path if os.path.isfile(path) else None
+
+
+#: Minutes of nothing connected before the device server stops itself, when the
+#: ``DeviceIdleMinutes`` preference under PARAM_PATH is unset. The number itself
+#: lives in device_server (``_DEFAULT_IDLE_TIMEOUT``, in seconds, with the
+#: reasoning); this is only the unit the preference is written in, because
+#: "1800" is not a thing anyone wants to type into a parameter editor. 0 turns
+#: the auto-stop off.
+_DEVICE_IDLE_PREF = "DeviceIdleMinutes"
+
+
+def _device_idle_timeout():
+    """Seconds of idleness before the device server stops itself, or None for
+    its own default.
+
+    Read HERE, on the GUI thread, and handed to ``start()`` as a number --
+    device_server may not read a FreeCAD preference itself (that is the same
+    invariant as the upload folder, and for the same reason). An unset integer
+    preference reads back as 0, which is why "off" is spelled as a negative
+    rather than as 0: the two are indistinguishable otherwise.
+    """
+    import FreeCAD
+
+    from . import freecad_tools
+
+    minutes = FreeCAD.ParamGet(freecad_tools.PARAM_PATH).GetInt(_DEVICE_IDLE_PREF, 0)
+    return None if minutes == 0 else max(0, minutes) * 60
+
+
+#: How the pairing QR is drawn. At 8px a module, the largest code this encoder
+#: makes (version 6, 41 modules) is 392px square including the quiet zone --
+#: big enough to scan from across a desk without the dialog needing to scroll.
+_QR_MODULE_PX = 8
+#: The spec's minimum quiet zone, and it is not decoration: a reader finds the
+#: finder patterns by their light surround, so a code butted up against the
+#: dialog's edge is a code that does not scan.
+_QR_QUIET_MODULES = 4
+
+
+def _qr_pixmap(url, module_px=_QR_MODULE_PX, quiet=_QR_QUIET_MODULES):
+    """The QR code for `url` as a pixmap, or ``None`` if it cannot be encoded.
+
+    ``None`` rather than an exception because the popup degrades to the URL as
+    text perfectly well, and the one way this fails -- a payload over 134 bytes,
+    which would take a hostname nobody has -- should not cost the user the
+    pairing dialog entirely.
+    """
+    from . import qr
+
+    try:
+        matrix = qr.encode(url)
+    except ValueError:
+        return None
+
+    n = len(matrix)
+    side = (n + 2 * quiet) * module_px
+    pixmap = QtGui.QPixmap(side, side)
+    # Black on white explicitly, never the palette: under FreeCAD's dark theme a
+    # themed code would come out light-on-dark, which readers are entitled to
+    # refuse (and some do).
+    pixmap.fill(QtGui.QColor("white"))
+    painter = QtGui.QPainter(pixmap)
+    try:
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtGui.QColor("black"))
+        for row in range(n):
+            for col in range(n):
+                if matrix[row][col]:
+                    painter.drawRect(
+                        (col + quiet) * module_px,
+                        (row + quiet) * module_px,
+                        module_px,
+                        module_px,
+                    )
+    finally:
+        # A QPixmap left with an active painter cannot be drawn, and the failure
+        # is a warning on stderr rather than an exception -- so end() in a
+        # finally, not after the loop.
+        painter.end()
+    return pixmap
 
 
 def get_panel():
@@ -143,6 +227,20 @@ class ChatPanel(dock_panel.DockPanel):
 class ChatWidget(QtWidgets.QWidget):
     """Transcript + input box + Send button, wired to the agent worker."""
 
+    #: An image landed from the paired device, with its stored path.
+    #:
+    #: Emitted from device_server's HTTP worker thread, which is why it is a
+    #: signal at all: the transcript is a Qt widget tree with GUI-thread
+    #: affinity, and touching it from the server thread is the one thing that
+    #: absolutely must not happen here. A cross-thread emit to a receiver on the
+    #: GUI thread is queued by Qt automatically, so the slot runs there.
+    device_upload_received = QtCore.Signal(str)
+
+    #: The device server stopped itself after sitting idle, with the timeout it
+    #: was given (seconds). Emitted from the watchdog thread -- same reason as
+    #: above, and the same queued hop onto the GUI thread.
+    device_idle_stopped = QtCore.Signal(float)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._thread = None
@@ -159,6 +257,9 @@ class ChatWidget(QtWidgets.QWidget):
         self._render_timer.setSingleShot(True)
         self._render_timer.setInterval(80)
         self._render_timer.timeout.connect(self._do_render)
+        self.device_upload_received.connect(self._on_device_upload)
+        self.device_idle_stopped.connect(self._on_device_idle_stopped)
+        self._device_quit_hooked = False
         self._build_ui()
         self._note(_CAPABILITY_NOTICE)
 
@@ -217,6 +318,12 @@ class ChatWidget(QtWidgets.QWidget):
         self.files_button.setToolTip("Open the FreeCADClaude captures/exports folder")
         self.files_button.clicked.connect(self._open_artifacts)
         control_row.addWidget(self.files_button)
+        self.device_button = QtWidgets.QPushButton("Device", controls)
+        self.device_button.setToolTip(
+            "Serve the annotation page to a phone or tablet on this network"
+        )
+        self.device_button.clicked.connect(self._on_device)
+        control_row.addWidget(self.device_button)
         self.new_button = QtWidgets.QPushButton("New", controls)
         self.new_button.setToolTip("Start a new conversation (clears history and the agent's memory)")
         self.new_button.clicked.connect(self._on_new)
@@ -516,6 +623,9 @@ class ChatWidget(QtWidgets.QWidget):
         self._think_has_text = False
         self._tool_entries.clear()
         self._set_busy(False)
+        # After the clear, not before: its only output is an error note, and a
+        # note written above would be wiped by the very next line.
+        self._reset_device_session()
         try:
             from . import plan_panel
 
@@ -523,6 +633,30 @@ class ChatWidget(QtWidgets.QWidget):
         except Exception:  # noqa: BLE001
             pass
         self._note(_CAPABILITY_NOTICE)
+
+    def _reset_device_session(self):
+        """Point the device server at the new conversation and forget the old
+        one's images.
+
+        Called from "New", AFTER the fresh session id has been minted, because
+        the upload folder is derived from it: without this the tablet's next
+        upload would land in the previous chat's ``mobile/`` folder, and
+        ``read_device_image`` would answer the new conversation with the
+        previous one's marked-up capture.
+
+        Unconditional, even with the server stopped: the published/upload state
+        deliberately outlives a stop (see device_server._Feed), so it is exactly
+        the state that would leak.
+        """
+        from . import device_server, freecad_tools
+
+        try:
+            upload_dir = (
+                freecad_tools.device_upload_dir() if device_server.is_running() else None
+            )
+            device_server.reset_session(upload_dir)
+        except Exception as exc:  # noqa: BLE001 - "New" must clear the panel regardless
+            self._note(f"*Could not reset the device server: {exc}*")
 
     def _on_model_changed(self, _index):
         """Persist the selected model (only reachable between conversations, since
@@ -549,6 +683,164 @@ class ChatWidget(QtWidgets.QWidget):
         QtGui.QDesktopServices.openUrl(
             QtCore.QUrl.fromLocalFile(freecad_tools.artifacts_dir())
         )
+
+    def _on_device(self):
+        """Start the LAN device server and show the user how to reach it.
+
+        Explicit, and only from here: the server binds a LAN interface, so
+        nothing but a button press should ever be able to turn it on (see
+        device_server's module docstring). ``start()`` is idempotent, so
+        pressing this again just re-shows the pairing details.
+        """
+        from . import device_server, freecad_tools
+
+        try:
+            # The upload folder and the idle timeout are resolved HERE, on the
+            # GUI thread, and handed over as plain values. The server must never
+            # work either out itself -- both walks end in a FreeCAD preference
+            # read, and an HTTP worker thread calling into FreeCAD is the
+            # invariant the whole feature rests on.
+            url, _token = device_server.start(
+                upload_dir=freecad_tools.device_upload_dir(),
+                idle_timeout=_device_idle_timeout(),
+            )
+        except Exception as exc:  # noqa: BLE001 - report, never raise into Qt
+            self._note(f"*Could not start the device server: {exc}*")
+            return
+        # Bound signal emits, not methods: the hooks fire on the server's own
+        # threads and Qt queues them onto ours (see device_upload_received).
+        device_server.set_upload_hook(self.device_upload_received.emit)
+        device_server.set_idle_hook(self.device_idle_stopped.emit)
+        self._hook_device_shutdown()
+        self._show_pairing(url)
+
+    def _hook_device_shutdown(self):
+        """Make sure quitting FreeCAD takes the LAN listener down with it.
+
+        Connected on first start rather than in ``__init__`` because there is
+        nothing to stop until then -- and guarded by a flag because pressing
+        Device again would otherwise connect a second copy (Qt allows duplicate
+        connections, and this would then stop an already-stopped server).
+
+        This is separate from ``_shutdown_worker``'s connection on purpose: that
+        one is made when a *chat* starts, and the server can be running with no
+        conversation ever having been sent.
+        """
+        if self._device_quit_hooked:
+            return
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._shutdown_device)
+            self._device_quit_hooked = True
+
+    def _shutdown_device(self):
+        """Stop the server on the way out. No transcript note: the window this
+        would be written into is already closing."""
+        from . import device_server
+
+        try:
+            device_server.stop()
+        except Exception:  # noqa: BLE001 - nothing useful to do while quitting
+            pass
+
+    def _on_device_idle_stopped(self, timeout):
+        """The watchdog stopped the server. Say so, and say why.
+
+        Runs on the GUI thread (queued). Without this the tablet simply goes
+        dead, which from over there is indistinguishable from a wifi problem --
+        and the fix (press Device again, re-scan) is not one anybody would guess
+        at from the device.
+        """
+        minutes = max(1, int(round(float(timeout) / 60.0)))
+        self._note(
+            f"*Device server stopped after {minutes} idle minute(s) with nothing "
+            "connected. Press **Device** to start it again -- it mints a new "
+            "code, so the device has to re-scan.*"
+        )
+
+    def _on_device_upload(self, path):
+        """An image arrived from the device -- say so in the transcript.
+
+        Runs on the GUI thread (queued from the server thread). Deliberately
+        just a note: auto-injecting "the user sent an image" into the next
+        prompt is a separate, deferred decision, and until it's made the user
+        seeing that it landed is what stops them wondering whether Send worked.
+        """
+        self._note(
+            "📱 **image received** from the device.\n\n"
+            f"`{path}`\n\nAsk Claude to look at it (it reads it with "
+            "`read_device_image`)."
+        )
+
+    def _show_pairing(self, url):
+        """Show the pairing QR for `url`, the URL as text, and a way to stop.
+
+        The QR is the point: the URL carries a 22-character case-sensitive
+        token, and typing that on a tablet once per session is the kind of
+        friction that decides whether a feature gets used. The text under it is
+        the fallback for when the camera won't cooperate (or when the device is
+        this machine) -- selectable so it can be copied and messaged over.
+
+        Modal, and deliberately: pairing is a few seconds of scanning, and a
+        modeless window would go on floating over FreeCAD long after. Closing
+        leaves the server running; "Stop server" is how you turn it off, and
+        since :func:`device_server.start` mints a fresh token each time, that
+        also deauthorises whatever device is already paired.
+        """
+        self._note(
+            "📱 **Device server running.** Scan the code, or open this on your "
+            f"phone or tablet (same wifi):\n\n`{url}`"
+        )
+
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Device")
+        layout = QtWidgets.QVBoxLayout(dialog)
+
+        pixmap = _qr_pixmap(url)
+        layout.addWidget(
+            QtWidgets.QLabel(
+                "Scan this with a phone or tablet on the same network:"
+                if pixmap is not None
+                else "Open this address on a phone or tablet on the same network:",
+                dialog,
+            )
+        )
+        if pixmap is not None:
+            code = QtWidgets.QLabel(dialog)
+            code.setPixmap(pixmap)
+            code.setAlignment(QtCore.Qt.AlignCenter)
+            layout.addWidget(code)
+
+        address = QtWidgets.QLabel(url, dialog)
+        address.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        address.setAlignment(QtCore.Qt.AlignCenter)
+        address.setWordWrap(True)
+        layout.addWidget(address)
+
+        buttons = QtWidgets.QHBoxLayout()
+        stop_button = QtWidgets.QPushButton("Stop server", dialog)
+        stop_button.setToolTip(
+            "Stop serving the page. The next start mints a new token, so this "
+            "also revokes any device already paired."
+        )
+        stop_button.clicked.connect(lambda: self._stop_device(dialog))
+        buttons.addWidget(stop_button)
+        buttons.addStretch(1)
+        close_button = QtWidgets.QPushButton("Close", dialog)
+        close_button.setDefault(True)
+        close_button.clicked.connect(dialog.accept)
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+
+        dialog.exec()
+
+    def _stop_device(self, dialog):
+        """Stop the LAN server and close the pairing popup, whose code is now dead."""
+        from . import device_server
+
+        device_server.stop()
+        self._note("*Device server stopped.*")
+        dialog.accept()
 
     def _on_stop(self):
         if self._worker is not None and self._busy:

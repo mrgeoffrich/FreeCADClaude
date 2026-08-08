@@ -36,7 +36,7 @@ chat panel (GUI thread)
 | `Init.py` / `InitGui.py` | Workbench registration (App/GUI). InitGui also has the eval hook. |
 | `freecad/freecadclaude/chat_panel.py` | The dock, Markdown transcript (streamed), buttons, worker wiring. |
 | `freecad/freecadclaude/plan_panel.py` | Second dock: Plan (subagent output) + live task checklist. |
-| `freecad/freecadclaude/flow_layout.py` | `FlowLayout` — a wrapping row layout, used for the chat panel's control strip (model combo + Files/New/Stop/Send). A `QHBoxLayout`'s minimum width is the *sum* of its children's, and a `QPushButton`'s own minimum is ~80px however short its label, so a single non-wrapping strip sets the dock's floor far above what the transcript and input need. Wrapping makes the layout's minimum the *widest single item* while its `sizeHint` stays the one-row width, so the dock opens wide and still drags narrow. Rows are flush right, matching where the strip sits. |
+| `freecad/freecadclaude/flow_layout.py` | `FlowLayout` — a wrapping row layout, used for the chat panel's control strip (model + effort combos, Files/Device/New/Stop/Send). A `QHBoxLayout`'s minimum width is the *sum* of its children's, and a `QPushButton`'s own minimum is ~80px however short its label, so a single non-wrapping strip sets the dock's floor far above what the transcript and input need. Wrapping makes the layout's minimum the *widest single item* while its `sizeHint` stays the one-row width, so the dock opens wide and still drags narrow. Rows are flush right, matching where the strip sits. |
 | `freecad/freecadclaude/dock_panel.py` | The singleton dock shell both panels subclass (`DockPanel`): lazy creation, reuse-by-`objectName` across a workbench reload, `instance()`/`widget`. Subclasses supply the inner widget and, via `_on_created`, what happens to a fresh dock (chat raises itself; the plan dock tabs in behind it). |
 | `freecad/freecadclaude/agent_worker.py` | Drives the `claude` CLI per turn; parses stream-json → Qt signals. `_handle_tool_use` **surfaces a tool call by default** and special-cases only the exceptions, so a tool added to the allow-list appears in the transcript without a change here — the old allow-list shape let `Write`/`Glob`/`Grep` run invisibly. `_tool_label` picks the detail arg (path basename, pattern, subagent type); an unmapped name falls back to its own lowercased name. `TaskCreate`/`TaskUpdate` stay out of the transcript because the plan dock's checklist already shows them call for call. A `Plan` subagent is the one id in **both** `_plan_ids` and `_chat_tool_ids` — `_handle_tool_result` must not `elif` those two branches, or the transcript entry never gets its result. |
 | `freecad/freecadclaude/agent_config.py` | Model, system prompt (loaded from `system_prompt.md`), CLI flags (tools/mcp/cwd/skills). |
@@ -44,9 +44,13 @@ chat panel (GUI thread)
 | `freecad/freecadclaude/references/` | run_python scripting references (sketcher / partdesign / part-draft) the system prompt tells Claude to `Read` on demand — progressive disclosure without a skill gate. The prompt's execution-contract section covers the rest. |
 | `freecad/freecadclaude/gui_bridge.py` | In-FreeCAD socket server; runs tools on the GUI thread; run_python arg precheck. |
 | `freecad/freecadclaude/freecad_tools/` | The tools, as a package — see its own map below. `__init__.py` holds the `TOOLS` registry and re-exports the facade the rest of the addon imports (`TOOLS`, `list_schemas`, `feature_snapshot`, `post_tool_notes`, the session-dir helpers), so `from . import freecad_tools` still reaches everything. |
+| `freecad/freecadclaude/device_server.py` | The LAN HTTP server behind the chat panel's **Device** button: serves `device_ui/` to a phone or tablet and takes marked-up images back. Stdlib only — no Qt, no FreeCAD, not even indirectly; see "Device annotation" below for what that import list buys. |
+| `freecad/freecadclaude/device_ui/` | The built web app — committed build output, whose source is `web/`. See "Device annotation" before touching either. |
+| `freecad/freecadclaude/qr.py` | The pairing QR: byte mode, EC level L, versions 3–6, fixed mask 0. Imports no Qt (returns a boolean matrix; `chat_panel._qr_pixmap` paints it), so it is unit-testable headlessly. |
 | `freecad/freecadclaude/_deps.py` | Locates the `claude` CLI. |
 | `freecad/freecadclaude/eval_runner.py` | Unattended end-to-end eval (triggered by env var). |
 | `mcp_server.py` | Stdlib-only MCP stdio server the CLI spawns; relays to the bridge. |
+| `web/` | Vite + TypeScript + Vitest source of `device_ui/`. Dev-time only — excluded from `deploy.ps1`/`deploy.sh` and never shipped. |
 | `deploy.ps1` / `install_deps.ps1` / `eval/run.py` | Dev tooling (not deployed). |
 
 ## Tools
@@ -56,6 +60,7 @@ Registry: `freecad_tools.TOOLS` = name → `{schema, run, precheck?}`. Current s
 `set_print_direction`, `get_sketch`,
 `view_sketch_svg`, `capture_view`,
 `capture_user_view`, `crop_view`, `cutaway`, `annotate_view`, `read_annotation`,
+`send_to_device`, `read_device_image`,
 `export`, `inspect_api`,
 `get_diagnostics`, `run_python` (the only tool that touches geometry —
 the general Sketcher/PartDesign/Part path; `document_notes` mutates the
@@ -85,6 +90,7 @@ infra modules import nothing from `tools_*` (that's why `_ERROR_FLAGS` and
 | `tools_sketch.py` | `get_sketch`, `view_sketch_svg` (+ the GeoId overlay). |
 | `tools_capture.py` | `capture_view`, `capture_user_view`, `crop_view`. |
 | `tools_annotate.py` | `annotate_view`, `read_annotation` — the draw-on-the-screenshot round trip. |
+| `tools_device.py` | `send_to_device`, `read_device_image` — the same round trip through a phone or tablet on the LAN. Also `device_upload_dir()`, re-exported for `chat_panel`; it is the whole of the no-FreeCAD seam described under "Device annotation". No rendering code of its own — it enters `render._offscreen_shot` like the capture tools do. |
 | `tools_cutaway.py` | `cutaway` (+ clip-plane resolution). |
 | `tools_export.py` | `export`. |
 | `session.py` | Artifact folders: the per-conversation session dir, the script/step archives (`_session_subdir`/`_safe_name` build every artifact path), plus the two paths that aren't artifacts but that several modules must agree on: `PARAM_PATH` (the preferences root) and `REFS_DIR` (the bundled `references/`). Both are single-spelled here and imported by `agent_config` rather than re-declared — `agent_config` substitutes `REFS_DIR` into the prompt's `{REFS_DIR}` while the tools cite paths under it in their notes, so a second copy could drift and hand Claude a path that doesn't resolve. `active_session_id()` is how a tool remembers "already said this in this conversation" without inventing its own notion of when one starts. |
@@ -286,6 +292,58 @@ wherever the user has since orbited to. Editor is `open -a Preview` (macOS) /
 `mspaint` (Windows) / `xdg-open` (Linux), overridable with the `AnnotateEditor`
 preference under `PARAM_PATH`.
 
+**Device annotation** (`device_server.py` + `qr.py` + `tools_device.py` +
+`device_ui/`, source in `web/`): the same round trip, with a phone or tablet on
+the LAN as the editor. `send_to_device` renders a capture and publishes it; the
+paired page shows it over SSE, the user draws with a stylus and places
+**dimensions**; `read_device_image` returns the flattened PNG inline plus the
+annotation document verbatim. The server runs only while the chat panel's
+**Device** button says so. Design docs: `docs/device-annotation-{design,plan}.md`.
+
+- **The HTTP server never calls into FreeCAD, and its import list is what
+  enforces that.** `device_server.py` imports no FreeCAD and no Qt, not even
+  indirectly, so the module is testable under a bare interpreter, a LAN request
+  cannot freeze the GUI thread, and the worst a token-holder can do is read
+  pushed captures and write image files into one folder. The cost is that every
+  path and preference is passed *in*: `<session>/mobile/` is resolved on the GUI
+  thread (`tools_device.device_upload_dir()`, from `chat_panel._on_device` on
+  start and from `send_to_device` on every publish) and handed over as a string,
+  and `idle_timeout` the same way. A handler that "just looks something up"
+  crosses that line.
+- **`device_ui/` is committed build output.** Users install from `main` as a
+  plain file copy — no Node, no build step — so whatever is in that folder is the
+  app they get. Rebuild it (`npm ci && npm run build`) and commit it in the same
+  commit as any `web/` change; `RELEASE.md` repeats this as a release step. The
+  build is deterministic (fixed asset names, no hashes, no code splitting), so a
+  rebuild that changes nothing produces no diff.
+- **Plain HTTP, so the token crosses the LAN in clear.** Accepted for a
+  personal-use addon and stated in `README.md`/`SECURITY.md`. It also caps the
+  client: `getUserMedia` needs a secure context, so there is no in-page
+  viewfinder, but `<input type="file" capture="environment">` opens the camera
+  app over plain HTTP.
+- **Idle auto-stop counts only time with no request in flight**, and an
+  `/api/events` stream is in flight for as long as the page is open — so the
+  timeout means "the tablet went away", not a deadline the user has to beat while
+  drawing. `_serving()` brackets the *dispatch*, never `handle_one_request`: with
+  keep-alive a handler spends most of its life blocked reading the next request,
+  and counting that would keep the server up for ever. Default 30 min,
+  `DeviceIdleMinutes` preference, negative to disable.
+- **"New" clears the server's state** (`reset_session`, from `chat_panel._on_new`
+  after the new session id is minted). The feed outlives `stop()` on purpose,
+  since `read_device_image` is routinely called after the user has stopped the
+  server; without the reset the next chat's `read_device_image` would answer with
+  the previous chat's capture and its uploads would land in the previous
+  session's folder.
+- **Measurement is a division, and the caveat travels with it.**
+  `mm_per_px = cam.height / rendered_height_px` off the ortho camera, read in
+  `render._capture_optics` inside the offscreen view and last — `_fit_render_size`
+  can re-frame the camera and change the pixel height in the same call. An
+  oblique camera downgrades confidence rather than dropping the number, so Claude
+  can tell "no measurement" from "a measurement you shouldn't machine to"; an
+  absent field makes those identical. `measured_mm` and `target_mm` stay separate
+  facts, and with no scale a dimension reads in pixels. Hence `send_to_device`
+  defaults face-on where `capture_view` defaults iso.
+
 **Draw style** (`style` on both `capture_view` and `cutaway`, schema shared via
 `render._STYLE_SCHEMA_PROPS`): `shaded` (default), `xray`, `wireframe`.
 `_force_draw_style` is the single place the viewer's override mode is set — and
@@ -329,14 +387,16 @@ unphotographable:
 3D pass `view=front/top/...` → `TechDraw.projectToSVG` orthographic) is for
 reasoning about exact coordinates as text, not for looking at the shape — its
 3D-projection path data is tessellated into many small segments and isn't
-meant to be read directly either. Artifacts go to `~/FreeCADClaude/<session-id>/{captures,exports,scripts}`
+meant to be read directly either. Artifacts go to `~/FreeCADClaude/<session-id>/{captures,exports,scripts,mobile}`
 (the user's home directory, **not** FreeCAD's `UserAppData`) — `<session-id>` is a
 readable id (`YYYYMMDD-HHMMSS-<6 hex>`) minted by `freecad_tools.new_session_id()`
 when a chat starts and again on "New" (`chat_panel._ensure_worker`/`_on_new`), so
 every conversation gets its own folder; `session_dir()` resolves the active one
 (older session folders are pruned, keeping the most recent 40). `captures`/
-`exports`/`scripts` are written by FreeCAD tools via `_artifact_path` (auto-pruned, kept
-≤60 files each); `scripts` holds a `.py` copy of every `run_python` call
+`exports`/`scripts`/`mobile` are written by FreeCAD tools via `_artifact_path`
+(auto-pruned, kept ≤60 files each); `mobile` holds both directions of the device
+round trip (`sent_*` out, `upload_*` back, each upload's annotation JSON beside
+its PNG); `scripts` holds a `.py` copy of every `run_python` call
 (written by `_save_run_python_script`, right before `exec`, so both successful and
 failed runs are archived); the same session folder also holds `stream.jsonl` — the
 raw newline-delimited JSON `agent_worker` reads from the `claude` CLI, appended
@@ -391,7 +451,14 @@ project dir (so its `.claude/skills` load) else a temp dir.
   verifies the `claude` CLI is present/logged in.
 - **Headless testing:** `freecadcmd <script.py>` for App-side logic (tool
   functions, parsing). GUI-only bits (FreeCADGui, QApplication) need
-  `QT_QPA_PLATFORM=offscreen` and may lack fonts/`activeView`.
+  `QT_QPA_PLATFORM=offscreen` and may lack fonts/`activeView`. Give `freecadcmd`
+  an **absolute** path — with a relative one it runs nothing and still exits 0.
+  After touching the device feature, re-run `eval/test_device_server.py`,
+  `test_device_tools.py`, `test_qr.py` and `test_capture_scale.py`; the first
+  three also run under a plain `python3`.
+- **The web app:** `cd web && npm ci` once, then `npx vitest run` and
+  `npm run build`. The build writes the committed `freecad/freecadclaude/device_ui/`
+  — rebuild and commit it alongside any `web/` change.
 - **End-to-end eval:** `python3 eval/run.py [-p ... -e <regex>]` (cross-platform
   — one stdlib-only script, no venv needed) — launches FreeCAD, runs a prompt
   through the real agent, snapshots the doc to
@@ -665,3 +732,9 @@ and that may be fine.
   `Body.insertObject`/`Group` reordering, which reproduces the same cycle (and can
   duplicate the `Group` entry). Worked example in
   `freecad/freecadclaude/references/partdesign-body-tip-cycle-gotcha.md`.
+- **QR version 6 at EC level L is two error-correction blocks, not one**, and a
+  single-block version 6 produces a structurally perfect symbol that decoders
+  read as nothing at all. `eval/test_qr.py` pins full reference matrices from
+  `qrcode` and decodes them back with `zxing-cpp` — neither a dependency of the
+  addon — which is the only reason this surfaced. Blocks are equal-sized across
+  versions 3–6, so `_interleave` is a `zip` with no group-1/group-2 split.

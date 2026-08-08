@@ -775,8 +775,9 @@ def _objects_schema_prop(what="to show", extra=""):
     }
 
 
-#: The camera-angle arguments, shared verbatim by capture_view and cutaway (see
-#: _resolve_camera_args, which parses them).
+#: The camera-angle arguments as capture_view and cutaway take them (see
+#: _camera_schema_props for the one knob that varies, and _resolve_camera_args,
+#: which parses them).
 _CAMERA_SCHEMA_PROPS = {
     "view": {
         "type": "string",
@@ -800,6 +801,29 @@ _CAMERA_SCHEMA_PROPS = {
         ),
     },
 }
+
+
+def _camera_schema_props(default_view="iso"):
+    """:data:`_CAMERA_SCHEMA_PROPS` with a different documented default view.
+
+    Only the default differs between the tools that aim a camera --
+    send_to_device defaults face-on rather than iso (see its own note) -- so it
+    is a parameter here rather than a second hand-written copy of the
+    description. Two spellings of the same knob is exactly what keeping these
+    schema fragments in render.py exists to prevent. Returns fresh dicts, so a
+    caller merging them into its schema cannot mutate the shared one.
+    """
+    return dict(
+        _CAMERA_SCHEMA_PROPS,
+        view=dict(
+            _CAMERA_SCHEMA_PROPS["view"],
+            description=(
+                "Camera preset: iso/front/rear/top/bottom/left/right (default "
+                f"{default_view}). Ignored when azimuth/elevation are given."
+            ),
+        ),
+    )
+
 
 #: The render-size arguments, shared by capture_view and cutaway.
 _SIZE_SCHEMA_PROPS = {
@@ -921,6 +945,138 @@ def _fit_render_size(view, doc, setup):
         return w, h
     except Exception:  # noqa: BLE001 - any coin/API hiccup -> the asked-for size
         return width, height
+
+
+# ---- what a PIXEL of the saved image is worth -------------------------------
+# The capture tools hand Claude a picture; send_to_device hands it to a human
+# who will MEASURE on it. That needs one number the image itself can't carry --
+# millimetres per pixel -- and one caveat that matters more than the number:
+# unprojecting a screen point through an ortho camera gives a ray, not a point,
+# so a distance between two screen points is a distance IN THE PROJECTION
+# PLANE. On a front view world X and Z are true and depth is unmeasurable; on
+# an oblique view everything is foreshortened and the number is simply wrong.
+#
+# This lives in render.py because both facts are camera facts, and the camera
+# is here. It is a pure read -- nothing below sets a field on anything, so a
+# capture stays as non-mutating as it was.
+
+#: How far off a world axis the camera may sit and still count as axis-aligned.
+#: The presets land exactly on these values, so this is float slop rather than
+#: a tolerance worth leaning on: half a degree of tilt already costs ~0.9mm at
+#: the far edge of a 100mm part.
+_AXIS_TOLERANCE_DEG = 0.5
+
+
+def _is_axis_aligned(angles):
+    """True when the camera looks straight down a world axis, so that two of
+    the three world axes are true on screen.
+
+    `angles` is an (azimuth, elevation) pair as _orbit_angles_from_view reads
+    them back off the live view -- i.e. where the camera ACTUALLY ended up,
+    which is why this can be asked about a preset and about a custom orbit in
+    the same way. Looking straight down (elevation +/-90) counts whatever the
+    azimuth is: azimuth is indeterminate there, and the view is a true top
+    view either way.
+    """
+    if angles is None:
+        return False
+    azimuth, elevation = angles
+    if abs(abs(elevation) - 90.0) <= _AXIS_TOLERANCE_DEG:
+        return True
+    if abs(elevation) > _AXIS_TOLERANCE_DEG:
+        return False
+    # Azimuth within tolerance of a multiple of 90 -- front/rear/left/right.
+    return abs(((azimuth + 45.0) % 90.0) - 45.0) <= _AXIS_TOLERANCE_DEG
+
+
+def _projection_plane(angles):
+    """The sentence saying which world plane distances in this image are true
+    in, and which axis is unmeasurable.
+
+    Carried in the metadata rather than written as prose by whoever reports the
+    capture, because it has to survive the whole round trip: it is published
+    with the image, comes back attached to the annotation document the device
+    sends, and is what read_device_image quotes. A caveat regenerated at the
+    far end would be a guess about a camera that no longer exists.
+    """
+    if not _is_axis_aligned(angles):
+        return (
+            "the camera is not axis-aligned, so every distance in this image is "
+            "foreshortened by an unknown amount"
+        )
+    azimuth, elevation = angles
+    if abs(abs(elevation) - 90.0) <= _AXIS_TOLERANCE_DEG:
+        return (
+            "distances are true in the world X/Y plane; height (world Z) is not "
+            "measurable from this image"
+        )
+    if abs(((azimuth + 90.0) % 180.0) - 90.0) <= _AXIS_TOLERANCE_DEG:
+        return (
+            "distances are true in the world X/Z plane; depth (world Y) is not "
+            "measurable from this image"
+        )
+    return (
+        "distances are true in the world Y/Z plane; width (world X) is not "
+        "measurable from this image"
+    )
+
+
+def _ortho_mm_per_px(cam, height_px):
+    """Millimetres per rendered pixel for orthographic camera node `cam`, or
+    None.
+
+    `height` on an SoOrthographicCamera IS the world height of the viewing
+    volume, so with the image rendered at exactly `height_px` (which
+    _save_view_png guarantees by forcing the FBO save method) this is a
+    division and not an estimate. None whenever it can't be one -- a
+    non-orthographic camera, or a degenerate size -- and that None is the
+    "no scale available" signal, not an error.
+    """
+    if cam is None or height_px <= 0:
+        return None
+    try:
+        world_height = float(cam.height.getValue())
+    except Exception:  # noqa: BLE001 - any coin/API hiccup means no scale
+        return None
+    if world_height <= 0.0:
+        return None
+    return world_height / float(height_px)
+
+
+def _capture_optics(view, height_px, angles):
+    """Everything about the camera that a MEASUREMENT on the saved image
+    depends on: ``{"projection", "axis_aligned", "scale"}``.
+
+    **Call this after _apply_camera_plan AND after the final render size.**
+    Both halves of mm/px move underneath it: _fit_render_size can re-frame the
+    camera (changing `height`) and change the pixel height in the same call, so
+    reading either one earlier gives a number for a shot that was never taken.
+    It is the same ordering rule _fit_render_size itself documents, for the
+    same reason -- how big the box looks depends on where the camera ended up.
+
+    `scale` is None when there is no orthographic camera to derive it from. It
+    is NOT dropped for an oblique camera: the confidence is downgraded to
+    'approximate' and the number kept, because Claude has to be able to tell
+    "no measurement" from "a measurement you shouldn't machine to", and an
+    absent field makes those two identical.
+    """
+    cam = _ortho_camera(view)
+    axis_aligned = _is_axis_aligned(angles)
+    mm_per_px = _ortho_mm_per_px(cam, height_px)
+    scale = None
+    if mm_per_px is not None:
+        scale = {
+            # 6dp: mm/px runs around 0.08 on a typical capture, so this is far
+            # below anything measurable and short enough to read in the JSON.
+            "mm_per_px": round(mm_per_px, 6),
+            "confidence": "exact" if axis_aligned else "approximate",
+            "plane": _projection_plane(angles),
+        }
+    return {
+        "projection": "orthographic" if cam is not None else "perspective",
+        "axis_aligned": axis_aligned,
+        "scale": scale,
+    }
 
 
 def _measured_angles(measured, plan):

@@ -50,20 +50,49 @@ From a clean `main` that's in sync with `origin`.
 
 ```bash
 python3 eval/run.py            # end-to-end: launches FreeCAD, runs a real turn
+cd web && npx vitest run && cd ..            # the device web app's logic
+freecadcmd /abs/path/to/eval/test_device_server.py   # the LAN server
+freecadcmd /abs/path/to/eval/test_device_tools.py    # its two tools' error paths
+freecadcmd /abs/path/to/eval/test_qr.py              # the pairing encoder
+freecadcmd /abs/path/to/eval/test_capture_scale.py   # mm-per-pixel
 ```
+
+(`freecadcmd` needs an **absolute** path; given a relative one it runs nothing
+and exits 0.)
 
 Then load it in FreeCAD once (`pwsh -File deploy.ps1` / `./deploy.sh`, restart,
 open the **Claude Chat** workbench, send a message). The eval covers the agent
 path; it does not cover the dock actually appearing.
 
-**2. Bump the version** in `package.xml` — both fields:
+**2. Rebuild the device UI and commit the output.** Skip this and the phone/
+tablet annotation feature is *missing* from the release — not stale, missing:
+
+```bash
+cd web && npm ci && npm run build && cd ..
+git status freecad/freecadclaude/device_ui   # commit anything that changed
+```
+
+`freecad/freecadclaude/device_ui/` is **build output that is committed to git**,
+because users install from the `main` branch as a plain file copy: no Node, no
+npm, no build step at their end. Whatever is in that folder on `main` *is* the
+web app they get. An un-rebuilt `device_ui/` ships the previous release's
+JavaScript against the current release's server, and a `device_ui/` that was
+never built at all makes the Device button fail with *"the device UI has not
+been built"*.
+
+The build is deterministic — fixed asset filenames, no content hashes, no code
+splitting (see `web/vite.config.ts`) — so a rebuild that changes nothing
+produces no diff. An empty `git status` here is the normal, expected outcome;
+it is not a sign the build didn't run.
+
+**3. Bump the version** in `package.xml` — both fields:
 
 ```xml
 <version>1.2.0</version>
 <date>2026-08-04</date>          <!-- the release date, ISO -->
 ```
 
-**3. Commit, tag, push:**
+**4. Commit, tag, push:**
 
 ```bash
 git commit -am "Release 1.2.0"
@@ -71,7 +100,7 @@ git tag -a v1.2.0 -m "1.2.0"     # annotated; tag name is v-prefixed, package.xm
 git push origin main --follow-tags
 ```
 
-**4. Publish the notes:**
+**5. Publish the notes:**
 
 ```bash
 gh release create v1.2.0 --title "1.2.0" --notes-file <notes.md>
