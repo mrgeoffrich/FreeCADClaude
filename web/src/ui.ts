@@ -11,6 +11,23 @@
 /** Which drawing tool is armed: freehand ink, or a two-point dimension. */
 export type Tool = "pen" | "dimension";
 
+const WELCOME_KEY = "fc-welcome-seen";
+
+/** Whether the first-run help has been dismissed on this device.
+ *
+ * localStorage, not sessionStorage: the page is reopened from a fresh QR scan
+ * every time FreeCAD restarts the server, and someone who has read the help
+ * once shouldn't meet it again on every pairing. Storage is passed in so the
+ * rule is testable without a DOM.
+ */
+export function welcomeSeen(storage: Pick<Storage, "getItem">): boolean {
+  return storage.getItem(WELCOME_KEY) === "1";
+}
+
+export function markWelcomeSeen(storage: Pick<Storage, "setItem">): void {
+  storage.setItem(WELCOME_KEY, "1");
+}
+
 export type SourceChoice = "freecad" | "camera" | "library";
 
 /** What the value sheet opens with. `measured` is pre-formatted by `scale`,
@@ -58,6 +75,8 @@ export interface Ui {
   onCalibrate: (mm: number) => void;
   /** ...and its Skip, which means "I'll mark it up without millimetres". */
   onCalibrateSkip: () => void;
+  /** The first-run help's Got it, so the caller can record that it's been read. */
+  onWelcomeDone: () => void;
 
   setStatus(status: StatusInfo): void;
   setHint(text: string): void;
@@ -70,6 +89,7 @@ export interface Ui {
    * something to offer, with its document/view as the subtitle. */
   setFreecadSource(available: boolean, subtitle: string): void;
   openSources(): void;
+  openWelcome(): void;
   closeSheets(): void;
   /** A capture arrived mid-drawing. Notify, don't clobber. */
   showBanner(text: string): void;
@@ -132,6 +152,10 @@ export function mountUi(doc: Document = document): Ui {
   const libraryChoice = need<HTMLButtonElement>(doc, "src-library");
   const cancelChoice = need<HTMLButtonElement>(doc, "src-cancel");
 
+  const welcomeSheet = need(doc, "sheet-welcome");
+  const welcomeDone = need<HTMLButtonElement>(doc, "welcome-done");
+  const helpButton = need<HTMLButtonElement>(doc, "t-help");
+
   const banner = need(doc, "banner");
   const bannerText = need(doc, "banner-text");
   const bannerLoad = need<HTMLButtonElement>(doc, "banner-load");
@@ -153,6 +177,7 @@ export function mountUi(doc: Document = document): Ui {
     onValueDelete: () => {},
     onCalibrate: () => {},
     onCalibrateSkip: () => {},
+    onWelcomeDone: () => {},
 
     setStatus(status) {
       docName.textContent = status.title;
@@ -201,10 +226,15 @@ export function mountUi(doc: Document = document): Ui {
       sourcesSheet.hidden = false;
     },
 
+    openWelcome() {
+      welcomeSheet.hidden = false;
+    },
+
     closeSheets() {
       sourcesSheet.hidden = true;
       valueSheet.hidden = true;
       calibrateSheet.hidden = true;
+      welcomeSheet.hidden = true;
     },
 
     showBanner(text) {
@@ -289,6 +319,12 @@ export function mountUi(doc: Document = document): Ui {
   calibrateSkip.addEventListener("click", () => {
     ui.closeSheets();
     ui.onCalibrateSkip();
+  });
+
+  helpButton.addEventListener("click", () => ui.openWelcome());
+  welcomeDone.addEventListener("click", () => {
+    ui.closeSheets();
+    ui.onWelcomeDone();
   });
 
   undoButton.addEventListener("click", () => ui.onUndo());

@@ -29,7 +29,13 @@ import {
 } from "./scale";
 import { addPoint, finishStroke, newStroke, PEN_CSS_WIDTH, type Stroke } from "./strokes";
 import { resolveToken } from "./token";
-import { mountUi, type SourceChoice, type Tool } from "./ui";
+import {
+  markWelcomeSeen,
+  mountUi,
+  welcomeSeen,
+  type SourceChoice,
+  type Tool,
+} from "./ui";
 
 const PEN_HINT = "Pen draws · touch is ignored while a stylus is in use";
 const NO_IMAGE_HINT = "Pick an image to mark up";
@@ -139,6 +145,12 @@ function refreshStatus(): void {
 
 refreshStatus();
 ui.setFreecadSource(false, "Arrives when FreeCAD sends you a view");
+
+// ── first run ──────────────────────────────────────────────────────────────
+// The page opens empty, and half of what it does happens in FreeCAD, so the
+// starting state doesn't explain itself. Say it once, then get out of the way.
+if (!welcomeSeen(window.localStorage)) ui.openWelcome();
+ui.onWelcomeDone = () => markWelcomeSeen(window.localStorage);
 
 // ── drawing ────────────────────────────────────────────────────────────────
 function pointOf(sample: PointerSample) {

@@ -51,6 +51,11 @@
         <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2M7 7l1 13h8l1-13"/></svg>
       </button>
       <div class="spacer"></div>
+      <!-- The way back to the first-run help, which is dismissed for good once
+           the user taps Got it. -->
+      <button class="tool" id="t-help" title="How this works" aria-label="How this works">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.1 2.5c-.6.2-1 .8-1 1.4v.4"/><path d="M12 17h.01"/></svg>
+      </button>
     </div>
 
     <div class="canvaswrap" id="canvaswrap">
@@ -69,6 +74,31 @@
   <div class="sendbar">
     <input id="caption" placeholder="Say what you want done (optional)">
     <button class="send" id="send" type="button">Send</button>
+  </div>
+
+  <!-- ── first-run help ──
+       Full screen rather than a bottom sheet: there is no image behind it yet,
+       and the round trip it describes spans FreeCAD as well as this page, so
+       there is nothing useful to leave visible. Shown once per device; the
+       toolbar's ? button reopens it. -->
+  <div class="scrim full" id="sheet-welcome" role="dialog" aria-modal="true" aria-labelledby="welcome-title" hidden>
+    <div class="welcome">
+      <h1 id="welcome-title">Mark up your FreeCAD views</h1>
+      <ol class="steps">
+        <li><b>Ask Claude to send you a view</b>
+          In FreeCAD, ask for something like an isometric view of a named object
+          to be sent to your device. It appears here.</li>
+        <li><b>Draw on it</b>
+          Mark it up with a stylus or your finger, and place dimensions on the
+          parts you want changed.</li>
+        <li><b>Tap Send</b>
+          Your marked-up image goes back to FreeCAD. Once you see it arrive,
+          ask Claude to look at it and act on what you drew.</li>
+      </ol>
+      <p class="note">You can also mark up a photo or an image already on this
+        device — tap the picture button at the top of the toolbar.</p>
+      <button class="btn wide" id="welcome-done" type="button">Got it</button>
+    </div>
   </div>
 
   <!-- ── image source sheet ── -->
