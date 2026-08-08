@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""export -- write geometry out to STEP/IGES/BREP/STL."""
+"""export -- write geometry out to STEP/IGES/BREP/STL/3MF."""
 
 import os
 
@@ -11,8 +11,12 @@ _EXPORT_SCHEMA = {
     "name": "export",
     "description": (
         "Export geometry to a file. Supported formats (by extension): STEP "
-        "(.step/.stp), IGES (.iges/.igs), BREP (.brep) for CAD; STL (.stl) for "
-        "3D printing/mesh. Provide 'path' (full output path); if omitted, writes "
+        "(.step/.stp), IGES (.iges/.igs), BREP (.brep) for CAD; STL (.stl) and "
+        "3MF (.3mf) for 3D printing/mesh. 3MF is the one to reach for when the "
+        "file is going to a slicer: it is a mesh export like STL, but it keeps "
+        "each named object as a SEPARATE 3MF object, so the slicer places them "
+        "as separate parts on the plate instead of fusing them into one shape "
+        "the way STL does. Provide 'path' (full output path); if omitted, writes "
         "to a temp file using 'format' (default step) and returns the path. "
         "'names' picks objects (default: current selection, else all solids in "
         "the document)."
@@ -21,7 +25,7 @@ _EXPORT_SCHEMA = {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Output file path (extension sets the format)"},
-            "format": {"type": "string", "description": "step/iges/brep/stl (used if path has no extension)"},
+            "format": {"type": "string", "description": "step/iges/brep/stl/3mf (used if path has no extension)"},
             "names": {"type": "array", "items": {"type": "string"}, "description": "Object internal Names to export"},
         },
         "additionalProperties": False,
@@ -74,6 +78,8 @@ def _run_export(args):
 
             Part.Compound([o.Shape for o in objs]).exportStl(path)
         else:
+            # Every remaining mesh format, .3mf included: Mesh.export keys off
+            # the extension itself and writes one 3MF object per object handed in.
             import Mesh
 
             Mesh.export(objs, path)

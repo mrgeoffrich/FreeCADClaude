@@ -20,6 +20,7 @@ a base of shared infrastructure:
     session      artifact folders, the per-conversation session dir
     doc_notes    the document's standing context notes, and their staleness
     print_meta   per-part build direction: storage, plate side, the legend
+    print_export parts meshed and stood up the way they print, via a scratch doc
     geometry     bounding boxes, world-space crop extents
     svg          framing/cropping an SVG projection
     gui_state    what the user has open in an editor

@@ -296,9 +296,25 @@ writes it, and `get_objects` reports it. Nothing acted on it until now: a part
 recorded as `-Z up` still exported the way it was modelled, so the slice bore no
 relation to how the part gets printed.
 
-The rotation is one call. For a recorded direction whose local up-axis is `u`,
-`FreeCAD.Rotation(Vector(*u), Vector(0, 0, 1))` maps `u` onto world +Z; bake it in,
-then translate so the part's minimum Z sits at 0.
+It lives in `freecad_tools/print_export.py`, infra beside `print_meta.py`: that
+module records the direction, this one acts on it. Infra rather than a `tools_*`
+module because the slice tools import it, and dependencies run tools → infra only.
+`print_meta.up_vector(obj)` is the accessor it needs — the enum value plus the
+part-local unit up vector, `None` when there is no axis to rotate onto.
+
+**The local axis has to be carried through the object's own Placement.** The mesh
+comes off `obj.Shape`, which already has the Placement baked in, so the recorded
+axis names a direction in the part's frame and not the mesh's:
+
+```python
+axis = obj.Placement.Rotation.multVec(FreeCAD.Vector(*up))   # into the mesh's frame
+rotation = FreeCAD.Rotation(axis, FreeCAD.Vector(0, 0, 1))
+```
+
+Skip the `multVec` and `+Z up` stops meaning "as modelled" for any part whose
+Placement is rotated — a bar placed on its side exports still lying down. Identity
+placements are unaffected, which is why a spike on freshly-created primitives
+agrees either way.
 
 **The rotation must not touch the user's document.** Rotating the real objects
 would mutate placements the user owns, and it would recompute anything downstream.
@@ -325,6 +341,13 @@ three from the origin onto distinct plate positions, so **rotating ourselves and
 letting the slicer arrange is a clean division**: orientation is a design decision
 the document already records, and layout is packing the slicer does better.
 
+**A bounding box does not catch a sign error.** A rotation and its inverse both
+stand a part's axis vertical, so a 60x10x10 bar at `+X up` measures 10x10x60 either
+way — and so does a symmetric part at `-Z up`, both directions being 180 degree
+flips. Distinguishing them needs a part that is asymmetric *along* the rotated
+axis, e.g. a taper, asserted on which end is at the bottom. Confirmed by mutation:
+inverting the rotation passes every bbox assertion and fails only the taper.
+
 How each enum value is treated:
 
 | `PrintDirection` | Behaviour |
@@ -338,7 +361,29 @@ How each enum value is treated:
 `Not set` reporting matters more than it looks: silently printing an unset part as
 modelled is right about as often as it is wrong, and the tool result is where the
 user finds out which parts nobody has decided about. `Not printed` is the other
-half of the same argument — a jig or a reference body should not consume plate.
+half of the same argument — a jig or a reference body should not consume plate, and
+that holds at `orient=False` too, since whether a part is printed at all is a
+different decision from which way up.
+
+Two further behaviours the enum table does not cover. Rotation implies the drop to
+the plate, so every rotated part lands with its minimum corner at the origin and
+the slicer separates them. `orient=False` leaves modelled coordinates completely
+alone, including position — which is what comparing against a hand-made Studio
+slice wants. And a `Custom` direction whose vector is missing or zero-length gets
+no rotation; it shows in the report as `Custom` with `rotated: false` rather than
+being silently treated as `+Z up`.
+
+**A 3MF `<object>` carries an `id` and no name.** Report order is therefore the
+only mapping from parts to file objects, which is what fork 6's placement-offset
+arithmetic has to index against in `result.json`.
+
+**`Mesh.export` to an unwritable path aborts the process, not the call.** The
+failure escapes Python entirely — neither `except Exception` nor `except
+BaseException` sees it, and under `freecadcmd` the script stops dead with
+`[No write permission for file]`. A `finally` still runs, so the scratch document
+is still closed, but no error message can be produced at that site. **The write
+path must be checked before the call**, since inside FreeCAD this runs on the GUI
+thread.
 
 A rotation invalidates the `set_print_direction` payload's `print_plate_side` only
 in the sense that it is now literally true: after rotation the plate side is world
@@ -408,7 +453,8 @@ loaded either way.
 
 | New file | Role |
 |---|---|
-| `freecad/freecadclaude/freecad_tools/tools_slice.py` | `slice_model`, `read_slice_result`, `view_gcode`. GUI-thread work: object resolution, `Mesh.export`, preference reads, preset resolution, `result.json` summarising, the bounded wait. |
+| `freecad/freecadclaude/freecad_tools/print_export.py` | Infra beside `print_meta.py`. `oriented_export(objs, path, deviation, orient)` — mesh, rotate onto the recorded direction, drop to the plate, one multi-object 3MF via a scratch document, and a structured report. |
+| `freecad/freecadclaude/freecad_tools/tools_slice.py` | `slice_model`, `read_slice_result`, `view_gcode`. GUI-thread work: object resolution, the oriented export, preference reads, preset resolution, `result.json` summarising, the bounded wait. |
 | `freecad/freecadclaude/slicer_runner.py` | Stdlib only, no FreeCAD, no Qt. Job table, daemon thread, subprocess, argv builder, and discovery as pure functions over paths handed in. Sibling of `device_server.py`, testable under a bare `python3`. |
 | `freecad/freecadclaude/gcode_server.py` | Stdlib only. `127.0.0.1` static server for `gcode_ui/`, plus `GET /api/gcode/<id>` and the `/api/slicer/{options,config}` routes. Token-gated. |
 | `freecad/freecadclaude/gcode_ui/` | Committed build output — the vendored viewer. |
@@ -748,12 +794,14 @@ Ordered by dependency, then size. Each leaves the addon working.
 
 ```
   M1 export 3mf ── M1b rotation ──┐
-                                  ├── M3 tools ── M6 autoload ── M7 hardening
-  M2 runner ──────────────────────┘        │            │
-                                           │      M5 gcode_server ── M5b settings
-                     M0 parser guard       │
-                                      M4 vendored build
+                                  ├── M3 tools ─────────────┐
+  M2 runner ──────────────────────┘                         ├── M6 autoload ── M7 docs
+                                                            │
+  M4 vendored build ── M0 parser guard ── M5 server ── M5b settings
 ```
+
+M0 comes after M4, not before it: the parser guard imports `parseAndBuild` from the
+vendored source, so it cannot run until `gcode_web/` exists.
 
 ### M0 — The parser guard · size S · permanent
 
@@ -780,17 +828,19 @@ exporter, not of our code, so it can change under us.
 
 ### M1b — Print-direction rotation · size M · permanent
 
-`tools_slice._oriented_export(objs, deviation)`: mesh, rotate onto
-`print_meta.AXIS_VECTORS`, drop to Z=0, scratch document, one 3MF, close. Handles
-`Custom` off `PrintDirectionCustom`, reports `Not set`, omits `Not printed`.
+`print_meta.up_vector(obj)`, plus `print_export.oriented_export(objs, path,
+deviation, orient)`: mesh, rotate onto the recorded direction through the object's
+Placement, drop to Z=0, scratch document, one 3MF, close. Handles `Custom` off
+`PrintDirectionCustom`, reports `Not set`, omits `Not printed`.
 
-**Test:** `eval/test_oriented_export.py` under `freecadcmd` — set a known direction
-on a deliberately asymmetric part (a 60×10×10 bar at `+X up`), export, and read the
-per-object vertex bbox back out of the 3MF zip, asserting 10×10×60. Assert the
-user's document is unchanged: same `Placement` on every object, and no new objects.
-Assert `Not printed` produces no 3MF object. **Permanent** — this is where a wrong
-rotation silently prints a part on the wrong face, and the bbox assertion is the
-only thing that would catch a sign error or an axis swap.
+**Test:** `eval/test_oriented_export.py` under `freecadcmd`, reading per-object
+vertex bboxes back out of the 3MF zip. A 60×10×10 bar at `+X up` asserting 10×10×60;
+the same bar with a rotated Placement, asserting the carry-through; **a taper
+asserting which end is at the bottom**, since the bbox alone passes an inverted
+rotation; the user's document unchanged, same `Placement` on every object and none
+added; `Not printed` producing no 3MF object; and the scratch document closed on the
+exception path. **Permanent** — this is where a wrong rotation silently prints a part
+on the wrong face.
 
 ### M2 — `slicer_runner.py`, no tools yet · size M · permanent
 

@@ -152,6 +152,25 @@ def direction_entry(obj):
     return entry
 
 
+def up_vector(obj):
+    """``(direction, up)`` -- what ``obj``'s recorded direction means as a vector.
+
+    ``direction`` is the canonical enum value, with an object carrying no
+    property at all reported as "Not set": to anything acting on the direction,
+    an absent field and an undecided one are the same state.
+
+    ``up`` is the part-local unit vector that has to end up pointing at world +Z
+    once the part is on the plate. It is None whenever there is no axis to
+    rotate onto -- "Not set", "Not printed", and a "Custom" whose vector is
+    missing or zero-length -- so a caller can tell those apart from "+Z up",
+    which asks for no rotation but is a decision.
+    """
+    direction = getattr(obj, _DIRECTION_PROP, None) or NOT_SET
+    if direction == CUSTOM:
+        return direction, _unit(getattr(obj, _CUSTOM_PROP, None))
+    return direction, AXIS_VECTORS.get(direction)
+
+
 def any_direction_set(doc):
     """Whether any object carries a direction, i.e. whether a payload reporting
     them needs DIRECTION_NOTE."""
