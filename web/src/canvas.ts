@@ -60,14 +60,31 @@ export function toImage(view: ViewTransform, p: Point): Point {
   return { x: (p.x - view.tx) / view.scale, y: (p.y - view.ty) / view.scale };
 }
 
+type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
+/** Drawn on top of the image and the ink, in SCREEN pixels rather than image
+ * space, with the view transform passed in so it can place its own points.
+ *
+ * That is what dimension chrome needs: a handle is a tap target and a label is
+ * text, so both have to be a fixed size on the surface they're drawn on rather
+ * than scaling with the image. `chrome` is that surface's size relative to the
+ * on-screen canvas -- 1 while drawing, larger when flattening to a PNG bigger
+ * than the canvas, so the marks stay proportional instead of shrinking into
+ * illegibility in the image Claude actually receives.
+ *
+ * A hook rather than a `dimensions` field on the scene: canvas.ts owns the
+ * transform and the render loop, and knows nothing about what a dimension is. */
+export type Overlay = (ctx: Ctx2D, view: ViewTransform, chrome: number) => void;
+
 /** Everything that gets rendered, and everything that gets flattened. */
 export interface Scene {
   image: ImageBitmap | null;
   strokes: Stroke[];
+  overlay: Overlay | null;
 }
 
 export function newScene(): Scene {
-  return { image: null, strokes: [] };
+  return { image: null, strokes: [], overlay: null };
 }
 
 export class CanvasView {
@@ -141,9 +158,16 @@ export class CanvasView {
     const d = this.dpr;
     ctx.setTransform(scale * d, 0, 0, scale * d, tx * d, ty * d);
 
-    const { image, strokes } = this.scene;
+    const { image, strokes, overlay } = this.scene;
     if (image) ctx.drawImage(image, 0, 0);
     for (const stroke of strokes) drawStroke(ctx, stroke);
+
+    if (overlay) {
+      // Back to CSS pixels (times the device ratio, which is about display
+      // density, not layout) so the overlay's sizes mean what they say.
+      ctx.setTransform(d, 0, 0, d, 0, 0);
+      overlay(ctx, this.view, 1);
+    }
   }
 
   private refit(): void {
@@ -177,12 +201,18 @@ export function fitWithin(size: Size, maxEdge = MAX_FLAT_EDGE): Size {
   return { width: Math.max(1, Math.round((width * maxEdge) / height)), height: maxEdge };
 }
 
+/** The canvas width the overlay's fixed sizes were chosen against. A flatten
+ * wider than this scales its chrome up in proportion, so a dimension label is
+ * the same fraction of the picture Claude receives as it was of the one the
+ * user drew on. */
+const CHROME_REFERENCE_WIDTH = 1000;
+
 /** A canvas to compose into, plus how to get a PNG out of it. OffscreenCanvas
  * where it exists (no DOM node, no layout), a detached <canvas> otherwise --
  * Safari only grew OffscreenCanvas 2D recently and this has to work on the
  * tablet in front of the user, not the newest one. */
 function composeTarget(size: Size): {
-  ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+  ctx: Ctx2D;
   toBlob: () => Promise<Blob>;
 } {
   if (typeof OffscreenCanvas !== "undefined") {
@@ -229,5 +259,16 @@ export async function flattenToPng(scene: Scene, maxEdge = MAX_FLAT_EDGE): Promi
   ctx.setTransform(out.width / source.width, 0, 0, out.height / source.height, 0, 0);
   ctx.drawImage(image, 0, 0);
   for (const stroke of scene.strokes) drawStroke(ctx, stroke);
+
+  if (scene.overlay) {
+    // The overlay draws in the OUTPUT's pixels, so its view transform is the
+    // downscale itself -- image space into the flattened image. The dimensions
+    // have to be in this PNG: it is the picture Claude sees, and a measurement
+    // that only existed on the tablet would leave the JSON pointing at a mark
+    // that isn't there.
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const scale = out.width / source.width;
+    scene.overlay(ctx, { scale, tx: 0, ty: 0 }, Math.max(1, out.width / CHROME_REFERENCE_WIDTH));
+  }
   return toBlob();
 }

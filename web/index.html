@@ -23,7 +23,8 @@
     <span class="sep">·</span>
     <span class="subtitle" id="viewname">pick a source to start</span>
     <span class="badge" id="conf">no scale</span>
-    <!-- Phase 5 fills this in from the capture's mm/px. -->
+    <!-- The capture's mm/px, or the calibration's. Blank when there is none --
+         the badge beside it already says "no scale". -->
     <span class="scale" id="scaletext"></span>
   </div>
 
@@ -38,9 +39,7 @@
       <button class="tool" id="t-pen" aria-pressed="true" title="Pen" aria-label="Pen">
         <svg viewBox="0 0 24 24"><path d="M15.5 4.5l4 4L8 20H4v-4z"/><path d="M13.5 6.5l4 4"/></svg>
       </button>
-      <!-- Dimensions are phase 5; the button is kept as a disabled placeholder
-           so the toolbar's layout and tap targets are the real ones. -->
-      <button class="tool" id="t-dim" aria-pressed="false" title="Dimension — not yet" aria-label="Dimension" disabled>
+      <button class="tool" id="t-dim" aria-pressed="false" title="Dimension" aria-label="Dimension">
         <svg viewBox="0 0 24 24"><path d="M4 8v8M20 8v8M4 12h16"/><path d="M7 10l-3 2 3 2M17 10l3 2-3 2"/></svg>
       </button>
       <div class="rule"></div>
@@ -91,6 +90,49 @@
       </button>
       <div class="row" style="justify-content:flex-end;margin-top:4px">
         <button class="btn ghost" id="src-cancel" type="button">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── calibration sheet ──
+       Shown when the dimension tool is used on an image with no scale (a
+       photo). Two taps plus a real length is the whole of it; the caveat in
+       the copy is the honest one, since a photo shot at an angle is right
+       along the calibration line and wrong everywhere else. -->
+  <div class="scrim" id="sheet-calibrate" hidden>
+    <div class="sheet">
+      <h2>Set the scale</h2>
+      <p>This image has no scale. Tap two points you know the real distance between,
+         then type it. Only reliable if the photo is flat-on.</p>
+      <div class="row">
+        <input type="number" inputmode="decimal" id="cal-mm" aria-label="real distance">
+        <span class="unit">mm between the two points</span>
+      </div>
+      <div class="row" style="justify-content:flex-end;margin-top:12px">
+        <button class="btn ghost" id="cal-skip" type="button">Skip — no dimensions</button>
+        <button class="btn" id="cal-set" type="button">Set scale</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── dimension value sheet ──
+       "Measured" is what the image says; the input is what the user wants.
+       They are different facts and the document keeps them apart. -->
+  <div class="scrim" id="sheet-value" hidden>
+    <div class="sheet">
+      <h2>This dimension</h2>
+      <p>Measured <strong id="val-measured" style="color:var(--dim)"></strong> in the image.
+         Type what you want it to be, or leave it blank to just point it out.</p>
+      <div class="row">
+        <input type="number" inputmode="decimal" id="val-target" placeholder="target" aria-label="target value">
+        <span class="unit">mm</span>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input type="text" id="val-note" placeholder="Note (optional)" aria-label="note">
+      </div>
+      <div class="row" style="justify-content:space-between;margin-top:12px">
+        <button class="btn ghost" id="val-delete" type="button">Delete</button>
+        <button class="btn" id="val-done" type="button">Done</button>
       </div>
     </div>
   </div>

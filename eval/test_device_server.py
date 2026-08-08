@@ -4,7 +4,12 @@
 
 Static serving and the token gate (phase 1), plus the round trip (phase 4):
 publish/fetch, the SSE wake-up, and the four upload gates -- size, framing,
-magic bytes, and a filename that tries to traverse. All of it in one file, on
+magic bytes, and a filename that tries to traverse. The measurement payload
+(phase 5) rides along in the same checks rather than in new ones, because it
+added no server surface: the scale is a few more keys in a metadata dict this
+module already stores verbatim, and the annotation document is a JSON part it
+already writes to disk without parsing. What is asserted is exactly that --
+that structure survives it untouched. All of it in one file, on
 purpose: they share a running server and the checks are cheapest when they can
 see each other's state (an upload has to show up in ``uploads()``, a publish has
 to reach a stream opened before it).
@@ -295,7 +300,15 @@ def main():
 
         record = device_server.publish(
             capture_path,
-            {"document": "Bracket", "view": "front", "scale": None,
+            {"document": "Bracket", "view": "front",
+             # The measurement fields, exactly as tools_device._capture_meta
+             # writes them. The server has no opinion about any of it -- that
+             # is what "stored and served verbatim" means, and it is why the
+             # scale could be added without touching this module.
+             "scale": {"mm_per_px": 0.084198, "confidence": "exact",
+                       "plane": "distances are true in the world X/Z plane"},
+             "camera": {"azimuth": 0, "elevation": 0,
+                        "projection": "orthographic", "axis_aligned": True},
              "context": "Document 'Bracket'. Camera angle: azimuth 0 deg."},
         )
         status, resp, body = _request(host, port, "/api/latest", {"X-FC-Token": token})
@@ -305,7 +318,8 @@ def main():
         check("its metadata is served verbatim",
               published["meta"]["document"] == "Bracket"
               and published["meta"]["view"] == "front"
-              and published["meta"]["scale"] is None,  # phase 5's slot, empty
+              and published["meta"]["scale"]["mm_per_px"] == 0.084198
+              and published["meta"]["camera"]["axis_aligned"] is True,
               published["meta"])
         check("it points at /api/image/<id>",
               published["url"] == "/api/image/" + record["id"], published["url"])
@@ -352,10 +366,24 @@ def main():
         form_type = f"multipart/form-data; boundary={_BOUNDARY}"
         before = set(os.listdir(uploads_dir))
 
+        # A real annotation document, as web/src/doc.ts writes it -- dimension,
+        # normalized coordinates, measured-vs-target and all. The server stores
+        # it opaquely and never parses it, so the thing under test is that a
+        # payload with structure survives the multipart round trip unchanged;
+        # read_device_image quotes it verbatim and a mangled byte there would
+        # be a wrong number in front of Claude.
+        _DOC = (
+            b'{"version":1,"image":"annotation.png",'
+            b'"source":{"kind":"freecad_capture","id":"AbC123","document":"Bracket",'
+            b'"camera":{"projection":"orthographic","view":"front","axis_aligned":true},'
+            b'"scale":{"mm_per_px":0.084198,"confidence":"exact","plane":"world X/Z"}},'
+            b'"annotations":[{"id":"d1","type":"dimension","a":[0.31,0.62],"b":[0.58,0.62],'
+            b'"measured_mm":24.3,"target_mm":30,"note":"widen the slot","snapped_to":null}],'
+            b'"caption":"slot too narrow"}'
+        )
         status, _, body = _post(
             host, port, "/api/upload",
-            _multipart([("image", "annotation.png", _PNG),
-                        ("doc", None, b'{"caption":"slot too narrow","source":null}')]),
+            _multipart([("image", "annotation.png", _PNG), ("doc", None, _DOC)]),
             form_type, {"X-FC-Token": token},
         )
         check("a valid upload -> 200", status == 200, f"got {status}: {body[:120]}")
@@ -368,12 +396,20 @@ def main():
             check("the stored bytes are the ones sent", fh.read() == _PNG)
         doc_path = os.path.splitext(os.path.join(uploads_dir, stored))[0] + ".json"
         check("the doc part is stored beside it", os.path.isfile(doc_path))
+        with open(doc_path, "rb") as fh:
+            check("...byte for byte as it arrived", fh.read() == _DOC)
         recorded = device_server.uploads()
         check("read_device_image can see it", len(recorded) == 1
               and recorded[-1]["path"] == os.path.join(uploads_dir, stored))
         check("the doc comes back verbatim, not parsed",
-              json.loads(recorded[-1]["doc"])["caption"] == "slot too narrow",
-              recorded[-1]["doc"])
+              recorded[-1]["doc"] == _DOC.decode("utf-8"), recorded[-1]["doc"])
+        annotation = json.loads(recorded[-1]["doc"])["annotations"][0]
+        check("the two numbers survive as separate facts",
+              annotation["measured_mm"] == 24.3 and annotation["target_mm"] == 30,
+              annotation)
+        check("...with normalized coordinates and snapped_to reserved",
+              annotation["a"] == [0.31, 0.62] and annotation["snapped_to"] is None,
+              annotation)
 
         # Upload gate 1: the declared size.
         status, _, body = _post(

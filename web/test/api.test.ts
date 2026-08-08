@@ -17,6 +17,13 @@ import {
   parseLatest,
   parsePublished,
 } from "../src/api";
+import { buildDoc, type DocSourceInput } from "../src/doc";
+import { noScale } from "../src/scale";
+
+/** The document as main.ts assembles it. Built through `buildDoc` rather than
+ * hand-written, so this asserts what actually goes over the wire. */
+const upload = (caption: string, source: DocSourceInput | null) =>
+  buildDoc({ caption, source, scale: noScale({ width: 800, height: 600 }), dimensions: [] });
 
 describe("authHeaders", () => {
   it("carries the token as X-FC-Token", () => {
@@ -47,22 +54,21 @@ describe("buildUpload", () => {
   const png = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" });
 
   it("names the parts 'image' and 'doc'", async () => {
-    const form = buildUpload(png, { caption: "slot too narrow", source: null });
+    const form = buildUpload(png, upload("slot too narrow", null));
     const image = form.get("image");
     expect(image).toBeInstanceOf(Blob);
     expect(await (image as Blob).arrayBuffer()).toEqual(await png.arrayBuffer());
-    expect(JSON.parse(form.get("doc") as string)).toEqual({
+    expect(JSON.parse(form.get("doc") as string)).toMatchObject({
+      version: 1,
       caption: "slot too narrow",
       source: null,
+      annotations: [],
     });
   });
 
   it("carries the source id, which is how the capture context comes back", () => {
-    const form = buildUpload(png, {
-      caption: "",
-      source: { kind: "freecad_capture", id: "AbC123" },
-    });
-    expect(JSON.parse(form.get("doc") as string).source).toEqual({
+    const form = buildUpload(png, upload("", { kind: "freecad_capture", id: "AbC123" }));
+    expect(JSON.parse(form.get("doc") as string).source).toMatchObject({
       kind: "freecad_capture",
       id: "AbC123",
     });
@@ -71,7 +77,7 @@ describe("buildUpload", () => {
   it("sets no Content-Type of its own -- the browser owns the boundary", () => {
     // Asserted as an absence: a hand-set multipart Content-Type without the
     // generated boundary is unparseable, and is the classic way to break this.
-    const form = buildUpload(png, { caption: "", source: null });
+    const form = buildUpload(png, upload("", null));
     expect(form).toBeInstanceOf(FormData);
   });
 });

@@ -23,26 +23,42 @@
 // served from this server's root, and an absolute path is the one thing that
 // stays right no matter which route the browser thinks it is on.
 
+import { serializeDoc, type AnnotationDoc } from "./doc";
+
 /** The header name the API's token gate reads. */
 export const TOKEN_HEADER = "X-FC-Token";
 
 /** Metadata `send_to_device` published with a capture.
  *
  * Every field is optional on purpose: this crosses a version boundary (a
- * browser tab can outlive a FreeCAD restart), and phase 5 adds `scale` plus
- * `camera.projection`/`camera.axis_aligned` here. Reading it defensively is
- * what makes those additive. */
+ * browser tab can outlive a FreeCAD restart), so reading it defensively is
+ * what lets either side gain a field. The declared types here are a
+ * convenience for the app's own code; `scale.captureScale` re-parses the
+ * measurement fields from `unknown` rather than trusting them, because a wrong
+ * mm/px is the one field whose failure mode is a user machining to it. */
 export interface CaptureMeta {
   readonly document?: string;
   readonly objects?: readonly string[];
   /** Preset name, or null for a custom orbit angle. */
   readonly view?: string | null;
-  readonly camera?: { readonly azimuth?: number | null; readonly elevation?: number | null };
+  readonly camera?: {
+    readonly azimuth?: number | null;
+    readonly elevation?: number | null;
+    readonly projection?: string | null;
+    /** False when the camera doesn't look straight down a world axis, in which
+     * case every distance in the image is foreshortened. */
+    readonly axis_aligned?: boolean | null;
+  };
   readonly image?: { readonly width?: number; readonly height?: number };
   readonly extents?: string;
   readonly note?: string;
-  /** Phase 5: `{mm_per_px, confidence, plane}`. Null means "no scale known". */
-  readonly scale?: unknown;
+  /** Derived from the ortho camera at publish time. Null means "no scale
+   * known", which is a state the app renders rather than an error. */
+  readonly scale?: {
+    readonly mm_per_px?: number | null;
+    readonly confidence?: string;
+    readonly plane?: string;
+  } | null;
   readonly context?: string;
 }
 
@@ -53,17 +69,6 @@ export interface Published {
   readonly url: string;
   readonly publishedAt: number;
   readonly meta: CaptureMeta;
-}
-
-/** The annotation document POSTed beside the image.
- *
- * Phase 5 owns this schema (dimensions, normalized coordinates, measured vs
- * target). Phase 4 sends the two things it already has, and `source` is not
- * decoration: it is how `read_device_image` knows which capture the marks were
- * drawn on, and so which camera angle and extents to replay. */
-export interface AnnotationDoc {
-  readonly caption: string;
-  readonly source: { readonly kind: string; readonly id?: string } | null;
 }
 
 export function authHeaders(token: string | null): Record<string, string> {
@@ -81,11 +86,12 @@ export function eventsUrl(token: string): string {
  *
  * The filename given here is cosmetic and the server ignores it outright -- it
  * generates its own name in one fixed folder, so nothing a client sends can
- * steer where the file lands. */
+ * steer where the file lands. It is taken from the document's own `image`
+ * field so the two at least agree with each other. */
 export function buildUpload(png: Blob, doc: AnnotationDoc): FormData {
   const form = new FormData();
-  form.append("image", png, "annotation.png");
-  form.append("doc", JSON.stringify(doc));
+  form.append("image", png, doc.image);
+  form.append("doc", serializeDoc(doc));
   return form;
 }
 

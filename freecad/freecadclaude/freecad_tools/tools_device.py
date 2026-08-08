@@ -32,6 +32,7 @@ from .render import (
     _apply_camera_plan,
     _camera_angle_note,
     _camera_schema_props,
+    _capture_optics,
     _capture_setup,
     _fit_render_size,
     _looks_blank,
@@ -107,19 +108,18 @@ def _publish_context(doc, keep_set, angles):
     return " ".join(parts)
 
 
-def _capture_meta(doc, names, keep_set, plan, angles, size, note, context):
+def _capture_meta(doc, names, keep_set, plan, angles, size, note, context, optics):
     """The metadata published alongside the PNG.
 
     Served verbatim by ``GET /api/latest`` (the web app reads ``document`` and
-    ``view`` for its status bar) and replayed by read_device_image, so it is one
-    dict with two readers rather than two descriptions of the same capture.
+    ``view`` for its status bar, and ``scale``/``camera`` for its millimetres)
+    and replayed by read_device_image, so it is one dict with two readers
+    rather than two descriptions of the same capture.
 
-    **Phase 5 extends this, and the shape is chosen so it can do that
-    additively**: ``scale`` is the reserved slot for
-    ``{"mm_per_px", "confidence", "plane"}`` derived from the ortho camera, and
-    ``camera`` is where its ``projection``/``axis_aligned`` flags go. Both are
-    present-and-empty now rather than absent, so a client can read them without
-    a version check.
+    ``optics`` is render._capture_optics, read inside the offscreen view while
+    the camera still exists. ``scale`` is null when there was no orthographic
+    camera to derive one from -- "no scale known", which the web app renders as
+    a pixel-only measurement rather than treating as an error.
     """
     return {
         "document": doc.Label,
@@ -129,15 +129,17 @@ def _capture_meta(doc, names, keep_set, plan, angles, size, note, context):
         "camera": {
             "azimuth": None if angles is None else round(angles[0], 1),
             "elevation": None if angles is None else round(angles[1], 1),
-            # PHASE 5: "projection" and "axis_aligned" belong here.
+            "projection": optics["projection"],
+            # The flag the whole measurement story turns on: false means every
+            # distance in the image is foreshortened.
+            "axis_aligned": optics["axis_aligned"],
         },
         "image": {"width": size[0], "height": size[1]},
         "extents": _extent_report(_document_bbox(doc, names=keep_set)),
         "note": note,
-        # PHASE 5: {"mm_per_px": float, "confidence": "exact"|"approximate"|
-        # "none", "plane": "..."}. Null means "no scale known", which is what
-        # the web app already renders, so filling it in changes no client code.
-        "scale": None,
+        # {"mm_per_px": float, "confidence": "exact"|"approximate",
+        #  "plane": "..."}, or None.
+        "scale": optics["scale"],
         # The sentence read_device_image replays. Carried in the metadata rather
         # than in a second table keyed by id, so there is one record of a
         # capture and the server is its only store.
@@ -160,11 +162,15 @@ _SEND_TO_DEVICE_SCHEMA = {
         "and then call read_device_image to see what came back. Nothing is "
         "detected by colour or shape -- you read the marks off the image, so any "
         "kind of marking works.\n"
-        "Defaults to a face-on 'front' view rather than an angled one: the user "
-        "will be pointing at and measuring on this picture, and distances on an "
-        "oblique projection are foreshortened. Read-only -- it renders through a "
-        "separate offscreen camera and never touches the user's view or the "
-        "document. Requires the user to have pressed the Device button first."
+        "The image goes out with the exact millimetres-per-pixel of its camera "
+        "attached, so a dimension the user draws on it comes back as a real "
+        "length. That is why this defaults to a face-on 'front' view rather "
+        "than an angled one: on an axis-aligned view two of the three world "
+        "axes are true on screen, while on an oblique projection every distance "
+        "is foreshortened and the measurement is downgraded.\n"
+        "Read-only -- it renders through a separate offscreen camera and never "
+        "touches the user's view or the document. Requires the user to have "
+        "pressed the Device button first."
     ),
     "inputSchema": {
         "type": "object",
@@ -206,6 +212,7 @@ def _run_send_to_device(args):
 
     blank = False
     measured = None
+    optics = None
     # The whole capture path, reused as-is: visibility isolation, the throwaway
     # view, the appearance, the camera, the auto size and the restore. There is
     # no rendering code in this module on purpose -- a second copy would drift
@@ -221,12 +228,17 @@ def _run_send_to_device(args):
         _save_view_png(view, png_path, width, height)
         blank = _looks_blank(png_path)
         measured = _orbit_angles_from_view(view)
+        # LAST, and inside the view: mm/px is the camera's ortho height over
+        # the pixel height, and both were only just settled (_fit_render_size
+        # can re-frame the camera as well as resize the image). The view dies
+        # at the end of this block, so it is read here or not at all.
+        optics = _capture_optics(view, height, _measured_angles(measured, plan))
 
     angles = _measured_angles(measured, plan)
     context = _publish_context(doc, keep_set, angles)
     meta = _capture_meta(
         doc, args.get("objects") or [], keep_set, plan, angles,
-        (width, height), note, context,
+        (width, height), note, context, optics,
     )
     # Hand the upload folder over on the same call: "New" mints a fresh session
     # id, so the folder the server should write into can have moved since it was
@@ -256,6 +268,22 @@ def _run_send_to_device(args):
             "angle, so the user has a blank picture to draw on. Check the "
             "object names and the angle, then send it again."
         )
+    if optics["scale"] is None:
+        text += (
+            "\n\nNote: no scale could be derived for this shot, so anything the "
+            "user measures on it comes back as pixels rather than millimetres."
+        )
+    elif not optics["axis_aligned"]:
+        # Said here as well as in the payload because this is the one moment it
+        # is still cheap to fix: another send_to_device with view='front' costs
+        # a round trip, whereas discovering it when the marked-up image comes
+        # back costs the user's drawing.
+        text += (
+            "\n\nNote: this camera angle is not axis-aligned, so every distance "
+            "the user measures on it is foreshortened and comes back marked "
+            "'approximate'. If they're going to give you dimensions off this "
+            "picture, send a face-on view (view='front'/'top'/'right') instead."
+        )
     return text
 
 
@@ -272,6 +300,12 @@ _READ_DEVICE_IMAGE_SCHEMA = {
         "- a photo or a drawing off the device with no capture involved: a "
         "sketch on paper, a reference part, a product shot. Read it as "
         "reference for what the user wants built.\n"
+        "Marks the user MEASURED come back as structured numbers in the "
+        "annotation document, not just as ink: each dimension carries "
+        "'measured_mm' (what the picture says it is) and 'target_mm' (what they "
+        "want it to be) -- two different facts, so act on the target and use "
+        "the measurement to understand the delta. How far to trust the "
+        "measurement is stated with it.\n"
         "Call it once the user says they've pressed Send. Defaults to the "
         "newest image; pass 'index' to look further back."
     ),
@@ -297,9 +331,9 @@ def _source_capture(doc_text):
     annotation document -- or None if it wasn't drawn on one.
 
     Reads exactly one field (``source.id``) out of a payload whose schema
-    belongs to the web app and to phase 5, and does it defensively: a photo
-    straight off the camera has no ``source`` at all, and a phase-5 document
-    that grows fields must not be able to break this.
+    belongs to the web app (``web/src/doc.ts``), and does it defensively: a
+    photo straight off the camera has no ``source`` at all, and a document that
+    grows fields -- or bumps its ``version`` -- must not be able to break this.
     """
     from .. import device_server
 
@@ -310,6 +344,63 @@ def _source_capture(doc_text):
     source = data.get("source") if isinstance(data, dict) else None
     image_id = source.get("id") if isinstance(source, dict) else None
     return device_server.published_record(image_id) if image_id else None
+
+
+def _measurement_note(meta):
+    """What the numbers on this image are worth, spelled out.
+
+    The projection-plane caveat is the whole point of this paragraph, and it is
+    phrased for someone about to ACT on a number rather than to be technically
+    complete. Unprojecting a screen point through an ortho camera gives a ray,
+    not a point, so a distance measured on the picture is a distance in the
+    projection plane: on a front view world X and Z are true and depth is
+    unmeasurable; on an oblique view everything is foreshortened and the number
+    is simply wrong. The three cases are deliberately different in tone --
+    'measure freely', 'read the intent, confirm the value', 'this is not a
+    length' -- because they need different behaviour, and a single hedge
+    covering all three would be ignored in the case that matters.
+    """
+    camera = meta.get("camera") or {}
+    scale = meta.get("scale") or {}
+    mm_per_px = scale.get("mm_per_px")
+
+    if not mm_per_px:
+        return (
+            "No scale was derived for this capture (there was no orthographic "
+            "camera to derive one from), so nothing measured on this image can "
+            "be quoted in millimetres. A dimension in the annotation document "
+            "is a pixel ratio -- read it as 'this much of the picture', not as "
+            "a length, and get real numbers from describe_objects or get_sketch."
+        )
+
+    plane = scale.get("plane") or ""
+    if camera.get("axis_aligned") is False:
+        azimuth, elevation = camera.get("azimuth"), camera.get("elevation")
+        angle = ""
+        if isinstance(azimuth, (int, float)) and isinstance(elevation, (int, float)):
+            angle = _camera_angle_note((azimuth, elevation)).strip() + " "
+        return (
+            f"Measuring on this image: {mm_per_px:g} mm per pixel, but the "
+            "confidence is only 'approximate' and that is a DOWNGRADE -- the "
+            f"camera was not axis-aligned. {angle}Every distance in this "
+            "image is foreshortened by an unknown amount, so any measured_mm "
+            "in the annotation document is smaller than the real feature by an "
+            "amount nothing here can recover. Read the user's INTENT off these "
+            "numbers (which feature, roughly how much bigger), then confirm the "
+            "real value with describe_objects or get_sketch before changing "
+            "anything. A target_mm the user typed is still exactly what they "
+            "asked for -- it is their instruction, not a measurement."
+        )
+
+    return (
+        f"Measuring on this image: {mm_per_px:g} mm per pixel, confidence "
+        f"'{scale.get('confidence') or 'exact'}'"
+        + (f" -- {plane}" if plane else "")
+        + ". A mark spanning the unmeasurable axis measures the projection, not "
+        "the feature, so treat a dimension drawn across depth with suspicion. "
+        "Everything in the projection plane is a real length and you can act on "
+        "it directly."
+    )
 
 
 def _run_read_device_image(args):
@@ -372,6 +463,10 @@ def _run_read_device_image(args):
             "picture, not wherever the document or the user's view has got to "
             f"since.\n\n{meta.get('context') or ''}".strip()
         )
+        # Recorded at publish time and replayed here for the same reason as the
+        # context: it describes the camera this picture was taken through, and
+        # that camera no longer exists.
+        parts.append(_measurement_note(meta))
     else:
         parts.append(
             "This did not come from a send_to_device capture -- it's an image "

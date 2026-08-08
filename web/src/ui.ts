@@ -8,15 +8,21 @@
 // their behaviour, and hands `main.ts` a small typed surface. No component
 // framework: there is no application state here that would benefit from one.
 
-/** Which drawing tool is armed. `dimension` is phase 5; its button exists in
- * the toolbar as a disabled placeholder so the layout and the tap targets are
- * the real ones. */
-export type Tool = "pen";
+/** Which drawing tool is armed: freehand ink, or a two-point dimension. */
+export type Tool = "pen" | "dimension";
 
 export type SourceChoice = "freecad" | "camera" | "library";
 
-/** What the status bar shows about the current image. `scale` and
- * `confidence` are phase 5's -- until then every image is "no scale". */
+/** What the value sheet opens with. `measured` is pre-formatted by `scale`,
+ * because whether it reads "24.3 mm" or "348 px" is that module's rule, not
+ * this one's. */
+export interface ValueSheetInfo {
+  readonly measured: string;
+  readonly targetMm: number | null;
+  readonly note: string;
+}
+
+/** What the status bar shows about the current image. */
 export interface StatusInfo {
   /** Document or file name. */
   readonly title: string;
@@ -44,10 +50,22 @@ export interface Ui {
   onSend: () => void;
   /** What the incoming-capture banner's Load button does. */
   onLoadIncoming: () => void;
+  /** The value sheet's Done, with the target the user typed (null if they left
+   * it blank -- "just point it out" is a legitimate answer) and their note. */
+  onValueDone: (targetMm: number | null, note: string) => void;
+  onValueDelete: () => void;
+  /** The calibration sheet's Set scale, with the real distance in mm. */
+  onCalibrate: (mm: number) => void;
+  /** ...and its Skip, which means "I'll mark it up without millimetres". */
+  onCalibrateSkip: () => void;
 
   setStatus(status: StatusInfo): void;
   setHint(text: string): void;
   setSendEnabled(enabled: boolean): void;
+  /** Reflect the armed tool in the toolbar. */
+  setTool(tool: Tool): void;
+  openValue(info: ValueSheetInfo): void;
+  openCalibrate(): void;
   /** Enables the "Latest view from FreeCAD" source once /api/latest has
    * something to offer, with its document/view as the subtitle. */
   setFreecadSource(available: boolean, subtitle: string): void;
@@ -90,9 +108,22 @@ export function mountUi(doc: Document = document): Ui {
   const hint = need(doc, "hint");
 
   const penButton = need<HTMLButtonElement>(doc, "t-pen");
+  const dimButton = need<HTMLButtonElement>(doc, "t-dim");
   const sourceButton = need<HTMLButtonElement>(doc, "t-source");
   const undoButton = need<HTMLButtonElement>(doc, "t-undo");
   const clearButton = need<HTMLButtonElement>(doc, "t-clear");
+
+  const valueSheet = need(doc, "sheet-value");
+  const valueMeasured = need(doc, "val-measured");
+  const valueTarget = need<HTMLInputElement>(doc, "val-target");
+  const valueNote = need<HTMLInputElement>(doc, "val-note");
+  const valueDelete = need<HTMLButtonElement>(doc, "val-delete");
+  const valueDone = need<HTMLButtonElement>(doc, "val-done");
+
+  const calibrateSheet = need(doc, "sheet-calibrate");
+  const calibrateMm = need<HTMLInputElement>(doc, "cal-mm");
+  const calibrateSkip = need<HTMLButtonElement>(doc, "cal-skip");
+  const calibrateSet = need<HTMLButtonElement>(doc, "cal-set");
 
   const sourcesSheet = need(doc, "sheet-sources");
   const freecadChoice = need<HTMLButtonElement>(doc, "src-freecad");
@@ -118,6 +149,10 @@ export function mountUi(doc: Document = document): Ui {
     onClear: () => {},
     onSend: () => {},
     onLoadIncoming: () => {},
+    onValueDone: () => {},
+    onValueDelete: () => {},
+    onCalibrate: () => {},
+    onCalibrateSkip: () => {},
 
     setStatus(status) {
       docName.textContent = status.title;
@@ -137,6 +172,26 @@ export function mountUi(doc: Document = document): Ui {
       sendButton.disabled = !enabled;
     },
 
+    setTool(tool) {
+      penButton.setAttribute("aria-pressed", String(tool === "pen"));
+      dimButton.setAttribute("aria-pressed", String(tool === "dimension"));
+    },
+
+    openValue(info) {
+      valueMeasured.textContent = info.measured;
+      valueTarget.value = info.targetMm === null ? "" : String(info.targetMm);
+      valueNote.value = info.note;
+      valueSheet.hidden = false;
+      // Not focused on purpose: raising the tablet keyboard covers the sheet
+      // and the dimension the user is looking at, and most dimensions are
+      // placed to point at something rather than to set a number.
+    },
+
+    openCalibrate() {
+      calibrateMm.value = "";
+      calibrateSheet.hidden = false;
+    },
+
     setFreecadSource(available, subtitle) {
       freecadChoice.disabled = !available;
       freecadSub.textContent = subtitle;
@@ -148,6 +203,8 @@ export function mountUi(doc: Document = document): Ui {
 
     closeSheets() {
       sourcesSheet.hidden = true;
+      valueSheet.hidden = true;
+      calibrateSheet.hidden = true;
     },
 
     showBanner(text) {
@@ -186,14 +243,54 @@ export function mountUi(doc: Document = document): Ui {
     ui.onSource("library");
   });
   // Tapping the scrim outside the sheet dismisses it, as a bottom sheet should.
-  sourcesSheet.addEventListener("click", (e) => {
-    if (e.target === sourcesSheet) ui.closeSheets();
-  });
+  // The value sheet is NOT in this list: dismissing it by a stray tap would
+  // silently discard a typed target, and the sheet has both a Done and a
+  // Delete for the two things the user might mean.
+  for (const scrim of [sourcesSheet, calibrateSheet]) {
+    scrim.addEventListener("click", (e) => {
+      if (e.target === scrim) ui.closeSheets();
+    });
+  }
 
   penButton.addEventListener("click", () => {
-    penButton.setAttribute("aria-pressed", "true");
+    ui.setTool("pen");
     ui.onTool("pen");
   });
+  dimButton.addEventListener("click", () => {
+    ui.setTool("dimension");
+    ui.onTool("dimension");
+  });
+
+  /** A blank input means "no target", not zero -- the sheet's own text says so
+   * ("leave it blank to just point it out"), and Number("") is 0. */
+  const typedNumber = (input: HTMLInputElement): number | null => {
+    const text = input.value.trim();
+    if (!text) return null;
+    const value = Number(text);
+    return Number.isFinite(value) ? value : null;
+  };
+
+  valueDone.addEventListener("click", () => {
+    ui.closeSheets();
+    ui.onValueDone(typedNumber(valueTarget), valueNote.value.trim());
+  });
+  valueDelete.addEventListener("click", () => {
+    ui.closeSheets();
+    ui.onValueDelete();
+  });
+  calibrateSet.addEventListener("click", () => {
+    const mm = typedNumber(calibrateMm);
+    // A missing or nonsense length leaves the sheet open rather than setting a
+    // wrong scale: everything downstream trusts this number.
+    if (mm === null || mm <= 0) return;
+    ui.closeSheets();
+    ui.onCalibrate(mm);
+  });
+  calibrateSkip.addEventListener("click", () => {
+    ui.closeSheets();
+    ui.onCalibrateSkip();
+  });
+
   undoButton.addEventListener("click", () => ui.onUndo());
   clearButton.addEventListener("click", () => ui.onClear());
   sendButton.addEventListener("click", () => ui.onSend());

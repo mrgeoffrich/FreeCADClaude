@@ -46,7 +46,7 @@ body {
   font-size: 11px; padding: 2px 7px; border-radius: 999px;
   background: var(--panel-2); color: var(--muted); border: 1px solid var(--line);
 }
-/* Phase 5 sets these when a capture carries a derived or calibrated scale. */
+/* Set when a capture carries a derived scale, or a photo a calibrated one. */
 .badge.exact { color: var(--ok); border-color: #2c5a45; }
 .badge.approx { color: var(--dim); border-color: #5a4a24; }
 
@@ -121,6 +121,13 @@ body {
 .choice:disabled { opacity: .45; cursor: default; }
 .choice:disabled svg { stroke: var(--muted); }
 .row { display: flex; gap: 8px; align-items: center; }
+/* The value and calibration sheets' number fields. */
+.row input {
+  flex: 1; min-width: 0; font: inherit; color: var(--text); background: var(--canvas);
+  border: 1px solid var(--line); border-radius: 10px; padding: 0 12px; height: var(--tap);
+}
+.row input::placeholder { color: var(--muted); }
+.row .unit { color: var(--muted); font-size: 14px; }
 .btn {
   height: var(--tap); padding: 0 18px; font: 600 15px/1 inherit; cursor: pointer;
   background: var(--accent); color: #0d0f12; border: 0; border-radius: 10px;
