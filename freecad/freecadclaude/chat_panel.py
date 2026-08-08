@@ -105,7 +105,11 @@ def _format_tool_result(text):
 
 
 #: Capture tools whose result carries a PNG we surface as a thumbnail.
-_CAPTURE_TOOLS = {"capture_view", "capture_user_view", "crop_view", "cutaway"}
+#: send_to_device is in here for a slightly different reason from the rest: the
+#: image goes to a tablet, so without the thumbnail the transcript is the one
+#: place the user can't see what Claude actually pushed at them.
+_CAPTURE_TOOLS = {"capture_view", "capture_user_view", "crop_view", "cutaway",
+                  "send_to_device"}
 #: Pull the saved PNG path out of a capture tool's result text. Non-greedy so it
 #: tolerates spaces in the home path and stops at the first ".png"; "." never
 #: crosses the line, and the path always sits on one line.
@@ -196,6 +200,15 @@ class ChatPanel(dock_panel.DockPanel):
 class ChatWidget(QtWidgets.QWidget):
     """Transcript + input box + Send button, wired to the agent worker."""
 
+    #: An image landed from the paired device, with its stored path.
+    #:
+    #: Emitted from device_server's HTTP worker thread, which is why it is a
+    #: signal at all: the transcript is a Qt widget tree with GUI-thread
+    #: affinity, and touching it from the server thread is the one thing that
+    #: absolutely must not happen here. A cross-thread emit to a receiver on the
+    #: GUI thread is queued by Qt automatically, so the slot runs there.
+    device_upload_received = QtCore.Signal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._thread = None
@@ -212,6 +225,7 @@ class ChatWidget(QtWidgets.QWidget):
         self._render_timer.setSingleShot(True)
         self._render_timer.setInterval(80)
         self._render_timer.timeout.connect(self._do_render)
+        self.device_upload_received.connect(self._on_device_upload)
         self._build_ui()
         self._note(_CAPABILITY_NOTICE)
 
@@ -617,14 +631,37 @@ class ChatWidget(QtWidgets.QWidget):
         device_server's module docstring). ``start()`` is idempotent, so
         pressing this again just re-shows the pairing details.
         """
-        from . import device_server
+        from . import device_server, freecad_tools
 
         try:
-            url, _token = device_server.start()
+            # The upload folder is resolved HERE, on the GUI thread, and handed
+            # over as a string. The server must never work it out itself -- that
+            # walk ends in a FreeCAD preference read, and an HTTP worker thread
+            # calling into FreeCAD is the invariant the whole feature rests on.
+            url, _token = device_server.start(
+                upload_dir=freecad_tools.device_upload_dir()
+            )
         except Exception as exc:  # noqa: BLE001 - report, never raise into Qt
             self._note(f"*Could not start the device server: {exc}*")
             return
+        # Bound signal emit, not a method: the hook fires on the server's thread
+        # and Qt queues the emit onto ours (see device_upload_received).
+        device_server.set_upload_hook(self.device_upload_received.emit)
         self._show_pairing(url)
+
+    def _on_device_upload(self, path):
+        """An image arrived from the device -- say so in the transcript.
+
+        Runs on the GUI thread (queued from the server thread). Deliberately
+        just a note: auto-injecting "the user sent an image" into the next
+        prompt is a separate, deferred decision, and until it's made the user
+        seeing that it landed is what stops them wondering whether Send worked.
+        """
+        self._note(
+            "📱 **image received** from the device.\n\n"
+            f"`{path}`\n\nAsk Claude to look at it (it reads it with "
+            "`read_device_image`)."
+        )
 
     def _show_pairing(self, url):
         """Show the pairing QR for `url`, the URL as text, and a way to stop.

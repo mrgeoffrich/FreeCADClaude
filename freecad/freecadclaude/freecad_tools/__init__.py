@@ -59,6 +59,13 @@ from .tools_capture import (
     _run_crop_view,
 )
 from .tools_cutaway import _CUTAWAY_SCHEMA, _run_cutaway
+from .tools_device import (  # device_upload_dir re-exported for chat_panel
+    _READ_DEVICE_IMAGE_SCHEMA,
+    _SEND_TO_DEVICE_SCHEMA,
+    _run_read_device_image,
+    _run_send_to_device,
+    device_upload_dir,  # noqa: F401
+)
 from .tools_document import (  # _REPORTED_PROPS re-exported for eval_runner
     _DESCRIBE_OBJECTS_SCHEMA,
     _GET_OBJECTS_SCHEMA,
@@ -114,6 +121,11 @@ TOOLS = {
     "capture_user_view": {"schema": _CAPTURE_USER_VIEW_SCHEMA, "run": _run_capture_user_view},
     "annotate_view": {"schema": _ANNOTATE_VIEW_SCHEMA, "run": _run_annotate_view},
     "read_annotation": {"schema": _READ_ANNOTATION_SCHEMA, "run": _run_read_annotation},
+    "send_to_device": {"schema": _SEND_TO_DEVICE_SCHEMA, "run": _run_send_to_device},
+    "read_device_image": {
+        "schema": _READ_DEVICE_IMAGE_SCHEMA,
+        "run": _run_read_device_image,
+    },
     "crop_view": {"schema": _CROP_VIEW_SCHEMA, "run": _run_crop_view},
     "cutaway": {"schema": _CUTAWAY_SCHEMA, "run": _run_cutaway},
     "export": {"schema": _EXPORT_SCHEMA, "run": _run_export},

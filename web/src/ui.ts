@@ -31,7 +31,8 @@ export interface StatusInfo {
 
 export interface Ui {
   readonly canvas: HTMLCanvasElement;
-  /** Phase 4 posts this alongside the flattened PNG. */
+  /** Posted alongside the flattened PNG, as the annotation document's
+   * `caption`. Cleared by main.ts once a send succeeds. */
   readonly caption: HTMLInputElement;
 
   /** Assigned by main.ts. Defaults are no-ops so a half-wired UI is inert
@@ -41,18 +42,18 @@ export interface Ui {
   onUndo: () => void;
   onClear: () => void;
   onSend: () => void;
-  /** Phase 4: what the incoming-capture banner's Load button does. */
+  /** What the incoming-capture banner's Load button does. */
   onLoadIncoming: () => void;
 
   setStatus(status: StatusInfo): void;
   setHint(text: string): void;
   setSendEnabled(enabled: boolean): void;
-  /** Phase 4 enables the "Latest view from FreeCAD" source once /api/latest
-   * has something to offer, with its document/view as the subtitle. */
+  /** Enables the "Latest view from FreeCAD" source once /api/latest has
+   * something to offer, with its document/view as the subtitle. */
   setFreecadSource(available: boolean, subtitle: string): void;
   openSources(): void;
   closeSheets(): void;
-  /** Phase 4: a capture arrived mid-drawing. Notify, don't clobber. */
+  /** A capture arrived mid-drawing. Notify, don't clobber. */
   showBanner(text: string): void;
   hideBanner(): void;
   toast(text: string, kind?: "ok" | "bad"): void;

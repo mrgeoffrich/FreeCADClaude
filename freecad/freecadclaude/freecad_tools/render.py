@@ -775,8 +775,9 @@ def _objects_schema_prop(what="to show", extra=""):
     }
 
 
-#: The camera-angle arguments, shared verbatim by capture_view and cutaway (see
-#: _resolve_camera_args, which parses them).
+#: The camera-angle arguments as capture_view and cutaway take them (see
+#: _camera_schema_props for the one knob that varies, and _resolve_camera_args,
+#: which parses them).
 _CAMERA_SCHEMA_PROPS = {
     "view": {
         "type": "string",
@@ -800,6 +801,29 @@ _CAMERA_SCHEMA_PROPS = {
         ),
     },
 }
+
+
+def _camera_schema_props(default_view="iso"):
+    """:data:`_CAMERA_SCHEMA_PROPS` with a different documented default view.
+
+    Only the default differs between the tools that aim a camera --
+    send_to_device defaults face-on rather than iso (see its own note) -- so it
+    is a parameter here rather than a second hand-written copy of the
+    description. Two spellings of the same knob is exactly what keeping these
+    schema fragments in render.py exists to prevent. Returns fresh dicts, so a
+    caller merging them into its schema cannot mutate the shared one.
+    """
+    return dict(
+        _CAMERA_SCHEMA_PROPS,
+        view=dict(
+            _CAMERA_SCHEMA_PROPS["view"],
+            description=(
+                "Camera preset: iso/front/rear/top/bottom/left/right (default "
+                f"{default_view}). Ignored when azimuth/elevation are given."
+            ),
+        ),
+    )
+
 
 #: The render-size arguments, shared by capture_view and cutaway.
 _SIZE_SCHEMA_PROPS = {

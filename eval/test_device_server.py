@@ -2,6 +2,13 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Request-handling tests for freecad/freecadclaude/device_server.py.
 
+Static serving and the token gate (phase 1), plus the round trip (phase 4):
+publish/fetch, the SSE wake-up, and the four upload gates -- size, framing,
+magic bytes, and a filename that tries to traverse. All of it in one file, on
+purpose: they share a running server and the checks are cheapest when they can
+see each other's state (an upload has to show up in ``uploads()``, a publish has
+to reach a stream opened before it).
+
 The module under test imports no Qt and no FreeCAD (that's the invariant that
 keeps the LAN server unable to reach the document), so this needs no GUI and no
 running FreeCAD -- any Python 3.8+ will do:
@@ -20,8 +27,12 @@ Exit: 0 = all passed, 1 = a failure.
 
 import http.client
 import importlib.util
+import json
 import os
+import shutil
+import socket
 import sys
+import tempfile
 import urllib.parse
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -73,10 +84,108 @@ def _request(host, port, path, headers=None):
         conn.close()
 
 
+def _post(host, port, path, body, content_type, headers=None, declared_length=None):
+    """One POST. Returns ``(status, headers, body)``.
+
+    ``declared_length`` overstates Content-Length and sends the (small) body
+    anyway, which is how the oversize case is exercised without pushing 13 MB
+    over the loopback. That is exactly the gate under test: the server refuses
+    on the DECLARED length, before ``rfile.read``, so it never reads a body
+    larger than the number it has already checked.
+    """
+    conn = http.client.HTTPConnection(host, port, timeout=10)
+    try:
+        conn.putrequest("POST", path, skip_host=False, skip_accept_encoding=True)
+        conn.putheader("Content-Type", content_type)
+        conn.putheader("Content-Length", str(declared_length or len(body)))
+        for key, value in (headers or {}).items():
+            conn.putheader(key, value)
+        conn.endheaders()
+        if declared_length is None:
+            conn.send(body)
+        resp = conn.getresponse()
+        return resp.status, resp, resp.read()
+    finally:
+        conn.close()
+
+
+_BOUNDARY = "----FreeCADClaudeTestBoundary"
+
+
+def _multipart(parts):
+    """A multipart/form-data body from ``(name, filename, bytes)`` triples."""
+    body = b""
+    for name, filename, data in parts:
+        disposition = f'form-data; name="{name}"'
+        if filename is not None:
+            disposition += f'; filename="{filename}"'
+        body += (
+            f"--{_BOUNDARY}\r\n"
+            f"Content-Disposition: {disposition}\r\n"
+            # A deliberately WRONG declared type on the image part: the server
+            # is supposed to believe the magic bytes and nothing else.
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).encode("utf-8")
+        body += data + b"\r\n"
+    body += f"--{_BOUNDARY}--\r\n".encode("utf-8")
+    return body
+
+
+#: A 1x1 PNG. Real bytes rather than just the signature -- the server doesn't
+#: decode it, but the round-trip check compares what came back to what went in.
+_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
+    b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+def _sse_open(host, port, token):
+    """Open /api/events and read past the response headers.
+
+    Raw socket, not http.client: an event stream has no Content-Length and is
+    framed by the connection closing, so the client has to read it as it
+    arrives rather than as one body.
+    """
+    sock = socket.create_connection((host, port), timeout=10)
+    sock.sendall(
+        f"GET /api/events?t={token} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode("utf-8")
+    )
+    head = b""
+    while b"\r\n\r\n" not in head:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        head += chunk
+    header, _, rest = head.partition(b"\r\n\r\n")
+    return sock, header, rest
+
+
+def _sse_read_event(sock, seen=b""):
+    """Read until a complete SSE event (a blank-line-terminated block) that
+    isn't just a comment. Returns the block, or b"" if the stream ended."""
+    while True:
+        while b"\n\n" in seen:
+            block, _, seen = seen.partition(b"\n\n")
+            if not block.startswith(b":"):  # skip ": connected" / ": ping"
+                return block
+        try:
+            chunk = sock.recv(4096)
+        except OSError:
+            return b""
+        if not chunk:
+            return b""
+        seen += chunk
+
+
 def main():
     print("device_server request handling")
 
-    url, token = device_server.start()
+    # The upload folder is handed IN, never resolved by the server: the real
+    # caller (chat_panel) works out <session>/mobile/ on the GUI thread,
+    # because that walk ends in a FreeCAD preference read.
+    uploads_dir = tempfile.mkdtemp(prefix="fcc-device-test-")
+    url, token = device_server.start(upload_dir=uploads_dir)
     parts = urllib.parse.urlsplit(url)
     host, port = "127.0.0.1", parts.port  # bound on 0.0.0.0; reach it locally
     query_token = urllib.parse.parse_qs(parts.query).get("t", [""])[0]
@@ -173,11 +282,162 @@ def main():
             device_server._resolve_static("/assets") is None,
         )
 
+        # -- publish / fetch round trip ----------------------------------
+        # The push direction: a tool on the GUI thread writes a PNG and hands
+        # over the path; the device can then fetch it and nothing else.
+        capture_path = os.path.join(uploads_dir, "sent_view_front.png")
+        with open(capture_path, "wb") as fh:
+            fh.write(_PNG)
+
+        status, _, body = _request(host, port, "/api/latest", {"X-FC-Token": token})
+        check("/api/latest before any publish -> null", status == 200
+              and json.loads(body)["published"] is None, body[:120])
+
+        record = device_server.publish(
+            capture_path,
+            {"document": "Bracket", "view": "front", "scale": None,
+             "context": "Document 'Bracket'. Camera angle: azimuth 0 deg."},
+        )
+        status, resp, body = _request(host, port, "/api/latest", {"X-FC-Token": token})
+        published = json.loads(body)["published"]
+        check("/api/latest reports the publish", status == 200
+              and published["id"] == record["id"], body[:200])
+        check("its metadata is served verbatim",
+              published["meta"]["document"] == "Bracket"
+              and published["meta"]["view"] == "front"
+              and published["meta"]["scale"] is None,  # phase 5's slot, empty
+              published["meta"])
+        check("it points at /api/image/<id>",
+              published["url"] == "/api/image/" + record["id"], published["url"])
+        check("json content type",
+              (resp.getheader("Content-Type") or "").startswith("application/json"))
+
+        status, resp, body = _request(host, port, published["url"], {"X-FC-Token": token})
+        check("/api/image/<id> returns the exact bytes", status == 200 and body == _PNG,
+              f"got {status}, {len(body)} bytes")
+        check("served as image/png",
+              (resp.getheader("Content-Type") or "").startswith("image/png"),
+              resp.getheader("Content-Type"))
+
+        status, _, _ = _request(host, port, "/api/image/nosuchid", {"X-FC-Token": token})
+        check("unknown image id -> 404", status == 404, f"got {status}")
+        status, _, _ = _request(host, port, "/api/latest")
+        check("/api/latest is token-gated -> 403", status == 403, f"got {status}")
+        status, _, _ = _request(host, port, "/api/nope", {"X-FC-Token": token})
+        check("unknown /api route -> 404", status == 404, f"got {status}")
+
+        # -- SSE ---------------------------------------------------------
+        status, _, _ = _request(host, port, "/api/events")
+        check("/api/events is token-gated -> 403", status == 403, f"got {status}")
+
+        # EventSource cannot set a header, so this route takes the token as
+        # ?t= -- the form _authorized already accepts everywhere.
+        sock, header, rest = _sse_open(host, port, token)
+        try:
+            check("/api/events?t= -> 200", header.startswith(b"HTTP/1.1 200"), header[:60])
+            check("streamed as text/event-stream",
+                  b"text/event-stream" in header.lower(), header[:200])
+            check("no Content-Length on a stream",
+                  b"content-length" not in header.lower(), header[:200])
+            second = device_server.publish(capture_path, {"document": "Bracket", "view": "top"})
+            block = _sse_read_event(sock, rest)
+            check("a publish wakes the stream", block.startswith(b"event: published"), block[:80])
+            payload = json.loads(block.partition(b"data: ")[2] or b"{}")
+            check("the event carries the new record", payload.get("id") == second["id"],
+                  block[:160])
+        finally:
+            sock.close()
+
+        # -- uploads -----------------------------------------------------
+        form_type = f"multipart/form-data; boundary={_BOUNDARY}"
+        before = set(os.listdir(uploads_dir))
+
+        status, _, body = _post(
+            host, port, "/api/upload",
+            _multipart([("image", "annotation.png", _PNG),
+                        ("doc", None, b'{"caption":"slot too narrow","source":null}')]),
+            form_type, {"X-FC-Token": token},
+        )
+        check("a valid upload -> 200", status == 200, f"got {status}: {body[:120]}")
+        stored = json.loads(body).get("name", "")
+        check("it reports a generated name", stored.startswith("upload_")
+              and stored.endswith(".png"), stored)
+        check("the file landed in the upload dir",
+              os.path.isfile(os.path.join(uploads_dir, stored)), stored)
+        with open(os.path.join(uploads_dir, stored), "rb") as fh:
+            check("the stored bytes are the ones sent", fh.read() == _PNG)
+        doc_path = os.path.splitext(os.path.join(uploads_dir, stored))[0] + ".json"
+        check("the doc part is stored beside it", os.path.isfile(doc_path))
+        recorded = device_server.uploads()
+        check("read_device_image can see it", len(recorded) == 1
+              and recorded[-1]["path"] == os.path.join(uploads_dir, stored))
+        check("the doc comes back verbatim, not parsed",
+              json.loads(recorded[-1]["doc"])["caption"] == "slot too narrow",
+              recorded[-1]["doc"])
+
+        # Upload gate 1: the declared size.
+        status, _, body = _post(
+            host, port, "/api/upload", b"", form_type,
+            {"X-FC-Token": token}, declared_length=13 * 1024 * 1024,
+        )
+        check("oversize -> 413", status == 413, f"got {status}: {body[:120]}")
+
+        # Gate 2: the file's own first bytes, NOT the declared content type
+        # (the part above declares application/octet-stream and is accepted;
+        # this one would declare image/png and is not).
+        status, _, body = _post(
+            host, port, "/api/upload",
+            _multipart([("image", "evil.png", b"GIF89a" + b"\x00" * 32)]),
+            form_type, {"X-FC-Token": token},
+        )
+        check("wrong magic bytes -> 415", status == 415, f"got {status}: {body[:120]}")
+
+        # Gate 3: there is nothing to traverse, because the client's filename is
+        # never consulted -- the name is generated in one fixed folder.
+        parent = os.path.dirname(uploads_dir)
+        status, _, body = _post(
+            host, port, "/api/upload",
+            _multipart([("image", "../../../evil.png", _PNG),
+                        ("doc", None, b"{}")]),
+            form_type, {"X-FC-Token": token},
+        )
+        name = json.loads(body).get("name", "") if status == 200 else ""
+        check("a traversing filename is ignored, not obeyed",
+              status == 200 and ".." not in name and "/" not in name and "\\" not in name,
+              f"got {status}: {name!r}")
+        check("nothing was written outside the upload dir",
+              not os.path.exists(os.path.join(parent, "evil.png"))
+              and not os.path.exists(os.path.join(uploads_dir, "evil.png")))
+        landed = set(os.listdir(uploads_dir)) - before
+        check("every new file is inside the upload dir",
+              all(os.path.isfile(os.path.join(uploads_dir, f)) for f in landed), sorted(landed))
+
+        status, _, _ = _post(
+            host, port, "/api/upload", _multipart([("doc", None, b"{}")]),
+            form_type, {"X-FC-Token": token},
+        )
+        check("no image part -> 400", status == 400, f"got {status}")
+
+        status, _, _ = _post(
+            host, port, "/api/upload", b"not multipart", "application/json",
+            {"X-FC-Token": token},
+        )
+        check("not multipart -> 415", status == 415, f"got {status}")
+
+        status, _, _ = _post(host, port, "/api/upload", _multipart([]), form_type)
+        check("upload is token-gated -> 403", status == 403, f"got {status}")
+
+        status, _, _ = _post(
+            host, port, "/api/nope", _multipart([]), form_type, {"X-FC-Token": token}
+        )
+        check("POST to an unknown route -> 404", status == 404, f"got {status}")
+
         # -- lifecycle ---------------------------------------------------
         check("is_running() while up", device_server.is_running())
         check("current_url() while up", device_server.current_url() == url)
     finally:
         device_server.stop()
+        shutil.rmtree(uploads_dir, ignore_errors=True)
 
     check("is_running() after stop()", not device_server.is_running())
     check("stop() is idempotent", device_server.stop() is None)
