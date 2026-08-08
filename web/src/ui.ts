@@ -13,6 +13,7 @@
 export type Tool = "pen" | "dimension" | "eraser";
 
 const WELCOME_KEY = "fc-welcome-seen";
+const MSGBAR_KEY = "fc-msgbar-collapsed";
 
 /** Whether the first-run help has been dismissed on this device.
  *
@@ -27,6 +28,22 @@ export function welcomeSeen(storage: Pick<Storage, "getItem">): boolean {
 
 export function markWelcomeSeen(storage: Pick<Storage, "setItem">): void {
   storage.setItem(WELCOME_KEY, "1");
+}
+
+/** Whether the message bar was left collapsed. Remembered across reloads for
+ * the same reason the welcome is: the page is reopened from a fresh QR scan
+ * every time FreeCAD restarts the server, and someone who folded the bar away
+ * on a small screen should not have to fold it again each pairing. Expanded is
+ * the default -- a message nobody can see is worse than a bar in the way. */
+export function msgbarCollapsed(storage: Pick<Storage, "getItem">): boolean {
+  return storage.getItem(MSGBAR_KEY) === "1";
+}
+
+export function setMsgbarCollapsed(
+  storage: Pick<Storage, "setItem">,
+  collapsed: boolean,
+): void {
+  storage.setItem(MSGBAR_KEY, collapsed ? "1" : "0");
 }
 
 export type SourceChoice = "freecad" | "camera" | "library";
@@ -80,9 +97,19 @@ export interface Ui {
   onCalibrateSkip: () => void;
   /** The first-run help's Got it, so the caller can record that it's been read. */
   onWelcomeDone: () => void;
+  /** The message bar was folded or unfolded, so the caller can remember it. */
+  onMessageToggle: (collapsed: boolean) => void;
 
   setStatus(status: StatusInfo): void;
-  setHint(text: string): void;
+  /** The message bar. `note` is Claude's line for the current image (null when
+   * it sent none); `hint` is what the armed tool is about to do. The bar hides
+   * itself when it has neither. */
+  setMessage(note: string | null, hint: string): void;
+  /** Unfold the bar. Called when a new note arrives -- a message the user has
+   * not read yet is not something to leave hidden behind a chevron. */
+  expandMessage(): void;
+  /** Fold it, or not, to match what was remembered. */
+  setMessageCollapsed(collapsed: boolean): void;
   setSendEnabled(enabled: boolean): void;
   /** Reflect the armed tool in the toolbar. */
   setTool(tool: Tool): void;
@@ -130,7 +157,10 @@ export function mountUi(doc: Document = document): Ui {
   const viewName = need(doc, "viewname");
   const conf = need(doc, "conf");
   const scaleText = need(doc, "scaletext");
-  const hint = need(doc, "hint");
+
+  const msgbar = need<HTMLButtonElement>(doc, "msgbar");
+  const msgNote = need(doc, "msg-note");
+  const msgHint = need(doc, "msg-hint");
 
   const penButton = need<HTMLButtonElement>(doc, "t-pen");
   const dimButton = need<HTMLButtonElement>(doc, "t-dim");
@@ -186,6 +216,7 @@ export function mountUi(doc: Document = document): Ui {
     onCalibrate: () => {},
     onCalibrateSkip: () => {},
     onWelcomeDone: () => {},
+    onMessageToggle: () => {},
 
     setStatus(status) {
       docName.textContent = status.title;
@@ -196,9 +227,22 @@ export function mountUi(doc: Document = document): Ui {
       dot.className = status.connected ? "dot" : "dot off";
     },
 
-    setHint(text) {
-      hint.textContent = text;
-      hint.hidden = text === "";
+    setMessage(note, hint) {
+      msgNote.textContent = note ?? "";
+      msgNote.hidden = !note;
+      msgHint.textContent = hint;
+      msgHint.hidden = hint === "";
+      // Drives which line the collapsed bar previews.
+      msgbar.classList.toggle("has-note", Boolean(note));
+      msgbar.hidden = !note && hint === "";
+    },
+
+    expandMessage() {
+      msgbar.setAttribute("aria-expanded", "true");
+    },
+
+    setMessageCollapsed(collapsed) {
+      msgbar.setAttribute("aria-expanded", String(!collapsed));
     },
 
     setSendEnabled(enabled) {
@@ -334,6 +378,12 @@ export function mountUi(doc: Document = document): Ui {
   calibrateSkip.addEventListener("click", () => {
     ui.closeSheets();
     ui.onCalibrateSkip();
+  });
+
+  msgbar.addEventListener("click", () => {
+    const collapsed = msgbar.getAttribute("aria-expanded") === "true";
+    ui.setMessageCollapsed(collapsed);
+    ui.onMessageToggle(collapsed);
   });
 
   helpButton.addEventListener("click", () => ui.openWelcome());

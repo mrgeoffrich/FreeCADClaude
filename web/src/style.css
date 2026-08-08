@@ -50,6 +50,33 @@ body {
 .badge.exact { color: var(--ok); border-color: #2c5a45; }
 .badge.approx { color: var(--dim); border-color: #5a4a24; }
 
+/* ── message bar ────────────────────────────────────────────────── */
+.msgbar {
+  display: flex; align-items: flex-start; gap: 8px; width: 100%; flex: none;
+  background: var(--panel); border: 0; border-bottom: 1px solid var(--line);
+  color: var(--text); font: inherit; text-align: left; cursor: pointer;
+  padding: 7px 12px;
+}
+.msgbar .chev {
+  width: 16px; height: 16px; flex: none; margin-top: 2px;
+  fill: none; stroke: var(--muted); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  transition: transform .15s;
+}
+.msgbar[aria-expanded="false"] .chev { transform: rotate(-90deg); }
+.msgbar .lines { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+/* Claude's line, in the accent so it reads as an instruction rather than
+   chrome. It wraps to as many lines as it needs: a capped, scrolling note reads
+   as broken, and length is what the collapse is for. */
+.msgbar .note { font-size: 13px; line-height: 1.45; color: var(--accent); }
+.msgbar .hint { font-size: 12px; line-height: 1.4; color: var(--muted); }
+/* Collapsed: one truncated line, so the bar still says a message is there. The
+   hint goes only when the note is what's being previewed. */
+.msgbar[aria-expanded="false"] .note,
+.msgbar[aria-expanded="false"] .hint {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.msgbar[aria-expanded="false"].has-note .hint { display: none; }
+
 /* ── work area ──────────────────────────────────────────────────── */
 .work { flex: 1; display: flex; min-height: 0; }
 
@@ -82,12 +109,6 @@ body {
   touch-action: none;
 }
 .canvaswrap canvas { display: block; width: 100%; height: 100%; touch-action: none; }
-.hint {
-  position: absolute; left: 50%; transform: translateX(-50%); bottom: 12px;
-  background: rgba(13,15,18,.85); border: 1px solid var(--line); border-radius: 999px;
-  padding: 6px 14px; font-size: 12.5px; color: var(--muted); pointer-events: none;
-  white-space: nowrap;
-}
 
 /* ── send bar ───────────────────────────────────────────────────── */
 .sendbar {

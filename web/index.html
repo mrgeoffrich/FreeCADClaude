@@ -28,6 +28,21 @@
     <span class="scale" id="scaletext"></span>
   </div>
 
+  <!-- ── message bar ──
+       Claude's "what to mark" line for the current capture, with the armed
+       tool's hint under it. Above the canvas and in flow rather than floating
+       over the drawing, so a long note wraps instead of running off a phone.
+       The whole bar is the collapse target: on a phone in landscape the work
+       area is a couple of hundred pixels tall and this has to get out of the
+       way. -->
+  <button class="msgbar" id="msgbar" type="button" aria-expanded="true" hidden>
+    <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+    <span class="lines">
+      <span class="note" id="msg-note" hidden></span>
+      <span class="hint" id="msg-hint" hidden></span>
+    </span>
+  </button>
+
   <div class="work">
     <!-- left-edge toolbar: the pen hand rests on the right, so controls sit
          where they won't be covered while drawing -->
@@ -68,8 +83,6 @@
 
     <div class="canvaswrap" id="canvaswrap">
       <canvas id="sheet"></canvas>
-
-      <div class="hint" id="hint">Pen draws · touch is ignored while a stylus is in use</div>
 
       <div class="banner" id="banner" hidden>
         <span id="banner-text"></span>

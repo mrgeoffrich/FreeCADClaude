@@ -48,6 +48,8 @@ import { resolveToken } from "./token";
 import {
   markWelcomeSeen,
   mountUi,
+  msgbarCollapsed,
+  setMsgbarCollapsed,
   welcomeSeen,
   type SourceChoice,
   type Tool,
@@ -85,6 +87,13 @@ interface ImageSource {
 
 let source: ImageSource | null = null;
 let activeStroke: Stroke | null = null;
+
+/** Claude's "what to mark" line for the loaded image, if it sent one.
+ *
+ * State rather than something written straight into the bar: it is an
+ * instruction the user works from for as long as the image is up, and the tool
+ * hint beside it is rewritten on every tool change and every dimension tap. */
+let note: string | null = null;
 
 // ── measurement state ──────────────────────────────────────────────────────
 let tool: Tool = "pen";
@@ -173,10 +182,12 @@ function refreshStatus(): void {
     scaleText: scaleStatusText(scale),
     connected: Boolean(token) && source !== null,
   });
-  ui.setHint(currentHint());
+  ui.setMessage(note, currentHint());
   ui.setSendEnabled(source !== null);
 }
 
+ui.setMessageCollapsed(msgbarCollapsed(window.localStorage));
+ui.onMessageToggle = (collapsed) => setMsgbarCollapsed(window.localStorage, collapsed);
 refreshStatus();
 ui.setFreecadSource(false, "Arrives when FreeCAD sends you a view");
 
@@ -561,6 +572,9 @@ async function decodeImage(file: File): Promise<ImageBitmap> {
  * space, so keeping it would leave marks pointing at nothing. Everything that
  * replaces the image goes through here so that rule is stated once. */
 function adopt(bitmap: ImageBitmap, next: ImageSource): void {
+  // A new image is a new instruction: the previous note was about a picture
+  // that is no longer on screen. `loadPublished` sets the new one after this.
+  note = null;
   canvasView.scene.strokes.length = 0;
   dimensions.length = 0;
   undoHistory.length = 0;
@@ -636,11 +650,14 @@ async function loadPublished(published: Published): Promise<void> {
       published,
     });
     ui.hideBanner();
-    // Claude's "what to mark" line, if it sent one. In the hint rather than a
-    // toast: it is an instruction the user acts on while drawing, and a toast
-    // is gone in under three seconds. `adopt` has just reset the hint to the
-    // pen policy, so this replaces it.
-    if (published.meta.note) ui.setHint(published.meta.note);
+    // Claude's "what to mark" line, if it sent one. In the message bar rather
+    // than a toast: it is an instruction the user acts on while drawing, and a
+    // toast is gone in under three seconds.
+    if (published.meta.note) {
+      note = published.meta.note;
+      ui.expandMessage();
+      refreshStatus();
+    }
   } catch {
     ui.toast("Couldn't load that capture", "bad");
   }
