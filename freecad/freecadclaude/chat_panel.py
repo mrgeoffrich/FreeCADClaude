@@ -61,7 +61,7 @@ _SKILL_COMMANDS = {
 #: Cap how much of a tool's result text gets shown in its (collapsed-by-default)
 #: transcript entry -- Claude still sees the full result either way, this is
 #: purely a UI-rendering limit.
-_MAX_TOOL_RESULT_CHARS = 4000
+_MAX_TOOL_RESULT_CHARS = 8000
 
 #: Opens every conversation (a fresh panel and the "New" button). run_python used
 #: to raise a confirmation dialog per call, which told the user what was about to
@@ -74,12 +74,12 @@ _CAPABILITY_NOTICE = """### What Claude can do here
 ⚠️ **Claude acts on your document immediately — there is no approval prompt.** It
 runs Python inside FreeCAD, so it can add, edit or delete any object in the open
 file, and read or write files on this computer. It can also screenshot, section
-and export the model. Each call is one undoable transaction that rolls back if it
-fails. Save your work before a long build, and don't point it at a file you can't
-afford to lose.
+and export the model. Save your work before a long build, and don't point it at a file
+you can't afford to lose.
 
-- ℹ️ A copy of every script is kept under `~/FreeCADClaude/`.
-- ℹ️ Click **📱 Connect Mobile** to send and receive images from your phone or
+ℹ️ A copy of every python script and conversation is kept under `~/FreeCADClaude/`.
+
+ℹ️ Click **📱 Connect Mobile** to send and receive images from your phone or
   iPad, for annotation or ideation."""
 
 
