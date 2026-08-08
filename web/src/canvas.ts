@@ -243,11 +243,11 @@ function composeTarget(size: Size): {
  *
  * Rendered from the SCENE, not from the on-screen canvas: the screen is at
  * whatever size the device's window happens to be, and the flattened image has
- * to be the image the user marked up, at its own resolution, so that
- * normalized annotation coordinates (phase 5) mean the same thing on both
+ * to be the image the user marked up, at its own resolution, so that the
+ * annotation document's normalized coordinates mean the same thing on both
  * sides of the wire.
  *
- * Phase 4 calls this and POSTs the blob to /api/upload. */
+ * The blob this returns is what Send POSTs to /api/upload. */
 export async function flattenToPng(scene: Scene, maxEdge = MAX_FLAT_EDGE): Promise<Blob> {
   const { image } = scene;
   if (!image) throw new Error("nothing to flatten -- no image loaded");

@@ -4,10 +4,10 @@
 Stdlib only, like ``mcp_server.py``: no Qt, no FreeCAD, not even indirectly.
 That is a deliberate constraint, not a coincidence -- **this server never calls
 into FreeCAD**. Captures are *pushed* to it by a tool running on the GUI thread
-(phase 4); nothing arriving over the network can cause a FreeCAD call, a
-recompute or a document mutation. Keeping the import list free of FreeCAD is
-the cheapest way to keep that invariant true by construction, and it also means
-the whole module is testable under a plain interpreter (see
+(``tools_device.send_to_device``); nothing arriving over the network can cause a
+FreeCAD call, a recompute or a document mutation. Keeping the import list free
+of FreeCAD is the cheapest way to keep that invariant true by construction, and
+it also means the whole module is testable under a plain interpreter (see
 ``eval/test_device_server.py``).
 
 It also makes this module importable from any thread, which matters because
@@ -19,10 +19,9 @@ It also makes this module importable from any thread, which matters because
 Unlike :mod:`gui_bridge`, which binds ``127.0.0.1``, this binds ``0.0.0.0`` --
 a device on the same wifi has to reach it. The threat model is therefore
 *someone else on your network*, and the mitigations are: off by default, a
-fresh token per start, and a request surface that is a single realpath-contained
-directory of static files plus the four ``/api/*`` routes below.
-
-Phase 4 adds the round trip, and the invariant survives it intact:
+fresh token per start, an idle auto-stop (:func:`_idle_watchdog`), and a request
+surface that is a single realpath-contained directory of static files plus these
+four ``/api/*`` routes:
 
     GET  /api/latest      what send_to_device last published (JSON)
     GET  /api/image/<id>  those bytes, by an id WE minted (never a path)
@@ -39,6 +38,7 @@ why none of this needs marshalling onto the GUI thread and why a LAN request
 still cannot freeze it.
 """
 
+import contextlib
 import http.server
 import json
 import mimetypes
@@ -63,7 +63,7 @@ UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "device_ui")
 #: neither a query string we chose nor a header our JS set, so without this the
 #: page would authenticate and then fail to load its own script. HttpOnly is
 #: free here: the page keeps its own copy of the token in sessionStorage (see
-#: src/token.ts) for the ``X-FC-Token`` header the API will want in phase 4.
+#: src/token.ts) for the ``X-FC-Token`` header its own API calls carry.
 _COOKIE = "fc_token"
 
 #: Content types, spelled out rather than left to ``mimetypes``. On Windows
@@ -110,6 +110,20 @@ _SSE_PING = 20.0
 #: start so it can't match the ``filename="..."`` sitting next to it.
 _PART_NAME_RE = re.compile(rb'(?:^|;)\s*name="([^"]*)"')
 
+#: How long the server may sit with NOTHING CONNECTED before it shuts itself
+#: down. The clock only runs while no request is in flight, and an ``/api/events``
+#: stream is in flight for as long as the page is open -- so this is not a
+#: deadline the user has to beat while drawing, it is "the tablet went away and
+#: nobody came back". A closed tab, a sleeping device or a walk out of wifi range
+#: all end that stream within ``_SSE_PING``, which is what starts the clock.
+#:
+#: Half an hour is the compromise between the two costs. Stopping mints a fresh
+#: token on the next start, so an over-eager timeout costs the user a re-scan;
+#: leaving it running costs an open LAN listener nobody is watching, which is
+#: the whole reason this exists. Overridden per start (the chat panel reads the
+#: ``DeviceIdleMinutes`` preference); 0 disables it.
+_DEFAULT_IDLE_TIMEOUT = 30 * 60
+
 
 class _Feed:
     """The published capture, the uploads that came back, and the Condition
@@ -118,7 +132,8 @@ class _Feed:
     One module-level instance, deliberately outliving any single ``start()``:
     ``read_device_image`` is often called after the user has stopped the server,
     and an upload that made it to disk shouldn't become unreadable because the
-    listener went away.
+    listener went away. It does not outlive a *conversation* -- see
+    :func:`reset_session`.
     """
 
     def __init__(self):
@@ -131,9 +146,37 @@ class _Feed:
         self.upload_dir = None  # handed in by the GUI thread; see set_upload_dir
         self.closed = True      # no server up -> SSE readers should let go
         self.on_upload = None   # chat_panel's "an image arrived" hook
+        self.on_idle_stop = None  # ...and its "I stopped myself" hook
+        self.active = 0         # requests in flight; see _serving
+        self.last_seen = 0.0    # monotonic clock at the end of the last one
 
 
 _feed = _Feed()
+
+
+@contextlib.contextmanager
+def _serving():
+    """Count one request as in flight, and stamp the idle clock when it ends.
+
+    Entered around the DISPATCH rather than around ``handle_one_request``, and
+    that distinction is the whole of it: with keep-alive on, a handler spends
+    most of its life blocked in ``rfile.readline`` waiting for the browser's
+    *next* request, and counting that as activity would mean one idle open
+    connection kept the server up for ever.
+
+    Nothing here notifies the condition. The watchdog re-reads ``last_seen``
+    every time it wakes and waits out whatever remains, so it converges on the
+    real deadline on its own -- and a notify per request would also wake every
+    SSE reader into an early keepalive for nothing.
+    """
+    with _feed.cond:
+        _feed.active += 1
+    try:
+        yield
+    finally:
+        with _feed.cond:
+            _feed.active -= 1
+            _feed.last_seen = time.monotonic()
 
 
 class _Server(http.server.ThreadingHTTPServer):
@@ -165,7 +208,7 @@ _state = {"server": None, "thread": None, "url": None, "token": None}
 _lock = threading.Lock()
 
 
-def start(upload_dir=None):
+def start(upload_dir=None, idle_timeout=None):
     """Start the device server (idempotent). Returns ``(url, token)``.
 
     The URL is the one to type or scan on the device: it carries the token as
@@ -179,6 +222,11 @@ def start(upload_dir=None):
     (the chat panel, on the GUI thread) resolves it once and hands over a
     string; every later refresh comes the same way, from
     :func:`publish`. With none set, uploads are refused rather than guessed at.
+
+    ``idle_timeout`` is seconds of nothing connected before the server stops
+    itself (default :data:`_DEFAULT_IDLE_TIMEOUT`; 0 or negative disables it).
+    It arrives the same way and for the same reason -- it comes from a FreeCAD
+    preference, which only the GUI thread may read.
     """
     with _lock:
         if _state["server"] is not None:
@@ -202,6 +250,8 @@ def start(upload_dir=None):
             if upload_dir:
                 _feed.upload_dir = upload_dir
             _feed.closed = False
+            _feed.active = 0
+            _feed.last_seen = time.monotonic()
 
         thread = threading.Thread(
             target=server.serve_forever,
@@ -212,7 +262,52 @@ def start(upload_dir=None):
 
         url = f"http://{lan_address()}:{server.server_address[1]}/?t={token}"
         _state.update(server=server, thread=thread, url=url, token=token)
+
+        timeout = _DEFAULT_IDLE_TIMEOUT if idle_timeout is None else float(idle_timeout)
+        if timeout > 0:
+            threading.Thread(
+                target=_idle_watchdog,
+                args=(server, timeout),
+                name="freecadclaude-device-idle",
+                daemon=True,
+            ).start()
         return url, token
+
+
+def _idle_watchdog(server, timeout):
+    """Stop `server` once nothing has talked to it for `timeout` seconds.
+
+    A daemon thread parked in ``cond.wait``, so it costs nothing while it waits
+    and -- the point worth keeping -- it never touches the GUI thread, neither
+    to check the clock nor to do the stopping. ``server.shutdown()`` may not be
+    called from the serving thread; this is not one, so it can.
+
+    Recomputing the deadline from ``last_seen`` on every wake is what lets
+    :func:`_serving` get away with not notifying: a wake that finds recent
+    activity simply waits out the remainder. ``stop()`` DOES notify, which is
+    how this exits promptly when the user stops the server by hand.
+    """
+    while True:
+        with _feed.cond:
+            if _feed.closed:
+                return  # stopped by hand (or never really started)
+            idle_for = 0.0 if _feed.active else time.monotonic() - _feed.last_seen
+            remaining = timeout - idle_for
+            if remaining > 0:
+                _feed.cond.wait(remaining)
+                continue
+        # Outside the condition: stop() takes both locks, and a restart in the
+        # meantime means this watchdog belongs to a server that is already gone.
+        if _state["server"] is not server:
+            return
+        stop()
+        hook = _feed.on_idle_stop
+        if hook is not None:
+            try:
+                hook(timeout)
+            except Exception:  # noqa: BLE001 - a listener must not break the stop
+                pass
+        return
 
 
 def stop():
@@ -220,6 +315,10 @@ def stop():
 
     The next ``start()`` mints a fresh token, so a device paired with the old
     one is deauthorised by stopping -- that is the intended way to revoke.
+    Published captures and uploads are deliberately NOT dropped here: they
+    belong to the conversation, not to the listener, and ``read_device_image``
+    is routinely called after the user has stopped the server. "New" is what
+    clears them (:func:`reset_session`).
     """
     with _lock:
         server = _state["server"]
@@ -292,15 +391,54 @@ def set_upload_hook(callback):
         _feed.on_upload = callback
 
 
+def set_idle_hook(callback):
+    """Register "I stopped myself", called with the idle timeout in seconds.
+
+    Same threading contract as :func:`set_upload_hook` -- it fires on the
+    watchdog thread. Worth wiring rather than stopping silently: from the
+    device's side an idle stop and a wifi problem look identical, so the one
+    place that can explain it is the transcript on the machine that did it.
+    """
+    with _feed.cond:
+        _feed.on_idle_stop = callback
+
+
+def reset_session(upload_dir=None):
+    """Forget every capture and upload of the conversation just ended.
+
+    Called from the chat panel's "New". The feed deliberately outlives a single
+    ``start()`` (see :class:`_Feed`), which is right within one conversation and
+    wrong across two: ``read_device_image`` would otherwise hand Claude an image
+    the *previous* chat's user drew, and ``/api/latest`` would offer the device a
+    capture of a document that conversation may not even have been about.
+
+    `upload_dir` refreshes where uploads land, because "New" mints a new session
+    id and therefore a new ``<session>/mobile/``. Resolved by the caller on the
+    GUI thread, like every other path that reaches this module.
+    """
+    with _feed.cond:
+        if upload_dir:
+            _feed.upload_dir = upload_dir
+        _feed.latest = None
+        _feed.images.clear()
+        del _feed.order[:]
+        del _feed.uploads[:]
+        # `seq` is deliberately NOT bumped: waking the SSE readers here would
+        # push them an event whose payload is "nothing published", and a device
+        # mid-drawing has no use for that. What it already has on screen is the
+        # user's own work, and it keeps it.
+
+
 def publish(path, meta=None, upload_dir=None):
     """Make `path` the capture the device can fetch, and wake the SSE readers.
 
     `meta` is stored and served verbatim -- this module has no opinion about
-    what a capture's metadata contains, which is what lets phase 5 add the
-    scale fields without touching the server. Returns the record; its ``id`` is
-    what ``/api/image/<id>`` serves, and the only handle the device ever gets.
-    A generated id rather than the filename is also the containment: no client
-    string is ever joined onto a path.
+    what a capture's metadata contains, which is how the measurement fields
+    (mm/px, confidence, projection plane) landed in it without a line changing
+    here. Returns the record; its ``id`` is what ``/api/image/<id>`` serves, and
+    the only handle the device ever gets. A generated id rather than the
+    filename is also the containment: no client string is ever joined onto a
+    path.
     """
     record = {
         "id": secrets.token_urlsafe(8),
@@ -506,6 +644,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     sys_version = ""
 
     def do_GET(self):  # noqa: N802 (Qt/stdlib API casing)
+        with _serving():
+            self._get()
+
+    def _get(self):
         # Reset per request, not per instance: with keep-alive one handler
         # object serves every request on the connection, so a flag left set by
         # the page load would re-send Set-Cookie on each asset after it.
@@ -550,6 +692,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_POST(self):  # noqa: N802
+        with _serving():
+            self._post()
+
+    def _post(self):
         self._set_cookie = False
         if not self._authorized():
             self._send(403, b"forbidden", "text/plain; charset=utf-8")
@@ -721,8 +867,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
         Three forms because three different callers need one: the device
         arrives with ``?t=`` (a scanned or typed URL), the page's own fetches
-        will use ``X-FC-Token`` (phase 4), and the browser's sub-resource
-        requests carry only the cookie we set on the way in.
+        use ``X-FC-Token``, and the browser's sub-resource requests carry only
+        the cookie we set on the way in.
         """
         token = getattr(self.server, "token", None)
         if not token:

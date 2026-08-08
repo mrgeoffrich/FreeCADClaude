@@ -299,7 +299,7 @@ the mitigations are:
   token-holder can do is read published captures and write image files into the
   session folder.
 - **Off by default**, started explicitly, stopped on shutdown. An idle timeout is
-  phase 4 hardening.
+  phase 6 hardening.
 - Uploads: size-capped, magic-byte checked, written with generated names via the
   existing `_artifact_path` (never a client-supplied filename), pruned by
   `_session_subdir`.

@@ -140,8 +140,8 @@ body {
   padding: 8px 16px; border-radius: 999px;
 }
 .toast.bad { background: var(--ink); color: #1a0d0d; }
-/* Phase 4 raises this when a capture is pushed while a drawing is in progress:
-   notify, don't clobber -- the user taps Load. */
+/* Raised when a capture is pushed while a drawing is in progress: notify,
+   don't clobber -- the user taps Load. */
 .banner {
   position: absolute; left: 50%; top: 12px; transform: translateX(-50%);
   display: flex; align-items: center; gap: 10px; white-space: nowrap;

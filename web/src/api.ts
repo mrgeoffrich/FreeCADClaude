@@ -145,6 +145,26 @@ export interface DeviceApi {
   events(onPublished: (published: Published) => void): (() => void) | null;
 }
 
+/** What a rejected `fetch` means here, in the user's terms.
+ *
+ * `fetch` rejects with a bare `TypeError: Failed to fetch` for every transport
+ * failure there is -- the tablet lost wifi, the laptop slept, FreeCAD stopped
+ * the server or was quit. None of those are distinguishable from the browser,
+ * and all of them have the same two things worth checking, so the message says
+ * those rather than repeating the browser's wording. It matters most on the
+ * upload: the user has just spent minutes drawing, and "Failed to fetch" over
+ * their work does not tell them it is still there. */
+const OFFLINE = "no connection to FreeCAD — same wifi, and is the server still on?";
+
+/** `fetch`, with a transport failure turned into that message. */
+async function send(path: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(path, init);
+  } catch {
+    throw new Error(OFFLINE);
+  }
+}
+
 async function readError(response: Response): Promise<string> {
   try {
     const body = (await response.json()) as { error?: unknown };
@@ -160,13 +180,13 @@ export function deviceApi(token: string | null): DeviceApi {
 
   return {
     async latest() {
-      const response = await fetch("/api/latest", { headers });
+      const response = await send("/api/latest", { headers });
       if (!response.ok) throw new Error(await readError(response));
       return parseLatest(await response.json());
     },
 
     async image(published) {
-      const response = await fetch(published.url, { headers });
+      const response = await send(published.url, { headers });
       if (!response.ok) throw new Error(await readError(response));
       return response.blob();
     },
@@ -174,7 +194,7 @@ export function deviceApi(token: string | null): DeviceApi {
     async upload(png, doc) {
       // No Content-Type header: the browser has to set it, because only it
       // knows the multipart boundary it generated.
-      const response = await fetch("/api/upload", {
+      const response = await send("/api/upload", {
         method: "POST",
         headers,
         body: buildUpload(png, doc),

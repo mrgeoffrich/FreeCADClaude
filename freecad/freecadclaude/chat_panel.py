@@ -125,6 +125,33 @@ def _extract_capture_png(text):
     return path if os.path.isfile(path) else None
 
 
+#: Minutes of nothing connected before the device server stops itself, when the
+#: ``DeviceIdleMinutes`` preference under PARAM_PATH is unset. The number itself
+#: lives in device_server (``_DEFAULT_IDLE_TIMEOUT``, in seconds, with the
+#: reasoning); this is only the unit the preference is written in, because
+#: "1800" is not a thing anyone wants to type into a parameter editor. 0 turns
+#: the auto-stop off.
+_DEVICE_IDLE_PREF = "DeviceIdleMinutes"
+
+
+def _device_idle_timeout():
+    """Seconds of idleness before the device server stops itself, or None for
+    its own default.
+
+    Read HERE, on the GUI thread, and handed to ``start()`` as a number --
+    device_server may not read a FreeCAD preference itself (that is the same
+    invariant as the upload folder, and for the same reason). An unset integer
+    preference reads back as 0, which is why "off" is spelled as a negative
+    rather than as 0: the two are indistinguishable otherwise.
+    """
+    import FreeCAD
+
+    from . import freecad_tools
+
+    minutes = FreeCAD.ParamGet(freecad_tools.PARAM_PATH).GetInt(_DEVICE_IDLE_PREF, 0)
+    return None if minutes == 0 else max(0, minutes) * 60
+
+
 #: How the pairing QR is drawn. At 8px a module, the largest code this encoder
 #: makes (version 6, 41 modules) is 392px square including the quiet zone --
 #: big enough to scan from across a desk without the dialog needing to scroll.
@@ -209,6 +236,11 @@ class ChatWidget(QtWidgets.QWidget):
     #: GUI thread is queued by Qt automatically, so the slot runs there.
     device_upload_received = QtCore.Signal(str)
 
+    #: The device server stopped itself after sitting idle, with the timeout it
+    #: was given (seconds). Emitted from the watchdog thread -- same reason as
+    #: above, and the same queued hop onto the GUI thread.
+    device_idle_stopped = QtCore.Signal(float)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._thread = None
@@ -226,6 +258,8 @@ class ChatWidget(QtWidgets.QWidget):
         self._render_timer.setInterval(80)
         self._render_timer.timeout.connect(self._do_render)
         self.device_upload_received.connect(self._on_device_upload)
+        self.device_idle_stopped.connect(self._on_device_idle_stopped)
+        self._device_quit_hooked = False
         self._build_ui()
         self._note(_CAPABILITY_NOTICE)
 
@@ -589,6 +623,9 @@ class ChatWidget(QtWidgets.QWidget):
         self._think_has_text = False
         self._tool_entries.clear()
         self._set_busy(False)
+        # After the clear, not before: its only output is an error note, and a
+        # note written above would be wiped by the very next line.
+        self._reset_device_session()
         try:
             from . import plan_panel
 
@@ -596,6 +633,30 @@ class ChatWidget(QtWidgets.QWidget):
         except Exception:  # noqa: BLE001
             pass
         self._note(_CAPABILITY_NOTICE)
+
+    def _reset_device_session(self):
+        """Point the device server at the new conversation and forget the old
+        one's images.
+
+        Called from "New", AFTER the fresh session id has been minted, because
+        the upload folder is derived from it: without this the tablet's next
+        upload would land in the previous chat's ``mobile/`` folder, and
+        ``read_device_image`` would answer the new conversation with the
+        previous one's marked-up capture.
+
+        Unconditional, even with the server stopped: the published/upload state
+        deliberately outlives a stop (see device_server._Feed), so it is exactly
+        the state that would leak.
+        """
+        from . import device_server, freecad_tools
+
+        try:
+            upload_dir = (
+                freecad_tools.device_upload_dir() if device_server.is_running() else None
+            )
+            device_server.reset_session(upload_dir)
+        except Exception as exc:  # noqa: BLE001 - "New" must clear the panel regardless
+            self._note(f"*Could not reset the device server: {exc}*")
 
     def _on_model_changed(self, _index):
         """Persist the selected model (only reachable between conversations, since
@@ -634,20 +695,68 @@ class ChatWidget(QtWidgets.QWidget):
         from . import device_server, freecad_tools
 
         try:
-            # The upload folder is resolved HERE, on the GUI thread, and handed
-            # over as a string. The server must never work it out itself -- that
-            # walk ends in a FreeCAD preference read, and an HTTP worker thread
-            # calling into FreeCAD is the invariant the whole feature rests on.
+            # The upload folder and the idle timeout are resolved HERE, on the
+            # GUI thread, and handed over as plain values. The server must never
+            # work either out itself -- both walks end in a FreeCAD preference
+            # read, and an HTTP worker thread calling into FreeCAD is the
+            # invariant the whole feature rests on.
             url, _token = device_server.start(
-                upload_dir=freecad_tools.device_upload_dir()
+                upload_dir=freecad_tools.device_upload_dir(),
+                idle_timeout=_device_idle_timeout(),
             )
         except Exception as exc:  # noqa: BLE001 - report, never raise into Qt
             self._note(f"*Could not start the device server: {exc}*")
             return
-        # Bound signal emit, not a method: the hook fires on the server's thread
-        # and Qt queues the emit onto ours (see device_upload_received).
+        # Bound signal emits, not methods: the hooks fire on the server's own
+        # threads and Qt queues them onto ours (see device_upload_received).
         device_server.set_upload_hook(self.device_upload_received.emit)
+        device_server.set_idle_hook(self.device_idle_stopped.emit)
+        self._hook_device_shutdown()
         self._show_pairing(url)
+
+    def _hook_device_shutdown(self):
+        """Make sure quitting FreeCAD takes the LAN listener down with it.
+
+        Connected on first start rather than in ``__init__`` because there is
+        nothing to stop until then -- and guarded by a flag because pressing
+        Device again would otherwise connect a second copy (Qt allows duplicate
+        connections, and this would then stop an already-stopped server).
+
+        This is separate from ``_shutdown_worker``'s connection on purpose: that
+        one is made when a *chat* starts, and the server can be running with no
+        conversation ever having been sent.
+        """
+        if self._device_quit_hooked:
+            return
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._shutdown_device)
+            self._device_quit_hooked = True
+
+    def _shutdown_device(self):
+        """Stop the server on the way out. No transcript note: the window this
+        would be written into is already closing."""
+        from . import device_server
+
+        try:
+            device_server.stop()
+        except Exception:  # noqa: BLE001 - nothing useful to do while quitting
+            pass
+
+    def _on_device_idle_stopped(self, timeout):
+        """The watchdog stopped the server. Say so, and say why.
+
+        Runs on the GUI thread (queued). Without this the tablet simply goes
+        dead, which from over there is indistinguishable from a wifi problem --
+        and the fix (press Device again, re-scan) is not one anybody would guess
+        at from the device.
+        """
+        minutes = max(1, int(round(float(timeout) / 60.0)))
+        self._note(
+            f"*Device server stopped after {minutes} idle minute(s) with nothing "
+            "connected. Press **Device** to start it again -- it mints a new "
+            "code, so the device has to re-scan.*"
+        )
 
     def _on_device_upload(self, path):
         """An image arrived from the device -- say so in the transcript.

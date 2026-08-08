@@ -75,10 +75,10 @@ def _with_face_on_default(args):
     defaults face-on because the image is going somewhere the user will
     *measure* on: on an axis-aligned view two of the three world axes are true
     on screen, while on an oblique one every distance is foreshortened and any
-    number read off it is simply wrong. (Phase 5 turns that into the scale
-    metadata; the default is worth having either way.) An explicit view or an
-    azimuth/elevation still wins -- Claude asking for an angle means it wants
-    that angle.
+    number read off it is simply wrong. (That is what the published scale
+    metadata records; the default is worth having either way.) An explicit view
+    or an azimuth/elevation still wins -- Claude asking for an angle means it
+    wants that angle.
     """
     if args.get("view") or args.get("azimuth") is not None or args.get("elevation") is not None:
         return args
@@ -208,7 +208,16 @@ def _run_send_to_device(args):
     doc, keep_set, plan = setup["doc"], setup["keep_set"], setup["plan"]
     width, height = setup["width"], setup["height"]
     note = str(args.get("note") or "").strip()
-    png_path = _artifact_path("mobile", "sent_" + plan["label"], ".png")
+    try:
+        png_path = _artifact_path("mobile", "sent_" + plan["label"], ".png")
+    except OSError as exc:
+        # A full disk (or an unwritable ArtifactsDir) fails here, before any
+        # rendering, because _artifact_path creates the folder and the file.
+        return (
+            f"Could not create a file for this capture: {exc}. The disk may be "
+            "full, or the FreeCADClaude artifacts folder may not be writable. "
+            "Nothing was sent to the device."
+        )
 
     blank = False
     measured = None
@@ -225,7 +234,16 @@ def _run_send_to_device(args):
         if err:
             return err
         width, height = _fit_render_size(view, doc, setup)
-        _save_view_png(view, png_path, width, height)
+        try:
+            _save_view_png(view, png_path, width, height)
+        except Exception as exc:  # noqa: BLE001 - saveImage raises FreeCAD's own
+            # error type on a failed write, not OSError, so the write failure
+            # cannot be caught by class. Narrow by SITE instead: this is one
+            # call, and the only thing it does is write the PNG.
+            return (
+                f"Could not write the capture to {png_path}: {exc}. The disk may "
+                "be full. Nothing was sent to the device."
+            )
         blank = _looks_blank(png_path)
         measured = _orbit_angles_from_view(view)
         # LAST, and inside the view: mm/px is the camera's ortho height over
@@ -243,7 +261,15 @@ def _run_send_to_device(args):
     # Hand the upload folder over on the same call: "New" mints a fresh session
     # id, so the folder the server should write into can have moved since it was
     # started, and this is the one moment the GUI thread is here to resolve it.
-    device_server.publish(png_path, meta, upload_dir=device_upload_dir())
+    try:
+        upload_dir = device_upload_dir()
+    except OSError:
+        # Creating <session>/mobile/ failed (a full disk again). The capture
+        # itself is already written, so publish it anyway and leave the server
+        # on whatever folder it had -- refusing here would throw away a picture
+        # over a problem that only bites on the way back.
+        upload_dir = None
+    device_server.publish(png_path, meta, upload_dir=upload_dir)
 
     where = "a custom view" if plan["orbit"] else f"the {plan['view_arg']} view"
     # "saved to <path>.png" is the phrasing chat_panel's _extract_capture_png

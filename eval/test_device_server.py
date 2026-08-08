@@ -2,17 +2,21 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Request-handling tests for freecad/freecadclaude/device_server.py.
 
-Static serving and the token gate (phase 1), plus the round trip (phase 4):
-publish/fetch, the SSE wake-up, and the four upload gates -- size, framing,
-magic bytes, and a filename that tries to traverse. The measurement payload
-(phase 5) rides along in the same checks rather than in new ones, because it
-added no server surface: the scale is a few more keys in a metadata dict this
-module already stores verbatim, and the annotation document is a JSON part it
-already writes to disk without parsing. What is asserted is exactly that --
-that structure survives it untouched. All of it in one file, on
-purpose: they share a running server and the checks are cheapest when they can
-see each other's state (an upload has to show up in ``uploads()``, a publish has
-to reach a stream opened before it).
+Static serving and the token gate; the round trip -- publish/fetch, the SSE
+wake-up, and the four upload gates (size, framing, magic bytes, and a filename
+that tries to traverse); and the lifecycle -- what "New" clears, and the idle
+auto-stop. The measurement payload rides along in the same checks rather than
+in new ones, because it added no server surface: the scale is a few more keys
+in a metadata dict this module already stores verbatim, and the annotation
+document is a JSON part it already writes to disk without parsing. What is
+asserted is exactly that -- that structure survives it untouched. All of it in
+one file, on purpose: they share a running server and the checks are cheapest
+when they can see each other's state (an upload has to show up in ``uploads()``,
+a publish has to reach a stream opened before it, and ``reset_session`` has to
+be seen to remove both).
+
+The tools that drive this module are covered next door, in
+``eval/test_device_tools.py``.
 
 The module under test imports no Qt and no FreeCAD (that's the invariant that
 keeps the LAN server unable to reach the document), so this needs no GUI and no
@@ -38,6 +42,7 @@ import shutil
 import socket
 import sys
 import tempfile
+import time
 import urllib.parse
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -183,6 +188,80 @@ def _sse_read_event(sock, seen=b""):
         seen += chunk
 
 
+#: The idle timeout the auto-stop check runs at. Seconds rather than the real
+#: half hour, obviously -- what is under test is the rule (in flight = alive,
+#: nothing in flight = the clock runs), not the number.
+_IDLE = 0.6
+
+
+def _wait_until(predicate, timeout):
+    """Poll `predicate` until it holds or `timeout` elapses. Returns its final
+    value -- the stop happens on a watchdog thread, so there is nothing to join."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return bool(predicate())
+
+
+def _check_idle_stop():
+    """The idle auto-stop: a forgotten LAN listener shuts itself down.
+
+    Three separate claims, and the middle one is the design decision worth
+    pinning: traffic keeps the server up, an OPEN EVENT STREAM keeps it up even
+    with no traffic at all (a tablet with the page open is a user who is
+    probably drawing, and stopping under them would cost them the send), and it
+    is only once that stream ends that the clock actually runs.
+
+    ``_SSE_PING`` is turned down for the duration because a stream notices its
+    device has gone only when a write fails -- at the real 20s that is fine
+    against a half-hour timeout and useless against this one.
+    """
+    print("  -- idle auto-stop")
+    stopped = []
+    device_server.set_idle_hook(stopped.append)
+    ping = device_server._SSE_PING
+    device_server._SSE_PING = 0.2
+    try:
+        url, token = device_server.start(idle_timeout=_IDLE)
+        host, port = "127.0.0.1", urllib.parse.urlsplit(url).port
+
+        # Requests spread over more than one timeout: each one restarts the
+        # clock, so the server must still be up at the end of them.
+        for _ in range(3):
+            time.sleep(_IDLE * 0.5)
+            _request(host, port, f"/?t={token}")
+        check("traffic keeps the server up", device_server.is_running())
+
+        sock, _header, _rest = _sse_open(host, port, token)
+        try:
+            time.sleep(_IDLE * 2.0)
+            check("an open event stream counts as connected too",
+                  device_server.is_running())
+        finally:
+            sock.close()
+
+        check("the server stops itself once nothing is connected",
+              _wait_until(lambda: not device_server.is_running(), 10.0))
+        # Waited for rather than read straight away: the hook fires AFTER
+        # stop() has returned, and stop() clears is_running() at its top.
+        check("the idle hook is told, with the timeout it was given",
+              _wait_until(lambda: stopped == [_IDLE], 5.0), stopped)
+        check("stopping that way still revokes the token",
+              device_server.current_url() is None)
+    finally:
+        device_server._SSE_PING = ping
+        device_server.set_idle_hook(None)
+        device_server.stop()
+
+    # And it can be turned off, which is what a 0 preference has to mean.
+    device_server.start(idle_timeout=0)
+    time.sleep(_IDLE * 2.0)
+    check("idle_timeout=0 disables it", device_server.is_running())
+    device_server.stop()
+
+
 def main():
     print("device_server request handling")
 
@@ -239,7 +318,7 @@ def main():
         )
         check("asset body is non-empty", len(body) > 0)
 
-        # The API's form of the token, which phase 4 will use.
+        # The API's form of the token, which the page's own fetches use.
         status, _, _ = _request(host, port, "/assets/app.css", {"X-FC-Token": token})
         check("header token works too -> 200", status == 200, f"got {status}")
 
@@ -468,6 +547,32 @@ def main():
         )
         check("POST to an unknown route -> 404", status == 404, f"got {status}")
 
+        # -- a new conversation ------------------------------------------
+        # "New" in the chat panel: the captures and uploads belong to the chat
+        # that made them, and the feed outlives a stop() on purpose -- so this
+        # is the only thing standing between one conversation's marked-up
+        # capture and the next conversation's read_device_image.
+        check("there is state to clear",
+              device_server.published_record() is not None and device_server.uploads())
+        next_dir = tempfile.mkdtemp(prefix="fcc-device-test-new-")
+        device_server.reset_session(next_dir)
+        check("reset_session forgets the uploads", device_server.uploads() == [])
+        check("...and the published capture", device_server.published_record() is None)
+        status, _, body = _request(host, port, "/api/latest", {"X-FC-Token": token})
+        check("...so /api/latest offers the device nothing", status == 200
+              and json.loads(body)["published"] is None, body[:120])
+        status, _, _ = _request(host, port, published["url"], {"X-FC-Token": token})
+        check("...and the old image id is gone", status == 404, f"got {status}")
+        status, _, body = _post(
+            host, port, "/api/upload", _multipart([("image", "a.png", _PNG)]),
+            form_type, {"X-FC-Token": token},
+        )
+        landed = json.loads(body).get("name", "") if status == 200 else ""
+        check("the next upload lands in the new session's folder",
+              status == 200 and os.path.isfile(os.path.join(next_dir, landed)),
+              f"got {status}: {landed!r}")
+        shutil.rmtree(next_dir, ignore_errors=True)
+
         # -- lifecycle ---------------------------------------------------
         check("is_running() while up", device_server.is_running())
         check("current_url() while up", device_server.current_url() == url)
@@ -483,6 +588,8 @@ def main():
     new_url, new_token = device_server.start()
     device_server.stop()
     check("restart mints a fresh token", new_token != token, new_url)
+
+    _check_idle_stop()
 
     print()
     if _failures:

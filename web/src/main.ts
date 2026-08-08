@@ -564,7 +564,11 @@ ui.onSend = () => {
       ui.caption.value = "";
       ui.toast("Sent to Claude");
     } catch (err) {
-      ui.toast(err instanceof Error ? `Couldn't send — ${err.message}` : "Couldn't send", "bad");
+      // The clear above is deliberately AFTER the await, so a failed send has
+      // left the drawing exactly as it was -- which is the one thing the user
+      // wants to know when their tablet has just dropped off the wifi.
+      const why = err instanceof Error ? ` — ${err.message}` : "";
+      ui.toast(`Couldn't send${why}. Your marks are still here.`, "bad");
     } finally {
       ui.setSendEnabled(source !== null);
     }
