@@ -89,13 +89,16 @@ from .tools_notes import (
     _run_set_print_direction,
 )
 from .tools_python import _RUN_PYTHON_SCHEMA, _precheck_python, _run_python
-from .tools_slice import (
+from .tools_slice import (  # reset_session re-exported for chat_panel's "New"
     _READ_SLICE_RESULT_SCHEMA,
     _SLICE_MODEL_SCHEMA,
+    _VIEW_GCODE_SCHEMA,
     _precheck_slice_model,
     _run_read_slice_result,
     _run_slice_model,
+    _run_view_gcode,
 )
+from .tools_slice import reset_session as reset_slice_session  # noqa: F401
 from .tools_sketch import (
     _GET_SKETCH_SCHEMA,
     _VIEW_SKETCH_SVG_SCHEMA,
@@ -147,6 +150,7 @@ TOOLS = {
         "schema": _READ_SLICE_RESULT_SCHEMA,
         "run": _run_read_slice_result,
     },
+    "view_gcode": {"schema": _VIEW_GCODE_SCHEMA, "run": _run_view_gcode},
     "inspect_api": {"schema": _INSPECT_API_SCHEMA, "run": _run_inspect_api},
     "run_python": {
         "schema": _RUN_PYTHON_SCHEMA,

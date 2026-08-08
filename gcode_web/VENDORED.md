@@ -84,6 +84,28 @@ Every difference from the upstream commit, one line each.
    unknown `; FEATURE:` strings. See below.
 5. **`tests/fixtures/plate_two_boxes.gcode.gz` added.** That test's fixture,
    moved here from `eval/fixtures/` so it sits beside the test it guards.
+6. **The slicer settings drawer added** — the panel that chooses which printer,
+   nozzle, process and filament the addon slices with. It talks to
+   `gcode_server`'s `/api/slicer/{options,config}` routes and stores
+   `~/FreeCADClaude/slicer.json`; see "Slicer configuration in the page" in
+   `docs/slice-preview-design.md`. Four new files and three touched:
+   - `src/slicerSettings.ts` (new): the two fetches, and the pure rules for
+     which printer, nozzle and preset to show. The fetches carry no token — the
+     page was loaded with `?t=` and the server set a cookie on that response, so
+     a same-origin request authenticates itself.
+   - `src/components/SettingsDrawer.tsx` (new): the drawer. A drawer over the
+     viewer rather than a route, so there is one page and one bundle, and it
+     renders with no G-code loaded because configuring the printer comes before
+     the first slice.
+   - `src/styles.css`: a `.drawer*` block appended, in the existing voice — same
+     `--panel`/`--panel-border`/`--accent` variables, same control styling as
+     the toolbar's buttons.
+   - `src/App.tsx`: holds the open/closed flag and mounts the drawer only while
+     it is open, so each opening starts from what is stored.
+   - `src/components/FileDrop.tsx`: a "⚙ Slicer settings" toolbar button and the
+     `onSettings` prop that carries it.
+   - `tests/slicer-settings.test.ts` (new): the choosing rules under `vitest`.
+     The drawer's rendering is a manual browser check.
 
 Nothing else differs. `index.html`, `package.json`, `package-lock.json`, the
 three `tsconfig*.json` and `eslint.config.js` are byte-identical to upstream, as
@@ -103,7 +125,8 @@ is every `src/` file not listed above.
   `eslint-disable` warnings are pre-existing.** `npm run lint` reports the same
   8 problems here as it does on a clean upstream checkout, in
   `src/components/StlOverlay.tsx`, `src/components/Viewer.tsx` and
-  `tests/sample.smoke.test.ts` — none of them files we patched. Left alone.
+  `tests/sample.smoke.test.ts` — none of them files we patched. Left alone, and
+  the patched files add none: 8 problems before the settings drawer, 8 after.
 
 ## The parser guard
 

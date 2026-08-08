@@ -429,6 +429,7 @@ class ChatWidget(QtWidgets.QWidget):
         app = QtWidgets.QApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self._shutdown_slicer)
+            app.aboutToQuit.connect(self._shutdown_gcode_server)
         self._slicer_hooked = True
 
     def _shutdown_slicer(self):
@@ -439,6 +440,18 @@ class ChatWidget(QtWidgets.QWidget):
 
         try:
             slicer_runner.terminate_all()
+        except Exception:  # noqa: BLE001 - nothing useful to do while quitting
+            pass
+
+    def _shutdown_gcode_server(self):
+        """Stop the loopback viewer server on the way out, mirroring
+        ``_shutdown_device``. It has no idle watchdog of its own -- it is on
+        127.0.0.1 and started by a tool rather than by a button, so quitting is
+        the only thing that takes it down."""
+        from . import gcode_server
+
+        try:
+            gcode_server.stop()
         except Exception:  # noqa: BLE001 - nothing useful to do while quitting
             pass
 
@@ -686,9 +699,10 @@ class ChatWidget(QtWidgets.QWidget):
         self._think_has_text = False
         self._tool_entries.clear()
         self._set_busy(False)
-        # After the clear, not before: its only output is an error note, and a
+        # After the clear, not before: their only output is an error note, and a
         # note written above would be wiped by the very next line.
         self._reset_device_session()
+        self._reset_slice_session()
         try:
             from . import plan_panel
 
@@ -720,6 +734,24 @@ class ChatWidget(QtWidgets.QWidget):
             device_server.reset_session(upload_dir)
         except Exception as exc:  # noqa: BLE001 - "New" must clear the panel regardless
             self._note(f"*Could not reset the device server: {exc}*")
+
+    def _reset_slice_session(self):
+        """Forget the previous conversation's slice jobs.
+
+        The same failure ``_reset_device_session`` prevents: the job table
+        outlives a slice on purpose, so without this ``read_slice_result`` with
+        no argument would answer the new conversation with the old one's job,
+        and its export records would describe parts nobody here has mentioned.
+        A slice still running keeps running -- what is dropped is the handle,
+        not the child.
+        """
+        from . import freecad_tools, slicer_runner
+
+        try:
+            slicer_runner.reset_session()
+            freecad_tools.reset_slice_session()
+        except Exception as exc:  # noqa: BLE001 - "New" must clear the panel regardless
+            self._note(f"*Could not reset the slice jobs: {exc}*")
 
     def _on_model_changed(self, _index):
         """Persist the selected model (only reachable between conversations, since

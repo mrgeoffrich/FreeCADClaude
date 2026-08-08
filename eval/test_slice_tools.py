@@ -884,9 +884,14 @@ def _check_wait_and_precheck():
 def _check_preferences():
     print("  -- the preferences, read on this thread and handed over")
     prefs = tools_slice._preferences()
-    check("every value slicer_runner is handed is resolved here",
+    # Pinned as a set: everything the two stdlib-only modules are handed is read
+    # on this thread, and a preference added without appearing here is one they
+    # would have to look up themselves.
+    check("every value slicer_runner and gcode_server are handed is resolved here",
           set(prefs) == {"binary", "conf", "profile_dirs", "presets", "nozzle",
-                         "arrange", "orient"}, sorted(prefs))
+                         "arrange", "orient", "gcode_ui"}, sorted(prefs))
+    check("the viewer directory is a preference too, empty meaning the built one",
+          prefs["gcode_ui"] == "", prefs["gcode_ui"])
     check("orient and arrange default on",
           prefs["orient"] is True and prefs["arrange"] is True, prefs)
     check("the nozzle is unset rather than 0.4, so slicer.json can still choose",
@@ -896,6 +901,89 @@ def _check_preferences():
     check("the preset fallbacks are a mapping of the three kinds",
           set(prefs["presets"]) == {"machine", "process", "filament"},
           prefs["presets"])
+
+
+def _check_view_gcode_choice(temp_root):
+    """Which file view_gcode would show, and what it says when there is none.
+
+    ``_run_view_gcode`` itself is not called: it launches the user's browser.
+    What is checked is the half that decides, driven over a stubbed job table --
+    no slicer, no subprocess, no window.
+    """
+    print("  -- what view_gcode picks, and its refusals")
+    job_dir = os.path.join(temp_root, "slices", "160000_bracket")
+    os.makedirs(job_dir, exist_ok=True)
+    plate = os.path.join(job_dir, "plate_1.gcode")
+    with open(plate, "w", encoding="utf-8") as fh:
+        fh.write("; total layer number: 2\n")
+
+    table = {}
+    real_status, real_latest = slicer_runner.job_status, slicer_runner.latest_job
+    slicer_runner.job_status = lambda job_id: table.get(job_id)
+    slicer_runner.latest_job = lambda: (list(table.values()) or [None])[-1]
+    try:
+        check("with no slice at all it says so rather than raising",
+              tools_slice._gcode_to_show({}) == (None, (
+                  "No slice has been run in this FreeCAD session, so there is "
+                  "no toolpath to show yet.")),
+              tools_slice._gcode_to_show({}))
+        check("a job id nobody knows is named back",
+              "no slice job called 'nope'" in
+              (tools_slice._gcode_to_show({"job": "nope"})[1] or ""),
+              tools_slice._gcode_to_show({"job": "nope"}))
+
+        table["160000_bracket"] = {"id": "160000_bracket", "status": "running",
+                                   "job_dir": job_dir}
+        path, note = tools_slice._gcode_to_show({})
+        check("a running job has no G-code yet, and that is not a failure",
+              path is None and "still slicing" in note, (path, note))
+
+        table["160000_bracket"]["status"] = "failed"
+        path, note = tools_slice._gcode_to_show({})
+        check("a failed job points at read_slice_result",
+              path is None and "failed" in note and "read_slice_result" in note,
+              (path, note))
+
+        table["160000_bracket"]["status"] = "succeeded"
+        check("a successful job's G-code is what gets shown",
+              tools_slice._gcode_to_show({}) == (plate, "Showing job "
+                                                 "'160000_bracket'."),
+              tools_slice._gcode_to_show({}))
+
+        second = os.path.join(job_dir, "plate_2.gcode")
+        with open(second, "w", encoding="utf-8") as fh:
+            fh.write("; total layer number: 3\n")
+        path, note = tools_slice._gcode_to_show({})
+        check("with several plates it shows the first and says the others exist",
+              path == plate and "2 plates" in note, (path, note))
+        os.remove(second)
+
+        empty_dir = os.path.join(temp_root, "slices", "161000_empty")
+        os.makedirs(empty_dir, exist_ok=True)
+        table["161000_empty"] = {"id": "161000_empty", "status": "succeeded",
+                                 "job_dir": empty_dir}
+        path, note = tools_slice._gcode_to_show({"job": "161000_empty"})
+        check("a success that wrote no G-code says that, not nothing",
+              path is None and "no G-code file" in note, (path, note))
+
+        check("an explicit path is taken as given",
+              tools_slice._gcode_to_show({"path": plate}) == (plate, None),
+              tools_slice._gcode_to_show({"path": plate}))
+        missing = os.path.join(temp_root, "not-there.gcode")
+        path, note = tools_slice._gcode_to_show({"path": missing})
+        check("...and a path that is not there is refused by name",
+              path is None and missing in note, (path, note))
+    finally:
+        slicer_runner.job_status, slicer_runner.latest_job = real_status, real_latest
+
+    # "New" in the chat panel. The job table is cleared beside this by
+    # slicer_runner.reset_session; this is the half that would otherwise hand a
+    # new conversation the previous one's bounding boxes.
+    tools_slice._remember_export("160000_bracket", {"boxes": {}, "report": None})
+    check("there is an export record to forget", tools_slice._exports)
+    tools_slice.reset_session()
+    check("reset_session forgets it", tools_slice._exports == {}
+          and tools_slice._exports_order == [], tools_slice._exports)
 
 
 # -- the run ----------------------------------------------------------------
@@ -951,6 +1039,7 @@ def main():
         _check_offsets()
         _check_reports(temp_root)
         _check_wait_and_precheck()
+        _check_view_gcode_choice(temp_root)
         _check_preferences()
     finally:
         session.artifacts_dir = real_artifacts

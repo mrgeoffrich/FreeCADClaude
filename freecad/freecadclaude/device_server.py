@@ -41,9 +41,7 @@ still cannot freeze it.
 import contextlib
 import http.server
 import json
-import mimetypes
 import os
-import posixpath
 import re
 import secrets
 import socket
@@ -52,6 +50,8 @@ import tempfile
 import threading
 import time
 import urllib.parse
+
+from . import web_static
 
 #: The built web app (``web/`` → Vite → here). Committed to git: users install
 #: from the ``main`` branch as a plain file copy, with no Node toolchain to
@@ -65,23 +65,6 @@ UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "device_ui")
 #: free here: the page keeps its own copy of the token in sessionStorage (see
 #: src/token.ts) for the ``X-FC-Token`` header its own API calls carry.
 _COOKIE = "fc_token"
-
-#: Content types, spelled out rather than left to ``mimetypes``. On Windows
-#: ``mimetypes`` reads the registry, where ".js" is routinely mapped to
-#: "text/plain" or "application/x-javascript" by whatever installed itself
-#: last -- and a script served as text/plain is refused by every browser's
-#: strict MIME checking for ES modules. The fallback still covers anything a
-#: later phase drops into the folder.
-_TYPES = {
-    ".html": "text/html; charset=utf-8",
-    ".js": "text/javascript; charset=utf-8",
-    ".css": "text/css; charset=utf-8",
-    ".json": "application/json; charset=utf-8",
-    ".svg": "image/svg+xml",
-    ".png": "image/png",
-    ".ico": "image/x-icon",
-    ".webmanifest": "application/manifest+json",
-}
 
 #: Upload ceiling. The client already downscales to a 1568px long edge before
 #: POSTing (see web/src/canvas.ts), so anything approaching this is either a
@@ -594,39 +577,11 @@ def _record_upload(path, doc_path, doc, size):
 def _resolve_static(url_path):
     """Absolute path of the file `url_path` names inside :data:`UI_DIR`, or None.
 
-    Deliberately not ``SimpleHTTPRequestHandler.translate_path``: that resolves
-    against the *process* cwd, which for FreeCAD is wherever the user launched
-    it from. This resolves against one fixed directory and then confirms, with
-    ``realpath`` on both ends, that the result is still under it -- so ``..``
-    segments, an absolute path, a Windows drive letter and a symlink pointing
-    out of the tree are all rejected by the same check rather than by four
-    separate string tests.
+    The containment check itself is :func:`web_static.resolve`, shared with
+    ``gcode_server``: one implementation, so the two servers cannot drift into
+    two different ideas of what ``..`` means.
     """
-    path = urllib.parse.urlsplit(url_path).path
-    try:
-        path = urllib.parse.unquote(path, errors="strict")
-    except UnicodeDecodeError:
-        return None
-    if "\x00" in path:
-        return None
-    if path in ("", "/"):
-        path = "/index.html"
-
-    root = os.path.realpath(UI_DIR)
-    try:
-        target = os.path.realpath(os.path.join(root, path.lstrip("/")))
-    except (OSError, ValueError):
-        return None
-    if target != root and not target.startswith(root + os.sep):
-        return None
-    if not os.path.isfile(target):
-        return None
-    return target
-
-
-def _content_type(path):
-    ext = posixpath.splitext(path)[1].lower()
-    return _TYPES.get(ext) or mimetypes.guess_type(path)[0] or "application/octet-stream"
+    return web_static.resolve(UI_DIR, url_path)
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -684,7 +639,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         except OSError:
             self._send(404, b"not found", "text/plain; charset=utf-8")
             return
-        self._send(200, body, _content_type(path))
+        self._send(200, body, web_static.content_type(path))
 
     def do_HEAD(self):  # noqa: N802
         # Same policy as GET; BaseHTTPRequestHandler suppresses the body for us
@@ -727,7 +682,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             # capture can outlive its bytes. Say which it was.
             self._send_json(404, {"error": "that capture is no longer on disk"})
             return
-        self._send(200, body, _content_type(record["path"]))
+        self._send(200, body, web_static.content_type(record["path"]))
 
     # -- POST /api/upload ------------------------------------------------
 

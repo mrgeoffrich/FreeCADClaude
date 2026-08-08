@@ -5,10 +5,15 @@ import { FileDrop } from './components/FileDrop';
 import { Legend } from './components/Legend';
 import { LayerRangeSlider } from './components/LayerRangeSlider';
 import { StatusOverlay } from './components/StatusOverlay';
+import { SettingsDrawer } from './components/SettingsDrawer';
 
 export function App() {
   const { loadFile } = useGcodeFile();
   const [dragging, setDragging] = useState(false);
+  // Held here rather than in the store: the toolbar opens it and the drawer
+  // closes it, and nothing else in the app has an opinion about it. The drawer
+  // is mounted only while open, so each opening starts from what is stored.
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   return (
     <div
@@ -29,10 +34,11 @@ export function App() {
       }}
     >
       <Viewer />
-      <FileDrop onFile={loadFile} />
+      <FileDrop onFile={loadFile} onSettings={() => setSettingsOpen((was) => !was)} />
       <Legend />
       <LayerRangeSlider />
       <StatusOverlay />
+      {settingsOpen && <SettingsDrawer onClose={() => setSettingsOpen(false)} />}
       {dragging && <div className="drag-veil">Drop to load</div>}
     </div>
   );

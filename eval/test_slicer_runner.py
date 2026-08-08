@@ -703,6 +703,46 @@ def _check_job_failure(install, dirs, jobs_root):
     runner.set_done_hook(None)
 
 
+def _check_reset_session(install, dirs, jobs_root):
+    print("  -- reset_session, for the chat panel's New")
+    resolved = runner.resolve_presets(conf_path=install["conf_04"], profile_dirs=dirs)
+    # From a clear table: the checks above left several jobs in it, and the
+    # count below is about this one.
+    runner.reset_session()
+    job_dir = os.path.join(jobs_root, "151500_previous_chat")
+    job_id = runner.start_job([_python(), "-c", _FAKE_SLICER], resolved,
+                              "model.3mf", job_dir, {"flavour": runner.BAMBU})
+    check("it finishes", _wait_for(lambda: _finished(job_id), 30.0))
+    check("there is a job to forget", runner.latest_job() is not None)
+
+    check("reset_session reports what it dropped", runner.reset_session() == 1)
+    # The failure this exists to prevent: read_slice_result with no argument
+    # answering a new conversation with the previous one's job.
+    check("latest_job() is None afterwards", runner.latest_job() is None,
+          runner.latest_job())
+    check("...and a known job id no longer resolves",
+          runner.job_status(job_id) is None, runner.job_status(job_id))
+    check("the job's own folder is untouched -- only the handle went",
+          os.path.isfile(os.path.join(job_dir, runner.JOB_NAME))
+          and os.path.isfile(os.path.join(job_dir, "plate_1.gcode")))
+    check("reset_session with nothing to forget is a no-op",
+          runner.reset_session() == 0)
+
+    # A slice still running is dropped from the table but not from
+    # terminate_all's reach: forgetting the handle must not orphan the child.
+    slow_dir = os.path.join(jobs_root, "151800_still_running")
+    slow_id = runner.start_job([_python(), "-c", _FAKE_SLEEPER], resolved,
+                               "model.3mf", slow_dir,
+                               {"timeout": 60, "flavour": runner.BAMBU})
+    check("the child is really running",
+          _wait_for(lambda: os.path.exists(os.path.join(slow_dir, "started")), 15.0))
+    check("resetting drops a running job's handle too", runner.reset_session() == 1
+          and runner.job_status(slow_id) is None, runner.job_status(slow_id))
+    check("...but quitting can still stop its child", runner.terminate_all() == 1)
+    check("...and the child really ended, rather than being merely signalled",
+          _wait_for(lambda: runner.terminate_all() == 0, 15.0))
+
+
 def _check_terminate_all(install, dirs, jobs_root):
     print("  -- terminate_all, for quitting mid-slice")
     resolved = runner.resolve_presets(conf_path=install["conf_04"], profile_dirs=dirs)
@@ -746,6 +786,7 @@ def main():
         jobs_root = os.path.join(root, "session", "slices")
         _check_job_success(install, dirs, jobs_root)
         _check_job_failure(install, dirs, jobs_root)
+        _check_reset_session(install, dirs, jobs_root)
         _check_terminate_all(install, dirs, jobs_root)
     finally:
         runner.set_done_hook(None)

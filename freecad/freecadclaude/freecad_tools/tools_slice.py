@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""slice_model / read_slice_result -- hand a plate to the desktop slicer.
+"""slice_model / read_slice_result / view_gcode -- hand a plate to the desktop slicer.
 
 Two halves, like ``tools_annotate`` and ``tools_device``, and for a harder
 reason than either: nobody is waiting in the middle, but a slice takes about
@@ -37,10 +37,16 @@ exact. Only the box CENTRE is used, which a symmetric inflation leaves where it
 was, and the reported sizes are never quoted as measurements. And a 3MF
 ``<object>`` carries an id and no name, so ``oriented_export``'s report order is
 the only mapping from the user's parts to the objects in the file.
+
+``view_gcode`` is a third half-tool of the same shape: it starts the loopback
+viewer server, hands it a G-code path, and opens the user's own browser. What it
+returns is for the USER, not for Claude, which cannot see a WebGL canvas.
 """
 
 import os
 import re
+import subprocess
+import sys
 import time
 
 from . import print_export
@@ -94,6 +100,9 @@ _PREF_PROFILE_DIRS = "SlicerProfileDirs"
 _PREF_ARRANGE = "SlicerArrange"
 _PREF_ORIENT = "SlicerOrient"
 _PREF_NOZZLE = "SlicerNozzle"
+#: Where the viewer's built assets are served from. The dev hook for pointing at
+#: a Vite build instead of the committed gcode_ui/; empty means the committed one.
+_PREF_GCODE_UI = "GcodeUiDir"
 
 #: The preset kinds and the preference each falls back to. One spelling, because
 #: a refusal names these to the user and a second copy of the names is how that
@@ -142,7 +151,7 @@ def _preferences():
     effective default: ``slicer_runner.DEFAULT_NOZZLE`` is that 0.4, and letting
     it supply the value keeps the preference at the bottom of the resolution
     order where it belongs. Reading it as "0.4" would make an unset preference
-    outrank a nozzle the settings page had chosen deliberately.
+    outrank a nozzle chosen on the settings page.
     """
     import FreeCAD
 
@@ -161,6 +170,7 @@ def _preferences():
         "nozzle": text(_PREF_NOZZLE) or None,
         "arrange": bool(params.GetBool(_PREF_ARRANGE, True)),
         "orient": bool(params.GetBool(_PREF_ORIENT, True)),
+        "gcode_ui": os.path.expanduser(text(_PREF_GCODE_UI)),
     }
 
 
@@ -268,6 +278,19 @@ def _remember_export(job_id, record):
     _exports_order.append(job_id)
     while len(_exports_order) > _KEEP_EXPORTS:
         _exports.pop(_exports_order.pop(0), None)
+
+
+def reset_session():
+    """Forget the export records of the conversation just ended.
+
+    Called from the chat panel's "New", alongside
+    ``slicer_runner.reset_session``, which drops the jobs these describe. This
+    table is keyed by job id and would otherwise outlive them, so a new
+    conversation whose first job happened to reuse an id would read the previous
+    conversation's bounding boxes as its own.
+    """
+    _exports.clear()
+    del _exports_order[:]
 
 
 def _job_name(label):
@@ -1257,3 +1280,195 @@ def _run_read_slice_result(args):
     if record["status"] == "failed":
         return _failure_report(record)
     return _success_report(record)
+
+
+# -- view_gcode ------------------------------------------------------------
+
+
+_VIEW_GCODE_SCHEMA = {
+    "name": "view_gcode",
+    "description": (
+        "Open the sliced toolpath in the USER'S OWN desktop browser: an "
+        "interactive 3D view of the G-code with per-feature colours and a layer "
+        "slider. Defaults to the most recent successful slice, so no argument "
+        "is needed after read_slice_result.\n"
+        "This is for the user to look at, not for you -- it returns a URL and a "
+        "browser window, not a picture, so do not describe what the toolpath "
+        "looks like off the back of it. Ask them what they see.\n"
+        "The same page carries the slicer settings panel (printer, nozzle, "
+        "process, filament), so it is also the answer to 'how do I change which "
+        "printer this slices for'. With no slice to show it still opens, for "
+        "that panel alone."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "job": {
+                "type": "string",
+                "description": (
+                    "Job id from slice_model (default: the most recent "
+                    "successful slice)."
+                ),
+            },
+            "path": {
+                "type": "string",
+                "description": (
+                    "A specific .gcode or .gcode.3mf file to view instead of a "
+                    "job's output."
+                ),
+            },
+        },
+        "additionalProperties": False,
+    },
+}
+
+
+def _viewer_paths(prefs):
+    """``(conf_path, profile_dirs)`` for the settings panel's discovery.
+
+    Best effort, and not ``_discover``: that one refuses when no
+    slicer is installed, which is right before a slice and wrong here -- the
+    panel is where a user with nothing set up finds out what is missing, so the
+    page has to open either way.
+
+    The binary is still resolved first, because the system profile root is
+    derived from it. Without it ``discover_profile_dirs`` returns the user roots
+    alone, and the panel would then offer a plausible-looking subset with no
+    system machine presets in it.
+    """
+    from .. import slicer_runner
+
+    binary = prefs["binary"] if prefs["binary"] and os.path.isfile(prefs["binary"]) \
+        else None
+    if binary is None:
+        found = slicer_runner.discover_binary()
+        binary = found["path"] if found else None
+    conf = prefs["conf"] or slicer_runner.discover_conf_path() or None
+    dirs = slicer_runner.discover_profile_dirs(binary=binary, conf_path=conf,
+                                               extra=prefs["profile_dirs"])
+    return conf, dirs
+
+
+def _open_in_browser(url):
+    """Launch the user's default browser on `url`, without blocking.
+
+    Popen, never run: this executes on FreeCAD's GUI thread, so waiting on the
+    browser would freeze the application for as long as the user left the tab
+    open. Same shape and same reason as ``tools_annotate._open_for_editing``.
+    Returns a note, since a failure to open is something the user has to be told
+    rather than a silent no-op -- the URL is in the result either way.
+    """
+    kwargs = {}
+    if sys.platform == "win32":  # don't flash a console window under the GUI
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if sys.platform == "darwin":
+        command = ["open", url]
+    elif sys.platform == "win32":
+        command = ["cmd", "/c", "start", "", url]
+    else:
+        command = ["xdg-open", url]
+    try:
+        subprocess.Popen(command, **kwargs)  # noqa: S603 - our own loopback URL
+        return f"Opened it with {command[0]}."
+    except Exception:  # noqa: BLE001 - fall through to the Windows shell open
+        pass
+    if sys.platform == "win32":
+        try:
+            os.startfile(url)  # noqa: S606 - documented Windows shell open
+            return "Opened it with the default Windows handler."
+        except Exception as exc:  # noqa: BLE001
+            return f"Could not open a browser automatically ({exc!r})."
+    return "Could not open a browser automatically."
+
+
+def _gcode_to_show(args):
+    """``(path, note)`` -- the G-code file to publish, and what to say about it.
+
+    Either may be None. A missing file is a note rather than a refusal: the page
+    also carries the settings panel, and configuring the printer is what comes
+    BEFORE the first slice -- refusing here would mean the one way to reach that
+    panel is to have already succeeded at the thing it configures.
+    """
+    from .. import slicer_runner
+
+    given = str(args.get("path") or "").strip()
+    if given:
+        path = os.path.abspath(os.path.expanduser(given))
+        if not os.path.isfile(path):
+            return None, f"There is no file at {path}, so nothing was loaded."
+        return path, None
+
+    job = str(args.get("job") or "").strip()
+    record = slicer_runner.job_status(job) if job else slicer_runner.latest_job()
+    if record is None:
+        return None, (
+            f"There is no slice job called '{job}' in this FreeCAD session."
+            if job else
+            "No slice has been run in this FreeCAD session, so there is no "
+            "toolpath to show yet."
+        )
+    if record["status"] == "running":
+        return None, (f"Job '{record['id']}' is still slicing, so there is no "
+                      "G-code to show yet -- call read_slice_result for it.")
+    if record["status"] != "succeeded":
+        return None, (f"Job '{record['id']}' failed, so it wrote no G-code -- "
+                      "call read_slice_result for the reason.")
+    paths = _gcode_paths(record["job_dir"])
+    if not paths:
+        return None, (f"Job '{record['id']}' succeeded but left no G-code file "
+                      f"in {record['job_dir']}.")
+    extra = ""
+    if len(paths) > 1:
+        extra = (" It sliced %d plates; the others are in the job folder and "
+                 "can be opened with view_gcode's 'path'." % len(paths))
+    return paths[0], f"Showing job '{record['id']}'." + extra
+
+
+def _run_view_gcode(args):
+    from .. import gcode_server
+
+    prefs = _preferences()
+    path, note = _gcode_to_show(args)
+    if path is None and str(args.get("path") or "").strip():
+        # An explicitly named file that is not there is the one refusal here:
+        # opening a different view than the one asked for would be worse than
+        # saying so.
+        return note
+
+    conf, profile_dirs = _viewer_paths(prefs)
+    try:
+        gcode_server.start(ui_dir=prefs["gcode_ui"] or None,
+                           settings_path=_settings_path(),
+                           conf_path=conf, profile_dirs=profile_dirs)
+    except RuntimeError as exc:
+        return f"The G-code viewer could not be started: {exc}"
+    except OSError as exc:
+        return (f"The G-code viewer could not be started: {exc}. Nothing is "
+                "listening and nothing was opened.")
+
+    record = gcode_server.publish(path) if path else None
+    url = gcode_server.page_url(record["id"] if record else None)
+    opened = _open_in_browser(url)
+
+    lines = []
+    if path:
+        size = os.path.getsize(path) / 1024.0 if os.path.isfile(path) else 0.0
+        lines.append(f"Opened the toolpath viewer on {path} ({size:.0f} KB).")
+    else:
+        lines.append("Opened the G-code viewer with nothing loaded.")
+    if note:
+        lines.append(note)
+    lines.append(f"{opened} If it did not appear, the user can paste this in:\n  {url}")
+    lines.append(
+        "THIS IS FOR THE USER TO LOOK AT, NOT FOR YOU -- it is a 3D canvas in "
+        "their browser and you cannot see it. Do not describe the toolpath; ask "
+        "them what they see, or use capture_view for something you can see."
+    )
+    lines.append(
+        "The same page has the slicer settings panel behind the toolbar's "
+        "Settings button -- printer, nozzle, process, filament, and whether to "
+        "orient and arrange. What they choose there is stored in "
+        f"{_settings_path()} and outranks the slicer's own selection on the "
+        "next slice."
+    )
+    return "\n".join(lines)

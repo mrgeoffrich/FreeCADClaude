@@ -806,6 +806,11 @@ _PRIVATE_FIELDS = ("process", "thread", "cancelled")
 
 _jobs = {}
 _jobs_order = []
+#: Jobs dropped from the table by :func:`reset_session` while still running.
+#: Kept only so :func:`terminate_all` can still reach their children: the handle
+#: belongs to the conversation that ended, the child process belongs to this
+#: FreeCAD, and forgetting it outright is how a slicer survives the quit.
+_detached = []
 _jobs_lock = threading.Lock()
 _hooks = {"done": None}
 
@@ -1037,6 +1042,30 @@ def latest_job():
         return _public(_jobs[_jobs_order[-1]])
 
 
+def reset_session():
+    """Forget every job of the conversation just ended. Returns how many there
+    were.
+
+    Called from the chat panel's "New", beside ``device_server.reset_session``
+    and for the same reason: the table deliberately outlives a single slice, and
+    without this ``read_slice_result`` with no argument answers a new
+    conversation with the previous one's job. Each job's folder still holds its
+    ``job.json``, log and G-code -- what is dropped is the in-memory handle.
+
+    A slice still running is dropped from the table but not from
+    :func:`terminate_all`'s reach.
+    """
+    with _jobs_lock:
+        running = [record for record in _jobs.values()
+                   if record["status"] == "running"]
+        count = len(_jobs)
+        _jobs.clear()
+        del _jobs_order[:]
+        _detached[:] = [record for record in _detached
+                        if record["status"] == "running"] + running
+    return count
+
+
 def terminate_all(grace=2.0):
     """Stop every slice still running. Returns how many there were.
 
@@ -1046,7 +1075,7 @@ def terminate_all(grace=2.0):
     marked all the same, and :func:`_spawn` then never starts it.
     """
     with _jobs_lock:
-        running = [record for record in _jobs.values()
+        running = [record for record in list(_jobs.values()) + _detached
                    if record["status"] == "running"]
         for record in running:
             record["cancelled"] = True

@@ -3,9 +3,10 @@ import { useViewerStore } from '../state/viewerStore';
 
 interface FileDropProps {
   onFile: (file: File) => void;
+  onSettings: () => void;
 }
 
-export function FileDrop({ onFile }: FileDropProps) {
+export function FileDrop({ onFile, onSettings }: FileDropProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const fileName = useViewerStore((s) => s.fileName);
   const status = useViewerStore((s) => s.status);
@@ -26,6 +27,13 @@ export function FileDrop({ onFile }: FileDropProps) {
           title="Toggle perspective / isometric projection"
         >
           {projection === 'isometric' ? '◳ Isometric' : '◰ Perspective'}
+        </button>
+        <button
+          className="secondary"
+          onClick={onSettings}
+          title="Which printer, nozzle, process and filament the addon slices with"
+        >
+          ⚙ Slicer settings
         </button>
         <button onClick={() => inputRef.current?.click()}>Open file…</button>
         <input
