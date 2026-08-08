@@ -431,7 +431,7 @@ Two HTTP routes, both token-gated like everything else on the server:
 
 | Route | Returns |
 |---|---|
-| `GET /api/slicer/options` | The user's printers from `BambuStudio.conf`'s `models`, the nozzle sizes each supports, and — filtered by `compatible_printers` for the currently chosen machine — the process and filament names, with the machine's declared defaults marked. |
+| `GET /api/slicer/options` | The user's printers from `BambuStudio.conf`'s `models`, the nozzle sizes each supports, and — filtered by `compatible_printers` for the currently chosen machine — the process and filament names, with the machine's declared defaults marked. Internal base profiles are excluded by `instantiation: "false"`: `compatible_printers` alone offers 92 processes on this install, 45 of them scaffolding like `fdm_process_common`. |
 | `GET`/`PUT /api/slicer/config` | Read and replace `slicer.json`. `PUT` validates every name against the discovered lists and rejects an unknown one, so a stale page cannot write a preset that will fail at slice time. |
 
 `PUT` validating against the discovered lists is the part worth not skipping. The
@@ -541,6 +541,13 @@ none needs setting at all: the preset keys are the fallback for when
 | `SlicerArrange` | bool | Default for `arrange` (default true). |
 | `SlicerOrient` | bool | Default for `orient` (default true). |
 | `GcodeUiDir` | string | Override `gcode_ui/` — the dev hook for pointing at a Vite build. |
+
+**`discover_profile_dirs` needs the binary path**, since the system root is
+derived from it (`<resources>/profiles/<vendor>`). Omit it and the call returns the
+user roots alone, which indexes a plausible-looking subset — user presets only, no
+system machine presets — and resolution then fails with the wrong printer rather
+than an error. Callers pass it. This install has three roots: `user/<id>`,
+`user/default`, and the system vendor tree.
 
 Discovery candidates, all read-only filesystem probes handed in to
 `slicer_runner`: macOS `/Applications/{BambuStudio,OrcaSlicer}.app/Contents/MacOS/*`;
@@ -724,8 +731,14 @@ a pure function over paths handed in — the same discipline as
 must not read a FreeCAD preference. A malformed or half-written `conf` degrades to
 the next level rather than raising, since Studio may be running.
 
-The argv builder keys off the binary's self-identified name so an OrcaSlicer path
-does not silently get Bambu-only flags. `--load-settings` joins machine and
+**Anything that is not Bambu Studio gets no command line at all.** `build_argv`
+raises for an unrecognised binary and for OrcaSlicer alike, naming the path and
+pointing at the `SlicerPath` preference; `start_job` propagates the refusal before
+it creates a job folder. These are GUI applications, so a flag they do not accept
+opens a modal dialog on the user's screen and no error text comes back — there is
+nothing to report and nothing to retry against, which makes emitting a guess worse
+than refusing. `slicer_flavour` still identifies Orca, and a `flavour="bambu"`
+override is the opt-in for a binary someone has verified. `--load-settings` joins machine and
 process with `;`, which is verified on macOS and unverified on Windows, where `;`
 is also the path separator.
 
@@ -947,8 +960,9 @@ relationship.
    unverified.
 5. **Report the placement offset, or remove it** (fork 6c)? Depends on whether
    coordinates will be cross-referenced.
-6. **Does OrcaSlicer need to work too**, or is Bambu Studio the target? It sets
-   how defensive the argv builder must be.
+6. **Decided for now: Bambu Studio only.** Orca is identified but refused, since
+   its command line is unverified and we will not probe a GUI app to find out.
+   Adding it is one entry in the flag table plus someone checking the flags.
 
 ## Risks, with what would falsify each
 
