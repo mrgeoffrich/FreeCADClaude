@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- viewport-fit=cover + user-scalable=no are load-bearing for phase 3's
+     canvas: the app is full-bleed on a tablet, and the browser's own
+     double-tap/pinch zoom would fight the pen. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="color-scheme" content="dark">
+<title>FreeCAD annotation</title>
+<link rel="stylesheet" href="./src/style.css">
+</head>
+<body>
+<main id="app">
+  <h1>FreeCAD annotation</h1>
+  <p id="status">Loading…</p>
+</main>
+<script type="module" src="./src/main.ts"></script>
+</body>
+</html>

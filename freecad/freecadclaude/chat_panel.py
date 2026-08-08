@@ -217,6 +217,12 @@ class ChatWidget(QtWidgets.QWidget):
         self.files_button.setToolTip("Open the FreeCADClaude captures/exports folder")
         self.files_button.clicked.connect(self._open_artifacts)
         control_row.addWidget(self.files_button)
+        self.device_button = QtWidgets.QPushButton("Device", controls)
+        self.device_button.setToolTip(
+            "Serve the annotation page to a phone or tablet on this network"
+        )
+        self.device_button.clicked.connect(self._on_device)
+        control_row.addWidget(self.device_button)
         self.new_button = QtWidgets.QPushButton("New", controls)
         self.new_button.setToolTip("Start a new conversation (clears history and the agent's memory)")
         self.new_button.clicked.connect(self._on_new)
@@ -549,6 +555,44 @@ class ChatWidget(QtWidgets.QWidget):
         QtGui.QDesktopServices.openUrl(
             QtCore.QUrl.fromLocalFile(freecad_tools.artifacts_dir())
         )
+
+    def _on_device(self):
+        """Start the LAN device server and show the user how to reach it.
+
+        Explicit, and only from here: the server binds a LAN interface, so
+        nothing but a button press should ever be able to turn it on (see
+        device_server's module docstring). ``start()`` is idempotent, so
+        pressing this again just re-shows the pairing details.
+        """
+        from . import device_server
+
+        try:
+            url, _token = device_server.start()
+        except Exception as exc:  # noqa: BLE001 - report, never raise into Qt
+            self._note(f"*Could not start the device server: {exc}*")
+            return
+        self._show_pairing(url)
+
+    def _show_pairing(self, url):
+        """Show the pairing URL. The seam the QR popup replaces.
+
+        Everything above this stays put when the code arrives: it hands over a
+        URL and nothing else, so the popup can become a QR pixmap with the URL
+        beneath it and a Stop button without touching the button handler.
+        """
+        self._note(
+            "📱 **Device server running.** Open this on your phone or tablet "
+            f"(same wifi):\n\n`{url}`"
+        )
+        box = QtWidgets.QMessageBox(self)
+        box.setWindowTitle("Device")
+        box.setTextFormat(QtCore.Qt.PlainText)
+        box.setText("Open this address on a device on the same network:")
+        # Selectable so the URL can be copied out and messaged to the device --
+        # nobody is typing a 22-character token by hand.
+        box.setInformativeText(url)
+        box.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        box.exec()
 
     def _on_stop(self):
         if self._worker is not None and self._busy:

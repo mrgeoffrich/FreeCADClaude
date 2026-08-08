@@ -3,3 +3,10 @@ vendor/
 __pycache__/
 *.pyc
 .DS_Store
+
+# Device-annotation web app (web/): the SOURCE is dev-only, but its build
+# output -- freecad/freecadclaude/device_ui/ -- is deliberately committed and
+# must NOT be ignored. Users install from the main branch as a plain file copy,
+# with no Node toolchain to build it with. See docs/device-annotation-design.md.
+web/node_modules/
+web/dist/
