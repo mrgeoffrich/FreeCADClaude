@@ -220,6 +220,53 @@ def _prune_folder(folder, keep):
         pass
 
 
+#: Parent of the per-job slice folders. One artifact subdir whose entries are
+#: directories rather than files, which is why it needs its own pruner.
+_JOBS_SUBDIR = "slices"
+
+
+def _session_job_dir(name, keep=20):
+    """A fresh ``<session_dir>/slices/<name>/`` for one slice job.
+
+    A slice leaves a folder rather than a file -- the 3MF handed to the slicer,
+    the G-code it wrote, its ``result.json``, its log and the job record -- so
+    the artifact pruners above do not apply: ``_prune_folder`` filters on
+    ``os.path.isfile`` and would skip every one of these. This keeps the most
+    recent `keep` job folders instead.
+
+    Uniquified when `name` is already taken, because the folder's own basename is
+    the job id the caller quotes; two jobs sharing a folder would overwrite each
+    other's G-code and leave one id naming both.
+    """
+    parent = os.path.join(session_dir(), _JOBS_SUBDIR)
+    os.makedirs(parent, exist_ok=True)
+    _prune_dirs(parent, keep=keep)
+    folder = os.path.join(parent, _safe_name(name, "job"))
+    suffix = 2
+    while os.path.isdir(folder):
+        folder = os.path.join(parent, f"{_safe_name(name, 'job')}-{suffix}")
+        suffix += 1
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+def _prune_dirs(folder, keep):
+    """Keep only the most recent `keep` subdirectories of a folder (best effort)."""
+    import shutil
+
+    try:
+        entries = [os.path.join(folder, f) for f in os.listdir(folder)]
+        dirs = [d for d in entries if os.path.isdir(d)]
+        dirs.sort(key=os.path.getmtime, reverse=True)
+        for old in dirs[keep:]:
+            try:
+                shutil.rmtree(old)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def _save_run_python_script(code, description):
     """Archive a run_python call under <session_dir>/scripts/.
 

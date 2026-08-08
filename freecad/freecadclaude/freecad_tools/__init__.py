@@ -89,6 +89,13 @@ from .tools_notes import (
     _run_set_print_direction,
 )
 from .tools_python import _RUN_PYTHON_SCHEMA, _precheck_python, _run_python
+from .tools_slice import (
+    _READ_SLICE_RESULT_SCHEMA,
+    _SLICE_MODEL_SCHEMA,
+    _precheck_slice_model,
+    _run_read_slice_result,
+    _run_slice_model,
+)
 from .tools_sketch import (
     _GET_SKETCH_SCHEMA,
     _VIEW_SKETCH_SVG_SCHEMA,
@@ -131,6 +138,15 @@ TOOLS = {
     "crop_view": {"schema": _CROP_VIEW_SCHEMA, "run": _run_crop_view},
     "cutaway": {"schema": _CUTAWAY_SCHEMA, "run": _run_cutaway},
     "export": {"schema": _EXPORT_SCHEMA, "run": _run_export},
+    "slice_model": {
+        "schema": _SLICE_MODEL_SCHEMA,
+        "run": _run_slice_model,
+        "precheck": _precheck_slice_model,
+    },
+    "read_slice_result": {
+        "schema": _READ_SLICE_RESULT_SCHEMA,
+        "run": _run_read_slice_result,
+    },
     "inspect_api": {"schema": _INSPECT_API_SCHEMA, "run": _run_inspect_api},
     "run_python": {
         "schema": _RUN_PYTHON_SCHEMA,

@@ -33,20 +33,25 @@ _EXPORT_SCHEMA = {
 }
 
 
-def _run_export(args):
-    import FreeCAD
+def _resolve_export_objects(args, doc):
+    """``(objects, error)`` -- which objects a call is about, one of the two None.
 
-    doc = FreeCAD.ActiveDocument
-    if doc is None:
-        return "No active document."
+    'names' names them; with none, whatever the user has selected stands in, and
+    with nothing selected every object in the document that has a shape.
+    Containers are expanded, since a Std Part's own aggregated shape excludes
+    children FreeCAD considers consumed.
 
+    slice_model resolves through here too. What "the objects" means has to be
+    the same question for both tools -- a second copy of this is how the answers
+    would start differing.
+    """
     names = args.get("names")
     objs = []
     if names:
         for n in names:
             obj = doc.getObject(n)
             if obj is None:
-                return f"No object named '{n}'."
+                return None, f"No object named '{n}'."
             objs.append(obj)
     else:
         objs = _selected_objects()
@@ -56,7 +61,20 @@ def _run_export(args):
     objs = _expand_containers(objs)
     objs = [o for o in objs if getattr(o, "Shape", None) is not None]
     if not objs:
-        return "No objects with a shape to export."
+        return None, "No objects with a shape to export."
+    return objs, None
+
+
+def _run_export(args):
+    import FreeCAD
+
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        return "No active document."
+
+    objs, err = _resolve_export_objects(args, doc)
+    if err:
+        return err
 
     path = args.get("path")
     fmt = str(args.get("format") or "").lower().lstrip(".")

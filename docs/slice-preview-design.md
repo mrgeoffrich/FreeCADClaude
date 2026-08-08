@@ -201,13 +201,28 @@ with a bare system filament preset, so filament mass did not resolve. Reading th
 selection above uses the same system JSONs, so this is unlikely to be what fixes
 it.
 
-**`result.json`'s object bounding boxes are not trustworthy as dimensions.** For a
-16 mm cylinder whose exported 3MF vertices measure exactly 16.000 mm, the slicer
-reported 17.2 mm; the two boxes on the same plate reported exactly. Whatever
-inflates a curved object's reported footprint is unconfirmed, and it is not our
-export — the 3MF geometry was checked vertex by vertex. Placement offset is
-computed from the bbox **centre**, which a symmetric inflation leaves intact, so
-fork 6 survives this; treating the reported sizes as measurements would not.
+**A `result.json` bounding box is a corner plus a size, in one dict:**
+
+```json
+"bbox": { "x": 103.975, "y": 100.999, "z": 0.0,
+          "width": 10.0, "depth": 10.0, "height": 60.0 }
+```
+
+`x`/`y`/`z` is the **minimum corner**, not the centre — `z` is `0.0` on a part 60 mm
+tall — so `centre = (x + width/2, ...)`. Recorded fixtures live in `eval/fixtures/`.
+
+**Those sizes are not dimensions.** A 16 mm cylinder whose exported 3MF vertices
+measure exactly 16.000 was reported as 17.206; boxes on the same plate reported
+exactly, so it reads as a fixed ~1.2 mm margin on a curved footprint. The cause is
+unconfirmed and it is not our export, which was checked vertex by vertex. The
+inflation is symmetric about the true centre, so `x + width/2` is unaffected —
+94.0 either way — which is why fork 6 uses the centre and never the size.
+
+**The top level also carries the settings the slice actually ran with** —
+`layer_height`, `wall_loops`, `sparse_infill_density` — which answer "why did it
+slice at 0.2 mm" more directly than the preset names do. Print `layer_height` with
+`:g`; the raw value is `0.20000000298023224`. The top-level `plate_index` is the
+`--slice` argument, so a plate is numbered by its own `id`.
 
 **Measured cost of vendoring the viewer** (its own `npm run build`):
 `index.js` 1,132 KB (gzip 311 KB), CSS 5.7 KB, three workers 24 KB combined —
@@ -373,9 +388,17 @@ slice wants. And a `Custom` direction whose vector is missing or zero-length get
 no rotation; it shows in the report as `Custom` with `rotated: false` rather than
 being silently treated as `+Z up`.
 
-**A 3MF `<object>` carries an `id` and no name.** Report order is therefore the
-only mapping from parts to file objects, which is what fork 6's placement-offset
-arithmetic has to index against in `result.json`.
+**A 3MF `<object>` carries an `id` and no name**, so `oriented_export`'s report
+order is the only mapping from parts to file objects.
+
+**But `result.json`'s `objects` array is not in file order**, so that mapping must
+not be carried across positionally. A real three-part plate lists
+`Object_3, Object_2, Object_1` with ids `13, 9, 5` — both descending — which would
+line the 10 mm cube up with the 60 mm bar. The slicer names the Nth object of the
+file it was handed `Object_N`, so match on the name, fall back to the numeric `id`,
+and only then trust the array. Cross-check the matched pair's size against
+`oriented_export`'s `size_mm`, which is FreeCAD's own measurement with nothing of
+the slicer's in it, and refuse the offset when they disagree.
 
 **`Mesh.export` to an unwritable path aborts the process, not the call.** The
 failure escapes Python entirely — neither `except Exception` nor `except
@@ -917,6 +940,17 @@ cases under a bare `python3` — the 0.4 pin against a synthetic conf set to 0.2
 `compatible_printers` filter, and a `PUT` of an unknown preset name rejected.
 **Permanent**, because the pin and the filter are what stop a slice failing minutes
 later. The drawer itself is a throwaway manual check in the browser.
+
+### M5c — A "New" reset for the slicer · size S · permanent
+
+`slicer_runner.reset_session()` clearing the job table, plus the `tools_slice`
+export record, called from `chat_panel._on_new` beside `device_server.reset_session`.
+Without it `read_slice_result` with no argument answers a new conversation with the
+previous one's job, which is the failure `device_server.reset_session` already
+exists to prevent.
+
+**Test:** a case in `eval/test_slicer_runner.py` — after a reset, `latest_job()` is
+`None` and a known job id no longer resolves.
 
 ### M6 — The autoload seam · size S · throwaway rig
 

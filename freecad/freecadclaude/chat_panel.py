@@ -240,6 +240,12 @@ class ChatWidget(QtWidgets.QWidget):
     #: above, and the same queued hop onto the GUI thread.
     device_idle_stopped = QtCore.Signal(float)
 
+    #: A slice finished, carrying the job's public record. Emitted from the
+    #: slicer's own worker thread -- same reason as the two above. Typed as
+    #: ``object`` rather than ``dict`` so the record crosses unconverted; what is
+    #: read out of it here is only the id, the status and the elapsed time.
+    slice_finished = QtCore.Signal(object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._thread = None
@@ -258,7 +264,9 @@ class ChatWidget(QtWidgets.QWidget):
         self._render_timer.timeout.connect(self._do_render)
         self.device_upload_received.connect(self._on_device_upload)
         self.device_idle_stopped.connect(self._on_device_idle_stopped)
+        self.slice_finished.connect(self._on_slice_finished)
         self._device_quit_hooked = False
+        self._slicer_hooked = False
         self._build_ui()
         self._note(_CAPABILITY_NOTICE)
 
@@ -393,6 +401,7 @@ class ChatWidget(QtWidgets.QWidget):
         app = QtWidgets.QApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self._shutdown_worker)
+        self._hook_slicer()
         return True
 
     def _shutdown_worker(self):
@@ -401,6 +410,59 @@ class ChatWidget(QtWidgets.QWidget):
         if self._thread is not None:
             self._thread.quit()
             self._thread.wait(3000)
+
+    def _hook_slicer(self):
+        """Arm the slice-finished note and the slicer's shutdown, once.
+
+        Wired when a chat starts rather than in ``__init__`` because a slice can
+        only be started by a tool call, and guarded by a flag because Qt allows
+        duplicate connections -- a second one here would write the note twice
+        and stop an already-stopped slice.
+        """
+        if self._slicer_hooked:
+            return
+        from . import slicer_runner
+
+        # A bound signal's emit, not a method: the hook fires on the slicer's own
+        # worker thread, and Qt queues a cross-thread emit onto ours.
+        slicer_runner.set_done_hook(self.slice_finished.emit)
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._shutdown_slicer)
+        self._slicer_hooked = True
+
+    def _shutdown_slicer(self):
+        """Kill any slice still running on the way out. The slicer's children are
+        held by daemon threads, so quitting mid-slice would otherwise leave one
+        running with nothing left to collect it."""
+        from . import slicer_runner
+
+        try:
+            slicer_runner.terminate_all()
+        except Exception:  # noqa: BLE001 - nothing useful to do while quitting
+            pass
+
+    def _on_slice_finished(self, record):
+        """A slice landed -- say so in the transcript.
+
+        Runs on the GUI thread (queued from the slicer's worker thread).
+        Deliberately just a note: a slice takes minutes, so Claude is usually
+        between calls or the user has moved on, and this is how they learn it
+        finished without either of them polling for it.
+        """
+        record = record or {}
+        job = record.get("id") or "?"
+        elapsed = int(round(float(record.get("elapsed") or 0.0)))
+        if record.get("status") == "succeeded":
+            self._note(
+                f"🖨️ **slice finished** ({job}) in {elapsed}s. Ask Claude for the "
+                "result (it reads it with `read_slice_result`)."
+            )
+        else:
+            self._note(
+                f"🖨️ **slice failed** ({job}) after {elapsed}s.\n\n"
+                f"*{record.get('error') or 'no reason given'}*"
+            )
 
     # -- sending ---------------------------------------------------------
 
