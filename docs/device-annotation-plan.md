@@ -1,204 +1,183 @@
 # Device annotation — implementation plan
 
-Companion to `device-annotation-design.md`. Six phases; each one ends with the
-addon working and something you can actually try, and each is a commit.
+Companion to `device-annotation-design.md`. Six phases, each one a commit that
+leaves the addon working.
 
-The ordering is by **risk, not by layer**. The three things that could invalidate
-the design are all unknowns you can only settle on hardware: does a LAN page load
-on both tablets, does the pen feel right, and is the mm/px derivation actually
-correct. Phases 0 and 1 answer all three before any tool, schema or MCP wiring
-exists to be thrown away.
+**Scope is unchanged from the design doc.** This plan regroups the same work
+items; the only addition is QR pairing, which is now in scope. Nothing here
+introduces a component the design doc doesn't already specify.
+
+Ordering is by **dependency first, then size** — each phase depends only on
+earlier ones, and where two are both unblocked the smaller goes first.
+
+```
+  1 Foundations ──┬── 2 Pairing (QR)          [leaf]
+                  │
+                  ├── 3 Canvas and ink ──┐
+                  │                      ├── 5 Measurement ──┐
+                  └── 4 Transport ───────┘                   ├── 6 Hardening
+                              └───────────────────────────────┘
+```
+
+Phases 2 and 3 are independent of each other — 2 goes first only because it is
+smaller and finishes the "get the page onto the device" story. Phase 4 needs the
+flatten/downscale from 3; phase 5 needs both 3 and 4.
 
 ---
 
-## Phase 0 — Scaffold and LAN spike
+## Phase 1 — Foundations · size M
 
-**Goal:** a page served by FreeCAD, opened on the iPad and the Samsung, with the
-pen drawing *something*. Nothing else.
-
-**Why first:** every later phase assumes LAN reachability, the token flow, and a
-committed-build pipeline. All three are cheap to prove and annoying to discover
-broken later — corporate/guest wifi with client isolation, or a firewall prompt
-FreeCAD never shows, would change the whole approach.
-
-**Changes**
+Everything depends on this: a build pipeline that produces committed output, and
+a server that can hand a page to a device.
 
 - `web/` Vite + TypeScript + Vitest project. One runtime dep: `perfect-freehand`.
   `vite.config.ts` with `base: "./"`, `outDir: "../freecad/freecadclaude/device_ui"`,
   no code splitting, assets inlined.
 - `freecad/freecadclaude/device_server.py`: `start()` / `stop()`, ephemeral port
-  on `0.0.0.0`, token, static serving from `device_ui/` with realpath
-  containment. No API routes yet.
+  on `0.0.0.0`, LAN address discovery, token, static serving from `device_ui/`
+  with realpath containment. No API routes yet.
 - Chat panel: a "Device" button that starts the server and shows the URL.
 - `.gitignore`: add `web/node_modules/`, `web/dist/`; confirm
   `freecad/freecadclaude/device_ui/` is **not** ignored.
 - `deploy.ps1` / `deploy.sh`: add `web` to the exclude lists.
 
-**Tests:** `freecadcmd` script — server starts, unknown token is rejected,
-`../` in a path is rejected, a known asset is served.
+**Tests:** `freecadcmd` — token rejection, path traversal rejection, a known
+asset served.
 
-**Done when:** both devices load the page over wifi, and a pen stroke appears on
-a canvas. If a device can't reach it, stop here and fix that before building
-anything on top.
+**Done:** the page loads on both devices from a typed URL.
 
 ---
 
-## Phase 1 — Drawing core
+## Phase 2 — Pairing · size S–M
 
-**Goal:** a good pen app with no networking. Load an image from the device, draw,
-undo, clear, flatten and download the result.
+A leaf: depends only on phase 1's URL, and nothing depends on it.
 
-**Why here:** stroke feel is the one thing that decides whether you use this, and
-it is entirely local. Getting it right against a `<input type="file">` image needs
-no server, no tool, and no schema — and the device-import path it exercises is a
-shipped feature, not scaffolding.
+- `freecad/freecadclaude/qr.py` — byte mode, EC level L, versions 3–6 (all
+  single-block, so no interleaving), fixed mask 0 with a hardcoded format-bit
+  table, Reed–Solomon over GF(256). Returns a boolean matrix; imports no Qt.
+- Chat panel popup: the QR rendered with `QPainter` into a `QPixmap` (8px
+  modules, 4-module quiet zone), the URL as text beneath it, and a stop button.
 
-**Changes**
+**Tests:** `freecadcmd` — encode a known string, compare against a reference
+matrix.
 
+**Done:** scanning the code on either device opens the page authenticated.
+
+---
+
+## Phase 3 — Canvas and ink · size L
+
+The frontend core. Depends on phase 1's scaffold only.
+
+- `src/canvas.ts` — render loop at `devicePixelRatio`, base image + strokes, and
+  the view transform (`{scale, tx, ty}`, identity for now). All coordinates are
+  stored in image space and pass through it, so pinch-zoom stays a contained
+  change later rather than a refactor of everything touching a coordinate.
 - `src/input.ts` — the pointer policy as a pure `shouldDraw(state, event)`:
   pen-only once a stylus is seen, `touch-action: none`, `getCoalescedEvents()`.
 - `src/strokes.ts` — perfect-freehand wrapper, `e.pressure` → width.
-- `src/canvas.ts` — render loop at `devicePixelRatio`, base image + strokes, and
-  **the view transform** (`{scale, tx, ty}`, identity for now). All coordinates
-  are stored in image space and pass through it; this is what makes pinch-zoom a
-  contained change later instead of a refactor.
 - `src/ui.ts` — the toolbar from the mockup: source, pen, undo, clear.
 - Image import: file input for the library, a second with
-  `capture="environment"` for the camera. `createImageBitmap(blob,
-  {imageOrientation: "from-image"})` — without it, phone photos arrive rotated.
-- Flatten to PNG and downscale to a 1568px long edge (used by the download here,
-  by the upload in phase 2).
+  `capture="environment"` for the camera, `createImageBitmap(blob,
+  {imageOrientation: "from-image"})` so phone photos don't arrive rotated.
+- Flatten to PNG, downscale to a 1568px long edge.
 
-**Tests:** Vitest on `input` (the pen-then-palm event sequence is a unit test, not
-a discovery on a tablet) and on the downscale/flatten geometry.
+**Tests:** Vitest on `input` (the pen-then-palm sequence) and on the
+flatten/downscale geometry.
 
-**Done when:** you can mark up a photo on both devices and it feels right. Judge
-palm rejection, stroke lag and taper here — a fix costs nothing now and is
-entangled with everything by phase 3.
+**Done:** you can import a photo on either device, mark it up, and get the
+flattened PNG back out.
 
 ---
 
-## Phase 2 — The round trip
+## Phase 4 — Transport · size L
 
-**Goal:** an image goes FreeCAD → device → back, and Claude sees it.
+The round trip. Depends on phase 1's server and phase 3's flatten.
 
-**Why here:** this is the integration risk — MCP wiring, the inline-image return,
-session-folder plumbing. Get an image flowing end to end before adding semantics
-to it.
-
-**Changes**
-
-- `device_server.py`: `GET /api/latest`, `GET /api/image/<id>`, `POST /api/upload`
-  (12 MB cap, PNG/JPEG magic-byte check, generated names via `_artifact_path`),
-  `GET /api/events` (SSE, woken by a `threading.Condition`). Plus
-  `publish(path, meta)` for the tool to call.
+- `device_server.py`: `GET /api/latest`, `GET /api/image/<id>`,
+  `POST /api/upload` (12 MB cap, PNG/JPEG magic-byte check, generated names via
+  `_artifact_path`), `GET /api/events` (SSE, woken by a `threading.Condition`),
+  and `publish(path, meta)` for the tool to call.
 - `freecad_tools/tools_device.py`: `send_to_device` (reuses
   `render._offscreen_shot` / `_capture_setup` / `_apply_camera_plan` — no new
   capture code) and `read_device_image`, returning `(text, png_path)` so
-  `gui_bridge` base64s it into an inline image block. Register both in
-  `freecad_tools/__init__.py`.
-- `send_to_device` returns immediately and tells Claude to ask the user to say
-  when they've sent it back — the same two-halves rule as `annotate_view`, for the
-  same reason.
-- Frontend: `src/api.ts` (token in `sessionStorage`, fetch wrappers, `EventSource`),
-  a Send button, and the incoming-capture banner (notify, don't clobber an
-  in-progress drawing).
-- Chat panel: note "📱 image received" in the transcript on upload.
+  `gui_bridge` base64s it into an inline image block. Both registered in
+  `freecad_tools/__init__.py`. `send_to_device` returns immediately, per the
+  two-halves rule.
+- `src/api.ts` — token in `sessionStorage`, fetch wrappers, `EventSource`.
+- Send button; incoming-capture banner (notify, don't clobber an in-progress
+  drawing).
+- Chat panel: "📱 image received" in the transcript on upload.
 
 **Tests:** `freecadcmd` — upload validation (oversize, wrong magic bytes,
-traversal in a filename), publish/fetch round trip. A manual end-to-end: ask
-Claude to send you a view, scribble on it, ask it what you drew.
+traversal in a filename), publish/fetch round trip.
 
-**Done when:** Claude can describe a mark you made on the iPad, with the camera
-angle and extents context replayed correctly.
+**Done:** Claude sends you a view, you scribble on it, Claude describes the mark
+with the right camera-angle and extents context.
 
 ---
 
-## Phase 3 — Dimensions and scale
+## Phase 5 — Measurement · size L
 
-**Goal:** the actual point of the feature — numbers that survive the trip.
+Numbers that survive the trip. Depends on phases 3 and 4.
 
-**Changes**
-
-- `src/scale.ts` — `mm_per_px` from capture metadata; two-point calibration for
-  device images; formatting; the `confidence` rules (`exact` / `approximate` /
-  `none`). Dimensions render as a pixel ratio and are **not** quoted in mm when
-  confidence is `none`.
-- `src/dimensions.ts` — tap-tap placement, rubber-band draft, endpoint hit-test
-  and snapping to existing endpoints (so a chain shares exact points rather than
-  three slightly different taps at one corner), the value sheet
-  (`measured_mm` shown, `target_mm` typed, optional note).
 - `src/doc.ts` — the annotation document: normalized 0..1 image coordinates,
-  `snapped_to: null` reserved, schema version field. Serialized into the upload's
+  `snapped_to: null` reserved, schema version field, serialized into the upload's
   `doc` part.
-- Python: `render` gains the scale derivation — `cam.height / rendered_height_px`
-  read **after** `_apply_camera_plan` and the final size, `None` when
-  `_ortho_camera` returns `None`, plus the `axis_aligned` flag from
-  `_orbit_angles_from_view`. `send_to_device` defaults to a face-on view.
-- `read_device_image` includes the annotation document verbatim in its text half,
-  with the projection-plane caveat spelled out when the camera isn't axis-aligned.
+- `src/scale.ts` — `mm_per_px` from capture metadata, two-point calibration for
+  device images, formatting, and the `confidence` rules (`exact` / `approximate`
+  / `none`; dimensions render as a pixel ratio and are not quoted in mm at
+  `none`).
+- `src/dimensions.ts` — tap-tap placement, rubber-band draft, endpoint hit-test
+  and snapping to existing endpoints, and the value sheet (`measured_mm` shown,
+  `target_mm` typed, optional note).
+- `render.py`: the scale derivation — `cam.height / rendered_height_px` read
+  after `_apply_camera_plan` and the final size, `None` when `_ortho_camera`
+  returns `None`, plus the `axis_aligned` flag from `_orbit_angles_from_view`.
+  `send_to_device` defaults to a face-on view.
+- `read_device_image` includes the annotation document verbatim, with the
+  projection-plane caveat spelled out when the camera isn't axis-aligned.
 
-**Verification that isn't a unit test:** capture a 100mm box and confirm its
-on-image pixel width equals `100 / mm_per_px` within a pixel. This is the one
-number in the design derived rather than measured — check it before trusting any
-dimension the feature reports.
+**Tests:** Vitest on `scale` (derivation, calibration, confidence, formatting)
+and `doc` (round trip, normalized coords, measured-vs-target).
 
-**Tests:** Vitest on `scale` (derivation, calibration, confidence downgrade,
-formatting) and `doc` (round trip, normalized coords, measured-vs-target).
-
-**Done when:** you can draw a dimension on a capture, type a target, send it, and
-Claude quotes both numbers back and acts on the target.
+**Done:** draw a dimension on a capture, type a target, send — Claude quotes both
+numbers and acts on the target.
 
 ---
 
-## Phase 4 — Hardening and release wiring
+## Phase 6 — Hardening and docs · size M
 
-**Goal:** safe to leave switched on, and shippable.
+Depends on everything.
 
-**Changes**
-
-- Idle auto-stop (no request for N minutes), stop on workbench shutdown, clear
-  server state on "New" so one chat's captures don't leak into the next.
+- Idle auto-stop, stop on workbench shutdown, clear server state on "New" so one
+  chat's captures don't leak into the next.
 - Error paths with a message rather than a stack trace: server not running,
   device offline mid-upload, disk full, no active document, non-3D active tab.
 - `RELEASE.md`: `npm ci && npm run build`, commit the `device_ui/` diff, before
   bumping `package.xml`.
-- `README.md` + `SECURITY.md`: what the LAN server exposes, in the plain terms of
-  the design doc's security section — it binds a LAN interface, which the rest of
-  the addon does not.
-- `CLAUDE.md`: the module map gains `device_server.py`, `tools_device.py` and the
-  `web/` → `device_ui/` build relationship; the tools table gains the two tools.
-
-**Done when:** a fresh deploy on a clean FreeCAD profile works with no npm
-present, and the feature is documented where a user would look.
+- `README.md` + `SECURITY.md`: what the LAN server exposes.
+- `CLAUDE.md`: module map gains `device_server.py`, `qr.py`, `tools_device.py`
+  and the `web/` → `device_ui/` build relationship; tools table gains the two
+  tools.
 
 ---
 
-## Phase 5 — The deferred list, in the order I'd add it
+## Deferred
 
-Each is independent; none blocks the others.
+Unchanged from the design doc, minus QR (now phase 2). Each is independent; none
+blocks the others.
 
-1. **Auto-inject on upload.** The panel appends *"the user sent an image:
-   `<path>`"* to the next prompt so Claude looks without being asked. Clearly
-   right for "here's what I want it to look like"; deferred only because it
-   couples the panel to the server.
-2. **Stroke eraser.** Cheap now that strokes are vectors — hit-test and delete.
-3. **Pinch-zoom and pan.** Two-finger only, unambiguous because touch never
-   draws. The view transform is already in place from phase 1. This is what makes
-   the phone genuinely usable; the iPad mostly doesn't need it.
-4. **The magnifier loupe** while dragging a dimension endpoint. At 1× a pen lands
-   within ~3px, which on a 1600px capture of a 120mm part is ±0.2mm of error
-   injected purely by the input method.
-5. **Geometry snapping** (`snapped_to`). Unproject the tap through the recorded
-   camera, Coin ray-pick against the document on the GUI thread, and a dimension
-   becomes *"Vertex3 → Vertex7 of Pad001, 24.3mm true 3D"*. Kills the pixel error
-   and the projection-plane caveat together, and hands `run_python` a real
-   subelement name. The schema field exists from phase 3 so this is additive.
-   Note this is the first thing that breaks the "server never calls into FreeCAD"
-   invariant — it needs `gui_bridge._run_on_gui`, and it should be the tool that
-   picks, not the HTTP handler.
-6. **Blank graph-paper sheet.** Draw a concept from nothing with the grid as the
-   scale (mm per square), feeding `freecad-lofi-sketch` with real dimensions
-   instead of proportions.
-7. **QR pairing.** Only if typing the URL turns out to be the thing that stops you
-   using it. A pure-stdlib QR encoder is ~150 lines you'd then own.
+1. **Auto-inject on upload** — the panel appends *"the user sent an image:
+   `<path>`"* to the next prompt so Claude looks without being asked.
+2. **Stroke eraser** — cheap now that strokes are vectors: hit-test and delete.
+3. **Pinch-zoom and pan** — two-finger only, unambiguous because touch never
+   draws; the view transform is already in place from phase 3.
+4. **Magnifier loupe** while dragging a dimension endpoint.
+5. **Geometry snapping** (`snapped_to`) — unproject the tap, Coin ray-pick, and a
+   dimension becomes *"Vertex3 → Vertex7 of Pad001, 24.3mm true 3D"*. The schema
+   field exists from phase 5, so it is additive. First thing that breaks the
+   "server never calls into FreeCAD" invariant — it belongs in the tool, not the
+   HTTP handler.
+6. **Blank graph-paper sheet** — grid as the scale, feeding `freecad-lofi-sketch`
+   with real dimensions.

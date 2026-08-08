@@ -36,6 +36,7 @@ extents the image can't hold). This extends it rather than replacing it.
 - Scale: exact for FreeCAD captures (derived from the ortho camera); user
   calibration for device images.
 - Two tools: `send_to_device`, `read_device_image`.
+- QR pairing: the chat panel shows a scannable code for the URL + token.
 
 **Out, deliberately — these are cheap to add later and expensive to carry now:**
 
@@ -45,7 +46,6 @@ extents the image can't hold). This extends it rather than replacing it.
   and Claude reads it off the image.
 - Pixel eraser. Vector strokes plus undo cover v1; stroke-erase is a later add.
 - Layers, selection, transform, multi-image compositing.
-- QR pairing. A typed URL is fine until it isn't.
 - Blank graph-paper sheet (draw a concept from scratch). Wanted, but it needs its
   own scale story; it lands after dimensions work.
 
@@ -139,10 +139,34 @@ extents — exactly as `read_annotation` replays `_last_annotation["context"]`.
 
 ### Chat panel
 
-One button, next to "Files": toggles the server and shows the URL and token link
-in a small popup. When an upload arrives, the panel notes it in the transcript
-("📱 image received") so the user knows it landed even if Claude hasn't looked
-yet.
+One button, next to "Files": toggles the server and opens a small popup with the
+QR code, the URL underneath it as text, and a stop button. When an upload
+arrives, the panel notes it in the transcript ("📱 image received") so the user
+knows it landed even if Claude hasn't looked yet.
+
+### `freecad/freecadclaude/qr.py`
+
+Pairing is a scan, not a typed URL: `http://192.168.1.23:54321/?t=<22 chars>` is
+about 54 characters of case-sensitive token, and typing that on a tablet once per
+session is the kind of friction that decides whether a feature gets used.
+
+No pip dependency is available, so this is a small stdlib encoder — and the scope
+it needs is narrow enough to stay small:
+
+- **Byte mode, error-correction level L, versions 3–6 only.** That covers 53 to
+  134 characters, which brackets the URL with room for a longer host name. The
+  cap at version 6 is the load-bearing simplification: at level L, versions 1–6
+  are all **single-block**, so there is no block interleaving to implement.
+- **Mask 0, fixed.** The spec allows any of the eight; choosing the best one is
+  what the penalty-scoring pass is for, and skipping it costs nothing a reader
+  will notice at this size. Format bits are then a hardcoded 8-entry table rather
+  than a BCH computation.
+- Reed–Solomon over GF(256) with the standard 0x11d primitive polynomial — log
+  and antilog tables built once at import.
+
+Rendering is `QPainter` into a `QPixmap` (8px modules, 4-module quiet zone) shown
+in a `QLabel`. `qr.py` itself imports no Qt and returns a matrix of booleans, so
+it is unit-testable headlessly against known-good codes.
 
 ## HTTP surface
 
@@ -215,10 +239,6 @@ non-orthographic camera, which is exactly the "no scale available" signal. The
 number must be read **after** `_apply_camera_plan` and the final render size are
 applied, for the same reason `_fit_render_size` runs there — how wide the box
 looks depends on where the camera ended up.
-
-*This derivation is the one number in the design that has to be checked against
-reality rather than reasoned about.* Phase 1 verifies it by capturing a 100mm box
-and confirming its on-image pixel width matches `100 / mm_per_px` within a pixel.
 
 **The projection-plane caveat, which must reach Claude.** Unprojecting a screen
 point through an ortho camera gives a ray, not a point. A distance between two
@@ -344,9 +364,9 @@ Canvas rendering and gesture feel are **not** unit tested; they are verified on
 the two real devices, which is the only place they can be.
 
 Python side: `freecadcmd` scripts for the server's request handling (token
-rejection, path traversal, upload validation, magic-byte check) — none of it
-needs a GUI. The scale derivation needs a GUI and is verified by the
-known-box check in phase 1.
+rejection, path traversal, upload validation, magic-byte check) and for `qr.py`
+(encode a known string, compare against a reference matrix) — none of it needs a
+GUI, since neither module imports Qt.
 
 ## Open questions
 
