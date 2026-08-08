@@ -8,7 +8,19 @@
 // only place gesture feel can be judged is on the two real devices.
 import { describe, expect, it } from "vitest";
 
-import { MAX_FLAT_EDGE, fitView, fitWithin, identityView, toImage, toScreen } from "../src/canvas";
+import {
+  MAX_FLAT_EDGE,
+  MAX_ZOOM,
+  applyGesture,
+  clampView,
+  fitView,
+  fitWithin,
+  identityView,
+  panBy,
+  toImage,
+  toScreen,
+  zoomAt,
+} from "../src/canvas";
 
 describe("fitWithin", () => {
   it("leaves an image under the cap untouched", () => {
@@ -73,5 +85,102 @@ describe("view transform", () => {
   it("falls back to identity on a degenerate image or viewport", () => {
     expect(fitView({ width: 0, height: 0 }, { width: 800, height: 600 })).toEqual(identityView());
     expect(fitView({ width: 100, height: 100 }, { width: 0, height: 0 })).toEqual(identityView());
+  });
+});
+
+// The pinch. A 1000x500 image in an 800x800 viewport: fit scale 0.8, letterboxed
+// with 200px of empty above and below.
+const IMAGE = { width: 1000, height: 500 };
+const VIEWPORT = { width: 800, height: 800 };
+const FIT = fitView(IMAGE, VIEWPORT);
+
+describe("zoomAt", () => {
+  it("holds the anchor point still", () => {
+    const anchor = { x: 610, y: 250 };
+    const under = toImage(FIT, anchor);
+    const after = toImage(zoomAt(FIT, anchor, 3), anchor);
+    expect(after.x).toBeCloseTo(under.x, 9);
+    expect(after.y).toBeCloseTo(under.y, 9);
+  });
+
+  it("multiplies the scale", () => {
+    expect(zoomAt(FIT, { x: 400, y: 400 }, 2.5).scale).toBeCloseTo(FIT.scale * 2.5, 9);
+  });
+
+  it("refuses a factor that would produce NaN coordinates", () => {
+    expect(zoomAt(FIT, { x: 400, y: 400 }, 0)).toBe(FIT);
+    expect(zoomAt(FIT, { x: 400, y: 400 }, Number.NaN)).toBe(FIT);
+  });
+});
+
+describe("applyGesture", () => {
+  it("keeps the image under the midpoint while the fingers spread", () => {
+    const from = { mid: { x: 300, y: 400 }, spread: 100 };
+    const to = { mid: { x: 500, y: 350 }, spread: 200 };
+    const under = toImage(FIT, from.mid);
+    const next = applyGesture(FIT, from, to);
+    expect(next.scale).toBeCloseTo(FIT.scale * 2, 9);
+    // The point the fingers grabbed has followed them to where they now are.
+    expect(toScreen(next, under).x).toBeCloseTo(to.mid.x, 9);
+    expect(toScreen(next, under).y).toBeCloseTo(to.mid.y, 9);
+  });
+
+  it("is a pure pan when the spread does not change", () => {
+    const next = applyGesture(FIT, { mid: { x: 300, y: 400 }, spread: 120 }, { mid: { x: 340, y: 380 }, spread: 120 });
+    expect(next.scale).toBeCloseTo(FIT.scale, 9);
+    expect(next.tx).toBeCloseTo(FIT.tx + 40, 9);
+    expect(next.ty).toBeCloseTo(FIT.ty - 20, 9);
+  });
+
+  it("treats a degenerate spread as no zoom rather than dividing by it", () => {
+    const next = applyGesture(FIT, { mid: { x: 10, y: 10 }, spread: 0 }, { mid: { x: 10, y: 10 }, spread: 90 });
+    expect(next.scale).toBeCloseTo(FIT.scale, 9);
+  });
+});
+
+describe("clampView", () => {
+  it("refuses to zoom out past the contain-fit", () => {
+    const out = clampView({ scale: FIT.scale / 4, tx: 0, ty: 0 }, IMAGE, VIEWPORT);
+    expect(out).toEqual(FIT);
+  });
+
+  it("caps the zoom, holding the viewport centre", () => {
+    const centre = { x: 400, y: 400 };
+    const wild = zoomAt(FIT, centre, 500);
+    const out = clampView(wild, IMAGE, VIEWPORT);
+    expect(out.scale).toBeCloseTo(FIT.scale * MAX_ZOOM, 9);
+    // What was in the middle of the screen is still in the middle of it.
+    expect(toImage(out, centre).x).toBeCloseTo(toImage(FIT, centre).x, 6);
+    expect(toImage(out, centre).y).toBeCloseTo(toImage(FIT, centre).y, 6);
+  });
+
+  it("keeps the image edges outside the viewport once it is bigger than it", () => {
+    const zoomed = zoomAt(FIT, { x: 400, y: 400 }, 4);
+    const shoved = clampView(panBy(zoomed, 5000, 5000), IMAGE, VIEWPORT);
+    // Dragged hard to the bottom right: the image's top-left corner lands on
+    // the viewport's, and no further.
+    expect(shoved.tx).toBeCloseTo(0, 9);
+    expect(shoved.ty).toBeCloseTo(0, 9);
+
+    const other = clampView(panBy(zoomed, -5000, -5000), IMAGE, VIEWPORT);
+    expect(other.tx).toBeCloseTo(VIEWPORT.width - IMAGE.width * zoomed.scale, 9);
+    expect(other.ty).toBeCloseTo(VIEWPORT.height - IMAGE.height * zoomed.scale, 9);
+  });
+
+  it("centres an axis the image does not fill, however far it is panned", () => {
+    // At 2x fit the image is 1600x800 -- wider than the viewport, exactly as
+    // tall. The vertical pan must stay centred rather than drifting.
+    const out = clampView(panBy({ scale: FIT.scale * 2, tx: -100, ty: 0 }, 0, 300), IMAGE, VIEWPORT);
+    expect(out.ty).toBeCloseTo(0, 9);
+    expect(out.tx).toBeCloseTo(-100, 9);
+  });
+
+  it("falls back to the fit on a view that has gone non-finite", () => {
+    expect(clampView({ scale: 0, tx: 0, ty: 0 }, IMAGE, VIEWPORT)).toEqual(FIT);
+    expect(clampView({ scale: 1, tx: Number.NaN, ty: 0 }, IMAGE, VIEWPORT)).toEqual(FIT);
+  });
+
+  it("gives up on a degenerate image or viewport", () => {
+    expect(clampView(FIT, { width: 0, height: 0 }, VIEWPORT)).toEqual(identityView());
   });
 });

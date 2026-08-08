@@ -10,3 +10,9 @@ __pycache__/
 # with no Node toolchain to build it with. See docs/device-annotation-design.md.
 web/node_modules/
 web/dist/
+
+# Vendored G-code viewer (gcode_web/): same deal -- the source is dev-only, but
+# its build output, freecad/freecadclaude/gcode_ui/, is committed and must NOT
+# be ignored. See gcode_web/VENDORED.md and docs/slice-preview-design.md.
+gcode_web/node_modules/
+gcode_web/dist/

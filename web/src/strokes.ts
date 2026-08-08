@@ -15,6 +15,8 @@
 import { getStroke } from "perfect-freehand";
 import type { Vec2 } from "perfect-freehand";
 
+import type { Point } from "./canvas";
+
 /** A sampled point of a stroke, in image coordinates. */
 export interface InkPoint {
   readonly x: number;
@@ -75,6 +77,33 @@ export function outlineOf(stroke: Stroke): Vec2[] {
     });
   }
   return stroke.outline;
+}
+
+/** Distance from `p` to the segment `a`-`b`. */
+function segmentDistance(p: Point, a: InkPoint, b: InkPoint): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lengthSq = dx * dx + dy * dy;
+  const t = lengthSq > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSq)) : 0;
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+/** True when `p` comes within `tolerance` of the stroke, all in image space.
+ *
+ * Tested against the segments between samples, not the samples alone: a fast
+ * stroke samples sparsely, and a point-only test lets the eraser slip between
+ * two samples of a straight line. Half the stroke's width is added, so a fat
+ * stroke is caught by its edge rather than only its centre line. */
+export function strokeHitsPoint(stroke: Stroke, p: Point, tolerance: number): boolean {
+  const { points } = stroke;
+  const first = points[0];
+  if (!first) return false;
+  const reach = tolerance + stroke.size / 2;
+  if (points.length === 1) return Math.hypot(p.x - first.x, p.y - first.y) <= reach;
+  for (let i = 1; i < points.length; i += 1) {
+    if (segmentDistance(p, points[i - 1]!, points[i]!) <= reach) return true;
+  }
+  return false;
 }
 
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;

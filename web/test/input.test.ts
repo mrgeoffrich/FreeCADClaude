@@ -5,11 +5,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  gestureOf,
   initialInputState,
   observePointer,
   shouldDraw,
   type InputState,
   type PointerLike,
+  type PointerRecord,
 } from "../src/input";
 
 const pen: PointerLike = { pointerType: "pen" };
@@ -81,5 +83,29 @@ describe("observePointer", () => {
     const state = initialInputState();
     observePointer(state, pen);
     expect(state.penSeen).toBe(false);
+  });
+});
+
+const finger = (id: number, x: number, y: number): PointerRecord => ({ id, type: "touch", x, y });
+
+describe("gestureOf", () => {
+  it("reads the midpoint and the spread off two fingers", () => {
+    const gesture = gestureOf([finger(1, 100, 200), finger(2, 100, 260)]);
+    expect(gesture).toEqual({ mid: { x: 100, y: 230 }, spread: 60 });
+  });
+
+  it("is null for one finger, whatever else is down", () => {
+    // The whole point of two-finger navigation: a lone contact is a stroke on a
+    // penless phone and a resting palm on a tablet. Neither may pan the image.
+    expect(gestureOf([finger(1, 10, 10)])).toBeNull();
+    expect(gestureOf([])).toBeNull();
+  });
+
+  it("ignores a stylus, so a pen plus a palm is not a pinch", () => {
+    expect(gestureOf([{ id: 1, type: "pen", x: 0, y: 0 }, finger(2, 50, 50)])).toBeNull();
+  });
+
+  it("is null for three fingers, which ends the gesture rather than guessing", () => {
+    expect(gestureOf([finger(1, 0, 0), finger(2, 40, 0), finger(3, 80, 0)])).toBeNull();
   });
 });

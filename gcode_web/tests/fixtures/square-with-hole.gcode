@@ -1,0 +1,24 @@
+; outer square + inner square (hole) across two layers
+G21
+G90
+M83
+G92 E0
+; CHANGE_LAYER
+; Z_HEIGHT: 0.2
+; FEATURE: Outer wall
+G1 X0 Y0 F6000
+G1 X30 Y0 E1.0
+G1 X30 Y30 E1.0
+G1 X0 Y30 E1.0
+G1 X0 Y0 E1.0
+; FEATURE: Inner wall
+G1 X10 Y10 F6000
+G1 X20 Y10 E0.5
+G1 X20 Y20 E0.5
+G1 X10 Y20 E0.5
+G1 X10 Y10 E0.5
+; CHANGE_LAYER
+; Z_HEIGHT: 0.4
+; FEATURE: Outer wall
+G1 X0 Y0 E1.0
+G1 X30 Y0 E1.0

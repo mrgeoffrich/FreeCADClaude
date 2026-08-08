@@ -3,16 +3,11 @@
 // what's on screen down to a PNG.
 //
 // THE VIEW TRANSFORM IS THE POINT OF THIS FILE. Every coordinate the app
-// stores -- ink points, and later dimension endpoints -- lives in IMAGE space
-// and passes through `ViewTransform` at render and hit-test time. Nothing
-// anywhere stores a screen pixel. Pinch-zoom is deliberately not in v1, but
-// having the transform from day one is what makes adding the gesture a
-// contained change (assign a new `view`) instead of a refactor of everything
-// that touches a coordinate.
-//
-// In v1 the transform only ever holds the contain-fit of the image into the
-// canvas, recomputed on resize; the user cannot change it. That is a real
-// transform being exercised, not a hardcoded identity that would quietly rot.
+// stores -- ink points and dimension endpoints -- lives in IMAGE space and
+// passes through `ViewTransform` at render and hit-test time. Nothing anywhere
+// stores a screen pixel, which is why the pinch gesture is `setView` plus the
+// pure helpers below rather than a change to everything that touches a
+// coordinate.
 import { drawStroke, type Stroke } from "./strokes";
 
 export interface Point {
@@ -39,12 +34,18 @@ export function identityView(): ViewTransform {
   return { scale: 1, tx: 0, ty: 0 };
 }
 
+/** The scale of a contain-fit, or 0 if either box is degenerate. */
+export function fitScale(image: Size, viewport: Size): number {
+  if (image.width <= 0 || image.height <= 0 || viewport.width <= 0 || viewport.height <= 0) {
+    return 0;
+  }
+  return Math.min(viewport.width / image.width, viewport.height / image.height);
+}
+
 /** Contain-fit `image` inside `viewport`, centred. */
 export function fitView(image: Size, viewport: Size): ViewTransform {
-  if (image.width <= 0 || image.height <= 0 || viewport.width <= 0 || viewport.height <= 0) {
-    return identityView();
-  }
-  const scale = Math.min(viewport.width / image.width, viewport.height / image.height);
+  const scale = fitScale(image, viewport);
+  if (scale <= 0) return identityView();
   return {
     scale,
     tx: (viewport.width - image.width * scale) / 2,
@@ -58,6 +59,76 @@ export function toScreen(view: ViewTransform, p: Point): Point {
 
 export function toImage(view: ViewTransform, p: Point): Point {
   return { x: (p.x - view.tx) / view.scale, y: (p.y - view.ty) / view.scale };
+}
+
+/** How far past the contain-fit a pinch may zoom. Enough to place a dimension
+ * endpoint on a fillet in a 1568px capture; past it the image is interpolation. */
+export const MAX_ZOOM = 8;
+
+export function panBy(view: ViewTransform, dx: number, dy: number): ViewTransform {
+  return { scale: view.scale, tx: view.tx + dx, ty: view.ty + dy };
+}
+
+/** Zoom by `factor` about `anchor`, a screen point that stays where it is.
+ * Anchoring on the gesture rather than the viewport centre is what makes the
+ * image feel attached to the fingers. */
+export function zoomAt(view: ViewTransform, anchor: Point, factor: number): ViewTransform {
+  if (!Number.isFinite(factor) || factor <= 0 || view.scale <= 0) return view;
+  const scale = view.scale * factor;
+  const at = toImage(view, anchor);
+  return { scale, tx: anchor.x - at.x * scale, ty: anchor.y - at.y * scale };
+}
+
+/** A two-finger gesture reduced to what the transform needs. Screen pixels. */
+export interface Gesture {
+  readonly mid: Point;
+  readonly spread: number;
+}
+
+/** The view after a pinch moved `from` to `to`. Zoom and pan in one step: the
+ * image point under the gesture's midpoint stays under it, and the scale
+ * follows the spread. Apply it incrementally, sample to sample, so a clamped
+ * view becomes the base for the next move rather than being recomputed away. */
+export function applyGesture(view: ViewTransform, from: Gesture, to: Gesture): ViewTransform {
+  if (view.scale <= 0) return view;
+  const factor = from.spread > 0 && to.spread > 0 ? to.spread / from.spread : 1;
+  const scale = view.scale * factor;
+  const at = toImage(view, from.mid);
+  return { scale, tx: to.mid.x - at.x * scale, ty: to.mid.y - at.y * scale };
+}
+
+/** One axis of the pan clamp: centre the image when it is smaller than the
+ * viewport, otherwise keep its edges outside the viewport's. */
+function clampAxis(t: number, span: number, viewportSpan: number): number {
+  if (span <= viewportSpan) return (viewportSpan - span) / 2;
+  return Math.min(0, Math.max(viewportSpan - span, t));
+}
+
+/** Keep a view usable: never zoomed out past the contain-fit, never further in
+ * than `MAX_ZOOM` times it, and never panned until the image has left the
+ * screen. Every view the user produces goes through here. */
+export function clampView(view: ViewTransform, image: Size, viewport: Size): ViewTransform {
+  const fit = fitScale(image, viewport);
+  if (fit <= 0) return identityView();
+  if (view.scale <= 0 || !Number.isFinite(view.tx) || !Number.isFinite(view.ty)) {
+    return fitView(image, viewport);
+  }
+
+  const scale = Math.min(Math.max(view.scale, fit), fit * MAX_ZOOM);
+  let { tx, ty } = view;
+  if (scale !== view.scale) {
+    // Re-anchor on the viewport centre, so hitting the zoom limit holds what
+    // the user was looking at instead of sliding it out from under them.
+    const centre = { x: viewport.width / 2, y: viewport.height / 2 };
+    const at = toImage(view, centre);
+    tx = centre.x - at.x * scale;
+    ty = centre.y - at.y * scale;
+  }
+  return {
+    scale,
+    tx: clampAxis(tx, image.width * scale, viewport.width),
+    ty: clampAxis(ty, image.height * scale, viewport.height),
+  };
 }
 
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
@@ -96,6 +167,10 @@ export class CanvasView {
   private viewport: Size = { width: 0, height: 0 };
   private dpr = 1;
   private frame: number | null = null;
+  /** True while `view` is the contain-fit. A resize then re-fits; once the user
+   * has zoomed it clamps instead, since re-fitting would throw away a transform
+   * they chose because the tablet rotated. */
+  private fitted = true;
 
   constructor(canvas: HTMLCanvasElement) {
     const ctx = canvas.getContext("2d");
@@ -108,12 +183,13 @@ export class CanvasView {
    * whether a new image means a new drawing. */
   setImage(image: ImageBitmap | null): void {
     this.scene.image = image;
+    this.fitted = true;
     this.refit();
     this.requestRender();
   }
 
   /** Match the backing store to the element's CSS size at devicePixelRatio,
-   * then re-fit. Call from a ResizeObserver. */
+   * then re-fit or re-clamp. Call from a ResizeObserver. */
   resize(): void {
     const dpr = window.devicePixelRatio || 1;
     const width = this.canvas.clientWidth;
@@ -128,15 +204,47 @@ export class CanvasView {
       this.canvas.width = backingWidth;
       this.canvas.height = backingHeight;
     }
+    if (this.fitted) this.refit();
+    else this.setView(this.view);
+    this.requestRender();
+  }
+
+  /** True once a gesture has taken the view off the contain-fit. */
+  get zoomed(): boolean {
+    return !this.fitted;
+  }
+
+  /** The one way the view is changed from outside: clamped on the way in, so
+   * no gesture can leave the image off-screen or scaled into mush. */
+  setView(next: ViewTransform): void {
+    const image = this.imageSize();
+    if (!image) return;
+    const fit = fitScale(image, this.viewport);
+    this.view = clampView(next, image, this.viewport);
+    // A view clamped back onto the fit scale is the fit, since `clampView`
+    // centres both axes there. No fit at all (no viewport yet) counts as
+    // fitted, so nothing offers to undo a zoom that never happened.
+    this.fitted = fit <= 0 || this.view.scale <= fit * (1 + 1e-9);
+    this.requestRender();
+  }
+
+  /** Back to the contain-fit. */
+  fit(): void {
+    this.fitted = true;
     this.refit();
     this.requestRender();
+  }
+
+  /** Client (viewport) coordinates -> canvas-relative screen pixels. */
+  screenFromClient(clientX: number, clientY: number): Point {
+    const rect = this.canvas.getBoundingClientRect();
+    return { x: clientX - rect.left, y: clientY - rect.top };
   }
 
   /** Client (viewport) coordinates -> image space. The one conversion the
    * input path is allowed to do. */
   imageFromClient(clientX: number, clientY: number): Point {
-    const rect = this.canvas.getBoundingClientRect();
-    return toImage(this.view, { x: clientX - rect.left, y: clientY - rect.top });
+    return toImage(this.view, this.screenFromClient(clientX, clientY));
   }
 
   /** Coalesce renders onto the frame: a 120Hz pen delivers several samples per
@@ -170,12 +278,35 @@ export class CanvasView {
     }
   }
 
-  private refit(): void {
+  private imageSize(): Size | null {
     const { image } = this.scene;
-    this.view = image
-      ? fitView({ width: image.width, height: image.height }, this.viewport)
-      : identityView();
+    return image ? { width: image.width, height: image.height } : null;
   }
+
+  private refit(): void {
+    const image = this.imageSize();
+    this.view = image ? fitView(image, this.viewport) : identityView();
+  }
+}
+
+/** The eraser's reach, drawn where the pen is while an erase gesture runs.
+ * Screen space, like everything else an `Overlay` draws. */
+export function drawEraserCursor(
+  ctx: Ctx2D,
+  view: ViewTransform,
+  at: Point,
+  radius: number,
+): void {
+  const p = toScreen(view, at);
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(230,233,238,.12)";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(230,233,238,.7)";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.restore();
 }
 
 /** The long edge the flattened PNG is capped at.

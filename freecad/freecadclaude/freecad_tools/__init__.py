@@ -20,6 +20,7 @@ a base of shared infrastructure:
     session      artifact folders, the per-conversation session dir
     doc_notes    the document's standing context notes, and their staleness
     print_meta   per-part build direction: storage, plate side, the legend
+    print_export parts meshed and stood up the way they print, via a scratch doc
     geometry     bounding boxes, world-space crop extents
     svg          framing/cropping an SVG projection
     gui_state    what the user has open in an editor
@@ -88,6 +89,17 @@ from .tools_notes import (
     _run_set_print_direction,
 )
 from .tools_python import _RUN_PYTHON_SCHEMA, _precheck_python, _run_python
+from .tools_slice import (  # two names re-exported for chat_panel
+    _READ_SLICE_RESULT_SCHEMA,
+    _SLICE_MODEL_SCHEMA,
+    _VIEW_GCODE_SCHEMA,
+    _precheck_slice_model,
+    _run_read_slice_result,
+    _run_slice_model,
+    _run_view_gcode,
+    open_settings_page,  # noqa: F401 - the chat panel's Slicer button
+)
+from .tools_slice import reset_session as reset_slice_session  # noqa: F401
 from .tools_sketch import (
     _GET_SKETCH_SCHEMA,
     _VIEW_SKETCH_SVG_SCHEMA,
@@ -130,6 +142,16 @@ TOOLS = {
     "crop_view": {"schema": _CROP_VIEW_SCHEMA, "run": _run_crop_view},
     "cutaway": {"schema": _CUTAWAY_SCHEMA, "run": _run_cutaway},
     "export": {"schema": _EXPORT_SCHEMA, "run": _run_export},
+    "slice_model": {
+        "schema": _SLICE_MODEL_SCHEMA,
+        "run": _run_slice_model,
+        "precheck": _precheck_slice_model,
+    },
+    "read_slice_result": {
+        "schema": _READ_SLICE_RESULT_SCHEMA,
+        "run": _run_read_slice_result,
+    },
+    "view_gcode": {"schema": _VIEW_GCODE_SCHEMA, "run": _run_view_gcode},
     "inspect_api": {"schema": _INSPECT_API_SCHEMA, "run": _run_inspect_api},
     "run_python": {
         "schema": _RUN_PYTHON_SCHEMA,

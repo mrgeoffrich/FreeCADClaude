@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""export -- write geometry out to STEP/IGES/BREP/STL."""
+"""export -- write geometry out to STEP/IGES/BREP/STL/3MF."""
 
 import os
 
@@ -11,8 +11,12 @@ _EXPORT_SCHEMA = {
     "name": "export",
     "description": (
         "Export geometry to a file. Supported formats (by extension): STEP "
-        "(.step/.stp), IGES (.iges/.igs), BREP (.brep) for CAD; STL (.stl) for "
-        "3D printing/mesh. Provide 'path' (full output path); if omitted, writes "
+        "(.step/.stp), IGES (.iges/.igs), BREP (.brep) for CAD; STL (.stl) and "
+        "3MF (.3mf) for 3D printing/mesh. 3MF is the one to reach for when the "
+        "file is going to a slicer: it is a mesh export like STL, but it keeps "
+        "each named object as a SEPARATE 3MF object, so the slicer places them "
+        "as separate parts on the plate instead of fusing them into one shape "
+        "the way STL does. Provide 'path' (full output path); if omitted, writes "
         "to a temp file using 'format' (default step) and returns the path. "
         "'names' picks objects (default: current selection, else all solids in "
         "the document)."
@@ -21,7 +25,7 @@ _EXPORT_SCHEMA = {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Output file path (extension sets the format)"},
-            "format": {"type": "string", "description": "step/iges/brep/stl (used if path has no extension)"},
+            "format": {"type": "string", "description": "step/iges/brep/stl/3mf (used if path has no extension)"},
             "names": {"type": "array", "items": {"type": "string"}, "description": "Object internal Names to export"},
         },
         "additionalProperties": False,
@@ -29,20 +33,25 @@ _EXPORT_SCHEMA = {
 }
 
 
-def _run_export(args):
-    import FreeCAD
+def _resolve_export_objects(args, doc):
+    """``(objects, error)`` -- which objects a call is about, one of the two None.
 
-    doc = FreeCAD.ActiveDocument
-    if doc is None:
-        return "No active document."
+    'names' names them; with none, whatever the user has selected stands in, and
+    with nothing selected every object in the document that has a shape.
+    Containers are expanded, since a Std Part's own aggregated shape excludes
+    children FreeCAD considers consumed.
 
+    slice_model resolves through here too. What "the objects" means has to be
+    the same question for both tools -- a second copy of this is how the answers
+    would start differing.
+    """
     names = args.get("names")
     objs = []
     if names:
         for n in names:
             obj = doc.getObject(n)
             if obj is None:
-                return f"No object named '{n}'."
+                return None, f"No object named '{n}'."
             objs.append(obj)
     else:
         objs = _selected_objects()
@@ -52,7 +61,20 @@ def _run_export(args):
     objs = _expand_containers(objs)
     objs = [o for o in objs if getattr(o, "Shape", None) is not None]
     if not objs:
-        return "No objects with a shape to export."
+        return None, "No objects with a shape to export."
+    return objs, None
+
+
+def _run_export(args):
+    import FreeCAD
+
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        return "No active document."
+
+    objs, err = _resolve_export_objects(args, doc)
+    if err:
+        return err
 
     path = args.get("path")
     fmt = str(args.get("format") or "").lower().lstrip(".")
@@ -74,6 +96,8 @@ def _run_export(args):
 
             Part.Compound([o.Shape for o in objs]).exportStl(path)
         else:
+            # Every remaining mesh format, .3mf included: Mesh.export keys off
+            # the extension itself and writes one 3MF object per object handed in.
             import Mesh
 
             Mesh.export(objs, path)

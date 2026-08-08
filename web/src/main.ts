@@ -5,7 +5,16 @@
 // Everything with logic worth testing lives in the modules this file pulls
 // together; this is the part that can only be verified on a real tablet.
 import { deviceApi, describeCapture, type Published } from "./api";
-import { CanvasView, flattenToPng, type Point } from "./canvas";
+import {
+  applyGesture,
+  CanvasView,
+  drawEraserCursor,
+  flattenToPng,
+  panBy,
+  zoomAt,
+  type Gesture,
+  type Point,
+} from "./canvas";
 import {
   dimensionId,
   drawDimensions,
@@ -18,7 +27,7 @@ import {
   type EndpointRef,
 } from "./dimensions";
 import { buildDoc, type DocSourceInput } from "./doc";
-import { attachDrawing, type PointerSample } from "./input";
+import { attachDrawing, type GestureSample, type PointerSample } from "./input";
 import {
   calibrationScale,
   captureScale,
@@ -27,26 +36,41 @@ import {
   scaleStatusText,
   type Scale,
 } from "./scale";
-import { addPoint, finishStroke, newStroke, PEN_CSS_WIDTH, type Stroke } from "./strokes";
+import {
+  addPoint,
+  finishStroke,
+  newStroke,
+  PEN_CSS_WIDTH,
+  strokeHitsPoint,
+  type Stroke,
+} from "./strokes";
 import { resolveToken } from "./token";
 import {
   markWelcomeSeen,
   mountUi,
+  msgbarCollapsed,
+  setMsgbarCollapsed,
   welcomeSeen,
   type SourceChoice,
   type Tool,
 } from "./ui";
 
-const PEN_HINT = "Pen draws · touch is ignored while a stylus is in use";
+const PEN_HINT = "Pen draws · two fingers to zoom and pan";
 const NO_IMAGE_HINT = "Pick an image to mark up";
 const DIM_HINT = "Tap the two ends of what you want measured";
 const DIM_SECOND_HINT = "Tap the second point";
 const CALIBRATE_HINT = "Tap two points you know the real distance between";
+const ERASE_HINT = "Drag over a mark to rub it out";
 
 /** How far a pointer has to travel for the gesture to count as a drag rather
  * than a tap, in image pixels. A dimension can be placed either way -- drag
  * across it, or tap each end -- and this is what tells them apart. */
 const DRAG_MIN = 6;
+
+/** The eraser's reach in CSS pixels, converted into image space at use. Wider
+ * than the pen so a rub crosses ink rather than having to trace it, and fixed
+ * on screen so it stays the same physical size at any zoom. */
+const ERASER_CSS_RADIUS = 16;
 
 const ui = mountUi();
 const canvasView = new CanvasView(ui.canvas);
@@ -63,6 +87,13 @@ interface ImageSource {
 
 let source: ImageSource | null = null;
 let activeStroke: Stroke | null = null;
+
+/** Claude's "what to mark" line for the loaded image, if it sent one.
+ *
+ * State rather than something written straight into the bar: it is an
+ * instruction the user works from for as long as the image is up, and the tool
+ * hint beside it is rewritten on every tool change and every dimension tap. */
+let note: string | null = null;
 
 // ── measurement state ──────────────────────────────────────────────────────
 let tool: Tool = "pen";
@@ -93,6 +124,17 @@ let calibrationDeclined = false;
 /** Which dimension the value sheet is currently editing. */
 let editing: Dimension | null = null;
 
+// ── erasing ────────────────────────────────────────────────────────────────
+/** Where the eraser is, while it is down. Null the rest of the time, which is
+ * also what keeps its cursor ring out of the flattened PNG. */
+let erasingAt: Point | null = null;
+
+// ── navigation ─────────────────────────────────────────────────────────────
+/** The previous sample of the pinch in progress. The view is moved one sample
+ * to the next rather than from the gesture's start, so the clamp applied on
+ * the way in becomes the base for the next move. */
+let lastGesture: Gesture | null = null;
+
 // ── pairing ────────────────────────────────────────────────────────────────
 // The token has to be lifted off the URL on the load that carries it -- the
 // query string is gone the moment the user reloads from a bookmark.
@@ -120,6 +162,7 @@ const SOURCE_SUBTITLE: Record<ImageSource["kind"], string> = {
  * (calibrating / first point / second point) and they only differ by a word. */
 function currentHint(): string {
   if (!source) return NO_IMAGE_HINT;
+  if (tool === "eraser") return ERASE_HINT;
   if (tool !== "dimension") return PEN_HINT;
   if (calibrating()) return CALIBRATE_HINT;
   return draft ? DIM_SECOND_HINT : DIM_HINT;
@@ -139,10 +182,12 @@ function refreshStatus(): void {
     scaleText: scaleStatusText(scale),
     connected: Boolean(token) && source !== null,
   });
-  ui.setHint(currentHint());
+  ui.setMessage(note, currentHint());
   ui.setSendEnabled(source !== null);
 }
 
+ui.setMessageCollapsed(msgbarCollapsed(window.localStorage));
+ui.onMessageToggle = (collapsed) => setMsgbarCollapsed(window.localStorage, collapsed);
 refreshStatus();
 ui.setFreecadSource(false, "Arrives when FreeCAD sends you a view");
 
@@ -166,8 +211,10 @@ function imagePoint(sample: PointerSample): Point {
  * every frame, and again into the flattened PNG, from the same code. A
  * dimension that only existed on the tablet would leave the JSON pointing at a
  * mark Claude can't see. */
-canvasView.scene.overlay = (ctx, view, chrome) =>
+canvasView.scene.overlay = (ctx, view, chrome) => {
   drawDimensions(ctx, view, { items: dimensions, draft, calibration, scale }, chrome);
+  if (erasingAt) drawEraserCursor(ctx, view, erasingAt, ERASER_CSS_RADIUS);
+};
 
 attachDrawing(ui.canvas, {
   onStart(sample) {
@@ -176,6 +223,10 @@ attachDrawing(ui.canvas, {
     if (!canvasView.scene.image) return;
     if (tool === "dimension") {
       startDimensionGesture(imagePoint(sample));
+      return;
+    }
+    if (tool === "eraser") {
+      eraseAt(imagePoint(sample));
       return;
     }
     // Ink is sized in CSS pixels and converted into image space, so a stroke
@@ -195,6 +246,10 @@ attachDrawing(ui.canvas, {
       moveDimensionGesture(imagePoint(sample));
       return;
     }
+    if (tool === "eraser") {
+      eraseAt(imagePoint(sample));
+      return;
+    }
     if (!activeStroke) return;
     addPoint(activeStroke, pointOf(sample));
     canvasView.requestRender();
@@ -203,6 +258,11 @@ attachDrawing(ui.canvas, {
   onEnd(commit) {
     if (tool === "dimension") {
       endDimensionGesture(commit);
+      return;
+    }
+    if (tool === "eraser") {
+      erasingAt = null;
+      canvasView.requestRender();
       return;
     }
     if (!activeStroke) return;
@@ -216,7 +276,59 @@ attachDrawing(ui.canvas, {
     activeStroke = null;
     canvasView.requestRender();
   },
+
+  // Two fingers zoom and pan. The samples arrive in client coordinates, so
+  // each is converted to canvas-relative screen pixels -- which is the space
+  // the view transform's `tx`/`ty` live in.
+  gesture: {
+    onGestureStart(sample) {
+      lastGesture = canvasGesture(sample);
+    },
+    onGestureMove(sample) {
+      const next = canvasGesture(sample);
+      if (lastGesture) canvasView.setView(applyGesture(canvasView.view, lastGesture, next));
+      lastGesture = next;
+      syncZoom();
+    },
+    onGestureEnd() {
+      lastGesture = null;
+    },
+  },
 });
+
+function canvasGesture(sample: GestureSample): Gesture {
+  return { mid: canvasView.screenFromClient(sample.mid.x, sample.mid.y), spread: sample.spread };
+}
+
+function syncZoom(): void {
+  ui.setZoomed(canvasView.zoomed);
+}
+
+ui.onFit = () => {
+  canvasView.fit();
+  syncZoom();
+};
+
+// Desktop and trackpad, which is where the app is developed: a trackpad pinch
+// arrives as ctrl+wheel, and a plain wheel scrolls the image. Not a phone
+// concern -- but without it the transform can only be exercised on a tablet.
+ui.canvas.addEventListener(
+  "wheel",
+  (e) => {
+    if (!canvasView.scene.image) return;
+    e.preventDefault();
+    // Firefox reports a wheel notch in lines, not pixels.
+    const step = e.deltaMode === 1 ? 16 : 1;
+    const anchor = canvasView.screenFromClient(e.clientX, e.clientY);
+    canvasView.setView(
+      e.ctrlKey
+        ? zoomAt(canvasView.view, anchor, Math.exp((-e.deltaY * step) / 200))
+        : panBy(canvasView.view, -e.deltaX * step, -e.deltaY * step),
+    );
+    syncZoom();
+  },
+  { passive: false },
+);
 
 // The rubber band has to follow a HOVERING pen between the two taps, and
 // `attachDrawing` only reports moves for the pointer that is actually down.
@@ -224,6 +336,9 @@ attachDrawing(ui.canvas, {
 // job is the pen/palm policy.
 ui.canvas.addEventListener("pointermove", (e) => {
   if (tool !== "dimension" || draft === null || dragging !== null) return;
+  // Not while pinching: a half-placed dimension must not follow the fingers
+  // that are moving the image under it.
+  if (lastGesture) return;
   moveDimensionGesture(canvasView.imageFromClient(e.clientX, e.clientY));
 });
 
@@ -234,12 +349,43 @@ ui.onUndo = () => {
   canvasView.requestRender();
 };
 
+/** Drop `count` entries of `kind` from the undo history, for marks removed by
+ * something other than Undo. Without it Undo would later pop a mark that is
+ * already gone and eat an unrelated one. Erasing is not itself undoable: the
+ * history is a list of what was made, not a stack of edits. */
+function forgetUndo(kind: "stroke" | "dimension", count: number): void {
+  for (let i = 0; i < count; i += 1) {
+    const at = undoHistory.lastIndexOf(kind);
+    if (at < 0) return;
+    undoHistory.splice(at, 1);
+  }
+}
+
+/** Rub out every stroke the eraser is over. Whole strokes, because ink is
+ * stored as vectors -- a pixel eraser would need its own ink layer, and a mark
+ * on a screenshot is short enough that removing it whole is what you want. */
+function eraseAt(p: Point): void {
+  erasingAt = p;
+  const strokes = canvasView.scene.strokes;
+  const reach = ERASER_CSS_RADIUS / (canvasView.view.scale || 1);
+  let removed = 0;
+  for (let i = strokes.length - 1; i >= 0; i -= 1) {
+    if (strokeHitsPoint(strokes[i]!, p, reach)) {
+      strokes.splice(i, 1);
+      removed += 1;
+    }
+  }
+  forgetUndo("stroke", removed);
+  canvasView.requestRender();
+}
+
 ui.onClear = () => {
   canvasView.scene.strokes.length = 0;
   dimensions.length = 0;
   undoHistory.length = 0;
   draft = null;
   calibration = null;
+  erasingAt = null;
   canvasView.requestRender();
   refreshStatus();
 };
@@ -249,6 +395,7 @@ ui.onTool = (next) => {
   // A half-placed dimension belongs to the tool that started it.
   draft = null;
   dragging = null;
+  erasingAt = null;
   canvasView.requestRender();
   refreshStatus();
 };
@@ -358,10 +505,7 @@ ui.onValueDelete = () => {
   const at = editing ? dimensions.indexOf(editing) : -1;
   if (at >= 0) {
     dimensions.splice(at, 1);
-    // Drop one dimension entry from the undo history too, or Undo would later
-    // try to pop a dimension that is already gone and eat an unrelated stroke.
-    const entry = undoHistory.lastIndexOf("dimension");
-    if (entry >= 0) undoHistory.splice(entry, 1);
+    forgetUndo("dimension", 1);
   }
   editing = null;
   canvasView.requestRender();
@@ -428,6 +572,9 @@ async function decodeImage(file: File): Promise<ImageBitmap> {
  * space, so keeping it would leave marks pointing at nothing. Everything that
  * replaces the image goes through here so that rule is stated once. */
 function adopt(bitmap: ImageBitmap, next: ImageSource): void {
+  // A new image is a new instruction: the previous note was about a picture
+  // that is no longer on screen. `loadPublished` sets the new one after this.
+  note = null;
   canvasView.scene.strokes.length = 0;
   dimensions.length = 0;
   undoHistory.length = 0;
@@ -437,6 +584,7 @@ function adopt(bitmap: ImageBitmap, next: ImageSource): void {
   calibration = null;
   calibrationDeclined = false;
   editing = null;
+  erasingAt = null;
   dimensionSeq = 0;
   // A new image is a new scale, and it comes from the image itself: a capture
   // publishes the mm/px its ortho camera implies, and anything else starts
@@ -446,6 +594,7 @@ function adopt(bitmap: ImageBitmap, next: ImageSource): void {
   scale = next.published ? captureScale(next.published.meta, pixels) : noScale(pixels);
   canvasView.setImage(bitmap);
   source = next;
+  syncZoom();
   refreshStatus();
 }
 
@@ -501,11 +650,14 @@ async function loadPublished(published: Published): Promise<void> {
       published,
     });
     ui.hideBanner();
-    // Claude's "what to mark" line, if it sent one. In the hint rather than a
-    // toast: it is an instruction the user acts on while drawing, and a toast
-    // is gone in under three seconds. `adopt` has just reset the hint to the
-    // pen policy, so this replaces it.
-    if (published.meta.note) ui.setHint(published.meta.note);
+    // Claude's "what to mark" line, if it sent one. In the message bar rather
+    // than a toast: it is an instruction the user acts on while drawing, and a
+    // toast is gone in under three seconds.
+    if (published.meta.note) {
+      note = published.meta.note;
+      ui.expandMessage();
+      refreshStatus();
+    }
   } catch {
     ui.toast("Couldn't load that capture", "bad");
   }
@@ -558,6 +710,7 @@ ui.onSend = () => {
       // keeps a dashed line to nowhere out of the picture Claude receives.
       draft = null;
       calibration = null;
+      erasingAt = null;
       const png = await flattenToPng(canvasView.scene);
       const doc = buildDoc({
         caption: ui.caption.value.trim(),
@@ -590,6 +743,10 @@ ui.onSend = () => {
 // ── layout ─────────────────────────────────────────────────────────────────
 // The canvas is sized by CSS; the backing store follows it at
 // devicePixelRatio, and the fit transform is recomputed from the new viewport.
-const observer = new ResizeObserver(() => canvasView.resize());
+const observer = new ResizeObserver(() => {
+  canvasView.resize();
+  // A rotation changes the fit scale, which can put a zoomed view back on it.
+  syncZoom();
+});
 observer.observe(ui.canvas);
 canvasView.resize();
