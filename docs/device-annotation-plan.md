@@ -52,9 +52,10 @@ asset served.
 
 A leaf: depends only on phase 1's URL, and nothing depends on it.
 
-- `freecad/freecadclaude/qr.py` — byte mode, EC level L, versions 3–6 (all
-  single-block, so no interleaving), fixed mask 0 with a hardcoded format-bit
-  table, Reed–Solomon over GF(256). Returns a boolean matrix; imports no Qt.
+- `freecad/freecadclaude/qr.py` — byte mode, EC level L, versions 3–6 (3–5 are
+  one block, 6 is two equal ones, so the interleave is a `zip`), fixed mask 0
+  with a hardcoded format-bit table, Reed–Solomon over GF(256). Returns a
+  boolean matrix; imports no Qt.
 - Chat panel popup: the QR rendered with `QPainter` into a `QPixmap` (8px
   modules, 4-module quiet zone), the URL as text beneath it, and a stop button.
 

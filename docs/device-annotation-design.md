@@ -155,8 +155,14 @@ it needs is narrow enough to stay small:
 
 - **Byte mode, error-correction level L, versions 3–6 only.** That covers 53 to
   134 characters, which brackets the URL with room for a longer host name. The
-  cap at version 6 is the load-bearing simplification: at level L, versions 1–6
-  are all **single-block**, so there is no block interleaving to implement.
+  cap at version 6 keeps out the version-information block (18 bits in two
+  corners, versions 7+) and the multi-alignment-pattern table.
+  *(This originally said versions 1–6 at level L are all single-block and so
+  need no interleaving. That is wrong — version 6 is two blocks — and it cost a
+  round of debugging in phase 2, since a single-block version 6 produces a
+  structurally perfect symbol that decodes as nothing. What is true is that
+  every block in versions 3–6 is the **same size**, so the interleave is a
+  `zip` with no group-1/group-2 split.)*
 - **Mask 0, fixed.** The spec allows any of the eight; choosing the best one is
   what the penalty-scoring pass is for, and skipping it costs nothing a reader
   will notice at this size. Format bits are then a hardcoded 8-entry table rather

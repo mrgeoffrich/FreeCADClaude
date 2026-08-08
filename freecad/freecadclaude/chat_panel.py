@@ -121,6 +121,59 @@ def _extract_capture_png(text):
     return path if os.path.isfile(path) else None
 
 
+#: How the pairing QR is drawn. At 8px a module, the largest code this encoder
+#: makes (version 6, 41 modules) is 392px square including the quiet zone --
+#: big enough to scan from across a desk without the dialog needing to scroll.
+_QR_MODULE_PX = 8
+#: The spec's minimum quiet zone, and it is not decoration: a reader finds the
+#: finder patterns by their light surround, so a code butted up against the
+#: dialog's edge is a code that does not scan.
+_QR_QUIET_MODULES = 4
+
+
+def _qr_pixmap(url, module_px=_QR_MODULE_PX, quiet=_QR_QUIET_MODULES):
+    """The QR code for `url` as a pixmap, or ``None`` if it cannot be encoded.
+
+    ``None`` rather than an exception because the popup degrades to the URL as
+    text perfectly well, and the one way this fails -- a payload over 134 bytes,
+    which would take a hostname nobody has -- should not cost the user the
+    pairing dialog entirely.
+    """
+    from . import qr
+
+    try:
+        matrix = qr.encode(url)
+    except ValueError:
+        return None
+
+    n = len(matrix)
+    side = (n + 2 * quiet) * module_px
+    pixmap = QtGui.QPixmap(side, side)
+    # Black on white explicitly, never the palette: under FreeCAD's dark theme a
+    # themed code would come out light-on-dark, which readers are entitled to
+    # refuse (and some do).
+    pixmap.fill(QtGui.QColor("white"))
+    painter = QtGui.QPainter(pixmap)
+    try:
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtGui.QColor("black"))
+        for row in range(n):
+            for col in range(n):
+                if matrix[row][col]:
+                    painter.drawRect(
+                        (col + quiet) * module_px,
+                        (row + quiet) * module_px,
+                        module_px,
+                        module_px,
+                    )
+    finally:
+        # A QPixmap left with an active painter cannot be drawn, and the failure
+        # is a warning on stderr rather than an exception -- so end() in a
+        # finally, not after the loop.
+        painter.end()
+    return pixmap
+
+
 def get_panel():
     """Return the singleton :class:`ChatPanel`, creating it on first use."""
     return ChatPanel.instance()
@@ -574,25 +627,74 @@ class ChatWidget(QtWidgets.QWidget):
         self._show_pairing(url)
 
     def _show_pairing(self, url):
-        """Show the pairing URL. The seam the QR popup replaces.
+        """Show the pairing QR for `url`, the URL as text, and a way to stop.
 
-        Everything above this stays put when the code arrives: it hands over a
-        URL and nothing else, so the popup can become a QR pixmap with the URL
-        beneath it and a Stop button without touching the button handler.
+        The QR is the point: the URL carries a 22-character case-sensitive
+        token, and typing that on a tablet once per session is the kind of
+        friction that decides whether a feature gets used. The text under it is
+        the fallback for when the camera won't cooperate (or when the device is
+        this machine) -- selectable so it can be copied and messaged over.
+
+        Modal, and deliberately: pairing is a few seconds of scanning, and a
+        modeless window would go on floating over FreeCAD long after. Closing
+        leaves the server running; "Stop server" is how you turn it off, and
+        since :func:`device_server.start` mints a fresh token each time, that
+        also deauthorises whatever device is already paired.
         """
         self._note(
-            "📱 **Device server running.** Open this on your phone or tablet "
-            f"(same wifi):\n\n`{url}`"
+            "📱 **Device server running.** Scan the code, or open this on your "
+            f"phone or tablet (same wifi):\n\n`{url}`"
         )
-        box = QtWidgets.QMessageBox(self)
-        box.setWindowTitle("Device")
-        box.setTextFormat(QtCore.Qt.PlainText)
-        box.setText("Open this address on a device on the same network:")
-        # Selectable so the URL can be copied out and messaged to the device --
-        # nobody is typing a 22-character token by hand.
-        box.setInformativeText(url)
-        box.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        box.exec()
+
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Device")
+        layout = QtWidgets.QVBoxLayout(dialog)
+
+        pixmap = _qr_pixmap(url)
+        layout.addWidget(
+            QtWidgets.QLabel(
+                "Scan this with a phone or tablet on the same network:"
+                if pixmap is not None
+                else "Open this address on a phone or tablet on the same network:",
+                dialog,
+            )
+        )
+        if pixmap is not None:
+            code = QtWidgets.QLabel(dialog)
+            code.setPixmap(pixmap)
+            code.setAlignment(QtCore.Qt.AlignCenter)
+            layout.addWidget(code)
+
+        address = QtWidgets.QLabel(url, dialog)
+        address.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        address.setAlignment(QtCore.Qt.AlignCenter)
+        address.setWordWrap(True)
+        layout.addWidget(address)
+
+        buttons = QtWidgets.QHBoxLayout()
+        stop_button = QtWidgets.QPushButton("Stop server", dialog)
+        stop_button.setToolTip(
+            "Stop serving the page. The next start mints a new token, so this "
+            "also revokes any device already paired."
+        )
+        stop_button.clicked.connect(lambda: self._stop_device(dialog))
+        buttons.addWidget(stop_button)
+        buttons.addStretch(1)
+        close_button = QtWidgets.QPushButton("Close", dialog)
+        close_button.setDefault(True)
+        close_button.clicked.connect(dialog.accept)
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+
+        dialog.exec()
+
+    def _stop_device(self, dialog):
+        """Stop the LAN server and close the pairing popup, whose code is now dead."""
+        from . import device_server
+
+        device_server.stop()
+        self._note("*Device server stopped.*")
+        dialog.accept()
 
     def _on_stop(self):
         if self._worker is not None and self._busy:
