@@ -87,19 +87,26 @@ _PRESET_GLOB = os.path.join("**", "*.json")
 
 
 def _read_json(path):
-    """Parse the JSON at `path`, or None if it cannot be read or parsed.
+    """Parse the JSON OBJECT at `path`, or None if there isn't one.
 
     Every read of a slicer-owned file goes through this. The config may be
     mid-write and a preset may be truncated, and a resolution that raised would
     turn a recoverable miss into a failed slice.
+
+    A file that parses to anything but an object is None for the same reason.
+    Every one of these files is a mapping, and the callers below say
+    ``_read_json(path) or {}`` and then ``.get(...)``: a JSON array is truthy,
+    so it would survive that guard and raise ``AttributeError`` several frames
+    away from the file that caused it.
     """
     if not path:
         return None
     try:
         with open(path, "rb") as fh:
-            return json.loads(fh.read().decode("utf-8", "replace"))
+            data = json.loads(fh.read().decode("utf-8", "replace"))
     except (OSError, ValueError):
         return None
+    return data if isinstance(data, dict) else None
 
 
 def _split_list(value):

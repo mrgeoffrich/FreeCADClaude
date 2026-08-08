@@ -89,7 +89,7 @@ from .tools_notes import (
     _run_set_print_direction,
 )
 from .tools_python import _RUN_PYTHON_SCHEMA, _precheck_python, _run_python
-from .tools_slice import (  # reset_session re-exported for chat_panel's "New"
+from .tools_slice import (  # two names re-exported for chat_panel
     _READ_SLICE_RESULT_SCHEMA,
     _SLICE_MODEL_SCHEMA,
     _VIEW_GCODE_SCHEMA,
@@ -97,6 +97,7 @@ from .tools_slice import (  # reset_session re-exported for chat_panel's "New"
     _run_read_slice_result,
     _run_slice_model,
     _run_view_gcode,
+    open_settings_page,  # noqa: F401 - the chat panel's Slicer button
 )
 from .tools_slice import reset_session as reset_slice_session  # noqa: F401
 from .tools_sketch import (

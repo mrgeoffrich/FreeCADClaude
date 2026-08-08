@@ -478,6 +478,21 @@ def _no_presets_note(resolved, discovery):
         shown = names[:_MAX_LISTED]
         more = "" if len(names) == len(shown) else f" (+{len(names) - len(shown)} more)"
         lines.append(f"Discovered {kind} presets: " + ", ".join(shown) + more + ".")
+
+    # A name the settings page stored is fixed on the settings page, not in a
+    # FreeCAD preference -- so say which file holds it and how it is reached.
+    stored = slicer_runner.read_settings(_settings_path())
+    stale = [kind for kind in resolved["missing"] if stored.get(kind)]
+    if stale:
+        lines.append(
+            "The stored slicer settings name "
+            + ", ".join(f"{kind} '{stored[kind]}'" for kind in stale)
+            + f", which nothing installed answers to. That file is "
+            f"{_settings_path()}, written from the slicer settings page -- the "
+            "user opens it with the chat panel's Slicer button, or you can with "
+            "view_gcode. It checks a name against what is installed before "
+            "storing it, so choosing there cannot leave this state again."
+        )
     lines.append(
         "Either name one in this call, or ask the user to set "
         + ", ".join(_PRESET_PREFS[kind] for kind in resolved["missing"])
@@ -1219,10 +1234,17 @@ def _success_report(record):
             lines.append(f"  {path} ({size:.0f} KB"
                          + (", " + ", ".join(detail) if detail else "") + ")")
     else:
+        # The evidence travels with the finding, as it does in _failure_report:
+        # "check the log" costs a turn reading a file this already has open.
         lines.append(
             f"No G-code file was written into {job_dir}, even though the slicer "
-            "reported success. Check the log there."
+            "reported success -- so there is nothing to view or to print, and "
+            "view_gcode has nothing to show."
         )
+        tail = _log_tail(record.get("log_path") or "")
+        lines.append(f"The end of {record['log_path']}:\n```\n{tail}\n```"
+                     if tail else
+                     f"No log was written at {record.get('log_path')} either.")
 
     result = record.get("result")
     plates = _plates(result)
@@ -1424,16 +1446,15 @@ def _gcode_to_show(args):
     return paths[0], f"Showing job '{record['id']}'." + extra
 
 
-def _run_view_gcode(args):
-    from .. import gcode_server
+def _start_viewer_server(prefs):
+    """Start the loopback viewer server. Returns an error sentence, or None.
 
-    prefs = _preferences()
-    path, note = _gcode_to_show(args)
-    if path is None and str(args.get("path") or "").strip():
-        # An explicitly named file that is not there is the one refusal here:
-        # opening a different view than the one asked for would be worse than
-        # saying so.
-        return note
+    The two ways in -- the ``view_gcode`` tool and the chat panel's button --
+    share this so a failure reads the same either way. Both failures it can
+    report are ones the user has to act on: an unbuilt viewer folder, and a
+    listener that would not bind.
+    """
+    from .. import gcode_server
 
     conf, profile_dirs = _viewer_paths(prefs)
     try:
@@ -1445,6 +1466,47 @@ def _run_view_gcode(args):
     except OSError as exc:
         return (f"The G-code viewer could not be started: {exc}. Nothing is "
                 "listening and nothing was opened.")
+    return None
+
+
+def open_settings_page():
+    """Open the viewer page with nothing loaded, for the slicer settings panel.
+
+    The chat panel's own way in, beside ``view_gcode``'s. The panel is where the
+    printer, nozzle, process and filament are chosen, and that choice comes
+    before the first slice -- so reaching it must not require a slice, or a
+    conversation.
+
+    Returns ``(url, note)``. A None `url` means the page could not be served at
+    all and `note` says why; otherwise `note` says how the browser was opened,
+    or that it could not be and the URL has to be pasted.
+    """
+    from .. import gcode_server
+
+    error = _start_viewer_server(_preferences())
+    if error:
+        return None, error
+    url = gcode_server.page_url()
+    if not url:
+        return None, ("The G-code viewer server reported no address, so there "
+                      "is nothing to open.")
+    return url, _open_in_browser(url)
+
+
+def _run_view_gcode(args):
+    from .. import gcode_server
+
+    prefs = _preferences()
+    path, note = _gcode_to_show(args)
+    if path is None and str(args.get("path") or "").strip():
+        # An explicitly named file that is not there is the one refusal here:
+        # opening a different view than the one asked for would be worse than
+        # saying so.
+        return note
+
+    error = _start_viewer_server(prefs)
+    if error:
+        return error
 
     record = gcode_server.publish(path) if path else None
     url = gcode_server.page_url(record["id"] if record else None)
@@ -1469,6 +1531,7 @@ def _run_view_gcode(args):
         "Settings button -- printer, nozzle, process, filament, and whether to "
         "orient and arrange. What they choose there is stored in "
         f"{_settings_path()} and outranks the slicer's own selection on the "
-        "next slice."
+        "next slice. The chat panel's Slicer button opens the same page, so "
+        "they can change it any time without asking you."
     )
     return "\n".join(lines)

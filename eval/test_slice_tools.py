@@ -202,7 +202,7 @@ def _fake_preferences(install):
     return {"binary": install["binary"], "conf": install["conf"],
             "profile_dirs": [], "presets": {"machine": "", "process": "",
                                             "filament": ""},
-            "nozzle": None, "arrange": True, "orient": True}
+            "nozzle": None, "arrange": True, "orient": True, "gcode_ui": ""}
 
 
 # -- session_job_dir --------------------------------------------------------
@@ -458,6 +458,116 @@ def _check_no_presets(doc, install):
           or not [name for base, _dirs, files in os.walk(jobs) for name in files],
           jobs)
     shutil.rmtree(jobs, ignore_errors=True)
+
+
+def _check_stale_settings(doc, install):
+    """A preset the settings page stored that nothing installed answers to.
+
+    ``resolve_presets`` refuses rather than substituting something that would
+    slice, so this arrives as the same no-preset refusal -- but the fix is on
+    the settings page and not in a FreeCAD preference, and the refusal has to
+    say so or the reader goes looking in the wrong place.
+    """
+    print("  -- a stored preset name that no longer exists")
+    settings = tools_slice._settings_path()
+    gone = "Bambu Lab X9 0.4 nozzle"
+    prefs = dict(_fake_preferences(install), conf="")
+    real = tools_slice._preferences
+    real_conf = slicer_runner.discover_conf_path
+    tools_slice._preferences = lambda: prefs
+    slicer_runner.discover_conf_path = lambda candidates=None: None
+    _write_json(settings, {"machine": gone})
+    try:
+        text = tools_slice._run_slice_model({"names": ["Bracket"]})
+    finally:
+        tools_slice._preferences = real
+        slicer_runner.discover_conf_path = real_conf
+        os.remove(settings)
+
+    check("it refuses rather than slicing with something else",
+          "Nothing was sliced" in text, text)
+    check("...naming the stored preset that is gone", gone in text, text)
+    check("...and the file holding it", settings in text, text)
+    check("...pointing at the settings page, not only at a preference",
+          "Slicer button" in text and "view_gcode" in text, text)
+    check("no job was created", slicer_runner.latest_job() is None)
+    shutil.rmtree(os.path.join(session.session_dir(), "slices"), ignore_errors=True)
+
+
+def _check_settings_page(install, temp_root):
+    """The page the chat panel's Slicer button opens, and its two refusals.
+
+    The browser launch is stubbed. Everything else is real, including the
+    listener, which is stopped again -- the point of the check is that the
+    failures come back as sentences rather than as exceptions into Qt, since
+    this one is called from a button and not through the bridge.
+    """
+    print("  -- the settings page, and what it says when it cannot open")
+    from freecadclaude import gcode_server
+
+    opened = []
+    real_prefs = tools_slice._preferences
+    real_open = tools_slice._open_in_browser
+    real_server = gcode_server._Server
+    tools_slice._open_in_browser = lambda url: (opened.append(url), "Opened it.")[1]
+
+    def _will_not_bind(*_args, **_kwargs):
+        raise OSError(48, "Address already in use")
+
+    def _open_page():
+        """``open_settings_page()``, with a raise reported rather than thrown.
+
+        A button handler is where an escaping exception costs most, so the
+        difference between "returned a sentence" and "raised" is the check being
+        made -- and a raise here would otherwise end the run instead of failing
+        one line of it.
+        """
+        try:
+            return tools_slice.open_settings_page()
+        except Exception as exc:  # noqa: BLE001
+            return None, repr(exc)
+
+    missing = os.path.join(temp_root, "never-built")
+    try:
+        tools_slice._preferences = lambda: dict(_fake_preferences(install),
+                                                gcode_ui=missing)
+        url, note = _open_page()
+        check("a viewer directory that is not there refuses in a sentence",
+              url is None and "could not be started" in note
+              and "GcodeUiDir" in note, (url, note))
+        check("...and no browser was opened", opened == [], opened)
+        check("...and nothing is listening", not gcode_server.is_running())
+        # view_gcode reaches the same failure through the same call, so it has
+        # to read the same way: the tool and the button share one sentence.
+        text = tools_slice._run_view_gcode({})
+        check("view_gcode says the same thing rather than raising",
+              isinstance(text, str) and "could not be started" in text
+              and "GcodeUiDir" in text, text)
+        check("...and still opened nothing", opened == [], opened)
+
+        tools_slice._preferences = lambda: _fake_preferences(install)
+        gcode_server._Server = _will_not_bind
+        url, note = _open_page()
+        check("a listener that will not bind refuses in a sentence too",
+              url is None and "could not be started" in note
+              and "Nothing is listening" in note, (url, note))
+        gcode_server._Server = real_server
+
+        url, note = _open_page()
+        check("with the viewer built it serves the page",
+              url is not None and url.startswith("http://127.0.0.1:"), (url, note))
+        check("...carrying the token, so the page authenticates",
+              "?t=" in (url or ""), url)
+        check("...and no job, since this is the configuration way in",
+              "gcode=" not in (url or ""), url)
+        check("...and the browser was opened on exactly that URL",
+              opened == [url], opened)
+    finally:
+        tools_slice._preferences = real_prefs
+        tools_slice._open_in_browser = real_open
+        gcode_server._Server = real_server
+        gcode_server.stop()
+        gcode_server._config["ui_dir"] = None
 
 
 def _check_unknown_slicer(doc, install, temp_root):
@@ -810,6 +920,21 @@ def _check_reports(temp_root):
           "no readable result.json" in text, text)
     check("...and that no G-code was written",
           "No G-code file was written" in text, text)
+    check("...saying there is nothing for view_gcode either",
+          "view_gcode has nothing to show" in text, text)
+    check("...and, with no log, saying that too",
+          "No log was written" in text, text)
+
+    # A success that wrote nothing is the case with no error string anywhere, so
+    # the log is the only evidence there is. Sending the reader off to open it
+    # costs a turn on a file this call already has the path of.
+    with open(empty["log_path"], "w", encoding="utf-8") as fh:
+        fh.write("\n".join("line %d" % n for n in range(60))
+                 + "\nplate 1 is empty: no object is on the bed\n")
+    text = tools_slice._success_report(empty)
+    check("a success that wrote no G-code quotes the log rather than citing it",
+          "no object is on the bed" in text, text)
+    check("...only the tail of it", "line 0" not in text, text)
 
     failed = _job_record(temp_root, "failed", returncode=1,
                          error="Failed to generate G-code",
@@ -1033,7 +1158,9 @@ def main():
         _check_recorded_boxes(doc)
         _check_plate_lines()
         _check_no_presets(doc, install)
+        _check_stale_settings(doc, install)
         _check_unknown_slicer(doc, install, temp_root)
+        _check_settings_page(install, temp_root)
         _check_reader(temp_root)
         _check_boxes()
         _check_offsets()

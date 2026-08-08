@@ -106,6 +106,19 @@ Every difference from the upstream commit, one line each.
      `onSettings` prop that carries it.
    - `tests/slicer-settings.test.ts` (new): the choosing rules under `vitest`.
      The drawer's rendering is a manual browser check.
+7. **Autoloading `?gcode=<id>`.** `view_gcode` opens the page with the id of a
+   file the server published, and without this the user still has to press
+   "Open file…" for a toolpath the addon already has. Two touched files:
+   - `src/hooks/useGcodeFile.ts`: `loadUrl(url, name)` — `loadSample` with the
+     URL parameterised — plus `gcodeIdFromSearch` and `statedName`. The fetch
+     carries no token for the same reason the settings fetches don't. The name
+     comes from the response's `Content-Disposition` where there is one, since
+     an id has no extension and the workers are chosen by name.
+   - `src/App.tsx`: reads `gcode` out of `location.search` on mount and calls
+     `loadUrl`. The effect is declared after `useGcodeFile()`, so the workers
+     exist by the time it runs.
+   - `tests/gcode-autoload.test.ts` (new): the two helpers under `vitest`. The
+     fetch and the render are a manual browser check.
 
 Nothing else differs. `index.html`, `package.json`, `package-lock.json`, the
 three `tsconfig*.json` and `eslint.config.js` are byte-identical to upstream, as

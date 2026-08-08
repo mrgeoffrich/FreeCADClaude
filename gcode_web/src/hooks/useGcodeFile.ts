@@ -12,6 +12,21 @@ export function isPredictionFile(name: string): boolean {
   return /\.geojson(\.gz)?$|\.json$/i.test(name);
 }
 
+// Local patch (FreeCADClaude) -- see VENDORED.md. The addon opens this page as
+// `?t=<token>&gcode=<id>`, so the two helpers below and `loadUrl` are what turn
+// that id into a loaded toolpath.
+
+/** The published G-code id in a page URL's query string, or null. */
+export function gcodeIdFromSearch(search: string): string | null {
+  const id = new URLSearchParams(search).get('gcode')?.trim();
+  return id ? id : null;
+}
+
+/** The filename a `Content-Disposition` header states, or ''. */
+export function statedName(header: string | null): string {
+  return /filename="([^"]+)"/.exec(header ?? '')?.[1] ?? '';
+}
+
 /**
  * Owns the parser, prediction and mesh Web Workers and wires their results into the store.
  */
@@ -89,5 +104,26 @@ export function useGcodeFile() {
     [parseGcode, parsePrediction, parseMesh],
   );
 
-  return { loadFile };
+  // Local patch (FreeCADClaude). Same-origin, so the cookie the `?t=` page load
+  // set carries the token and no header is needed. An id has no extension and
+  // the workers pick by name, so the server states the real filename in
+  // Content-Disposition and `name` is only the fallback.
+  const loadUrl = useCallback(
+    async (url: string, name: string) => {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`${url} answered ${response.status}`);
+        const stated = statedName(response.headers.get('Content-Disposition')) || name;
+        const buffer = await response.arrayBuffer();
+        if (isMeshFile(stated)) parseMesh(stated, buffer);
+        else if (isPredictionFile(stated)) parsePrediction(stated, buffer);
+        else parseGcode(stated, buffer);
+      } catch (err) {
+        useViewerStore.getState().setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [parseGcode, parsePrediction, parseMesh],
+  );
+
+  return { loadFile, loadUrl };
 }

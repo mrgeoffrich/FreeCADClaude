@@ -36,7 +36,7 @@ chat panel (GUI thread)
 | `Init.py` / `InitGui.py` | Workbench registration (App/GUI). InitGui also has the eval hook. |
 | `freecad/freecadclaude/chat_panel.py` | The dock, Markdown transcript (streamed), buttons, worker wiring. |
 | `freecad/freecadclaude/plan_panel.py` | Second dock: Plan (subagent output) + live task checklist. |
-| `freecad/freecadclaude/flow_layout.py` | `FlowLayout` — a wrapping row layout, used for the chat panel's control strip (Send/Stop/New, model + effort combos, Open Files/Connect Mobile). A `QHBoxLayout`'s minimum width is the *sum* of its children's, and a `QPushButton`'s own minimum is ~80px however short its label, so a single non-wrapping strip sets the dock's floor far above what the transcript and input need. Wrapping makes the layout's minimum the *widest single item* while its `sizeHint` stays the one-row width, so the dock opens wide and still drags narrow. Rows are flush right, matching where the strip sits. |
+| `freecad/freecadclaude/flow_layout.py` | `FlowLayout` — a wrapping row layout, used for the chat panel's control strip (Send/Stop/New, model + effort combos, Open Files/Connect Mobile/Slicer). A `QHBoxLayout`'s minimum width is the *sum* of its children's, and a `QPushButton`'s own minimum is ~80px however short its label, so a single non-wrapping strip sets the dock's floor far above what the transcript and input need. Wrapping makes the layout's minimum the *widest single item* while its `sizeHint` stays the one-row width, so the dock opens wide and still drags narrow. Rows are flush right, matching where the strip sits. |
 | `freecad/freecadclaude/dock_panel.py` | The singleton dock shell both panels subclass (`DockPanel`): lazy creation, reuse-by-`objectName` across a workbench reload, `instance()`/`widget`. Subclasses supply the inner widget and, via `_on_created`, what happens to a fresh dock (chat raises itself; the plan dock tabs in behind it). |
 | `freecad/freecadclaude/agent_worker.py` | Drives the `claude` CLI per turn; parses stream-json → Qt signals. `_handle_tool_use` **surfaces a tool call by default** and special-cases only the exceptions, so a tool added to the allow-list appears in the transcript without a change here — the old allow-list shape let `Write`/`Glob`/`Grep` run invisibly. `_tool_label` picks the detail arg (path basename, pattern, subagent type); an unmapped name falls back to its own lowercased name. `TaskCreate`/`TaskUpdate` stay out of the transcript because the plan dock's checklist already shows them call for call. A `Plan` subagent is the one id in **both** `_plan_ids` and `_chat_tool_ids` — `_handle_tool_result` must not `elif` those two branches, or the transcript entry never gets its result. |
 | `freecad/freecadclaude/agent_config.py` | Model, system prompt (loaded from `system_prompt.md`), CLI flags (tools/mcp/cwd/skills). |
@@ -46,11 +46,16 @@ chat panel (GUI thread)
 | `freecad/freecadclaude/freecad_tools/` | The tools, as a package — see its own map below. `__init__.py` holds the `TOOLS` registry and re-exports the facade the rest of the addon imports (`TOOLS`, `list_schemas`, `feature_snapshot`, `post_tool_notes`, the session-dir helpers), so `from . import freecad_tools` still reaches everything. |
 | `freecad/freecadclaude/device_server.py` | The LAN HTTP server behind the chat panel's **Connect Mobile** button: serves `device_ui/` to a phone or tablet and takes marked-up images back. Stdlib only — no Qt, no FreeCAD, not even indirectly; see "Device annotation" below for what that import list buys. |
 | `freecad/freecadclaude/device_ui/` | The built web app — committed build output, whose source is `web/`. See "Device annotation" before touching either. |
+| `freecad/freecadclaude/gcode_server.py` | The **loopback** HTTP server behind `view_gcode` and the chat panel's **Slicer** button: serves `gcode_ui/` to the desktop browser, plus `GET /api/gcode/<id>` and `GET`/`PUT /api/slicer/{options,config}`. Binds `127.0.0.1`, keeps a token anyway. Stdlib only, same rule as `device_server.py`; see "Slice preview" below. |
+| `freecad/freecadclaude/gcode_ui/` | The built G-code viewer — the **second** committed build output, whose source is `gcode_web/`. See "Slice preview" before touching either. |
+| `freecad/freecadclaude/slicer_runner.py` | Drives Bambu Studio as a subprocess on a daemon thread, and resolves the presets it needs off the slicer's own files. Job table, argv builder, discovery. Stdlib only, and testable under a bare `python3`. |
+| `freecad/freecadclaude/web_static.py` | A URL path turned into a file inside one fixed directory, and a content type for it — shared by both servers. `resolve()` is the whole of the containment (realpath on both ends, against a root the caller passes); a second copy of it is a second place for that check to be subtly weaker. |
 | `freecad/freecadclaude/qr.py` | The pairing QR: byte mode, EC level L, versions 3–6, fixed mask 0. Imports no Qt (returns a boolean matrix; `chat_panel._qr_pixmap` paints it), so it is unit-testable headlessly. |
 | `freecad/freecadclaude/_deps.py` | Locates the `claude` CLI. |
 | `freecad/freecadclaude/eval_runner.py` | Unattended end-to-end eval (triggered by env var). |
 | `mcp_server.py` | Stdlib-only MCP stdio server the CLI spawns; relays to the bridge. |
 | `web/` | Vite + TypeScript + Vitest source of `device_ui/`. Dev-time only — excluded from `deploy.ps1`/`deploy.sh` and never shipped. |
+| `gcode_web/` | Vite + TypeScript + Vitest source of `gcode_ui/`, vendored from the `dimensioner` project. `gcode_web/VENDORED.md` records the upstream commit and every local patch, and is the reviewable artifact for a 1.1 MB minified build nobody reads. Dev-time only, same exclusions as `web/`. |
 | `deploy.ps1` / `install_deps.ps1` / `eval/run.py` | Dev tooling (not deployed). |
 
 ## Tools
@@ -61,10 +66,14 @@ Registry: `freecad_tools.TOOLS` = name → `{schema, run, precheck?}`. Current s
 `view_sketch_svg`, `capture_view`,
 `capture_user_view`, `crop_view`, `cutaway`, `annotate_view`, `read_annotation`,
 `send_to_device`, `read_device_image`,
-`export`, `inspect_api`,
+`export`, `slice_model`, `read_slice_result`, `view_gcode`, `inspect_api`,
 `get_diagnostics`, `run_python` (the only tool that touches geometry —
 the general Sketcher/PartDesign/Part path; `document_notes` mutates the
 document too, but only its own notes object).
+
+The three slice tools reach outside FreeCAD rather than into the document:
+`slice_model` starts the user's own slicer as a subprocess, and `view_gcode`
+starts a loopback listener and launches their browser. See "Slice preview".
 
 **There is no approval gate.** Tool calls execute as soon as they arrive. What
 stands between a bad call and a damaged document is the transaction (a raising
@@ -85,7 +94,9 @@ infra modules import nothing from `tools_*` (that's why `_ERROR_FLAGS` and
 | `tools_python.py` | `run_python` (+ its syntax precheck). |
 | `tools_notes.py` | The design-context tools: `document_notes` (read with no args, replace with `text`) and `set_print_direction` (batch). |
 | `doc_notes.py` | Where those notes live and how staleness is judged — see "Document notes" below. |
-| `print_meta.py` | Per-part build direction — the enumeration, the plate-side derivation, `DIRECTION_NOTE`. |
+| `print_meta.py` | Per-part build direction — the enumeration, the plate-side derivation, `DIRECTION_NOTE`, `up_vector()`. |
+| `print_export.py` | `oriented_export` — mesh each part, stand it up on its recorded `PrintDirection`, drop it onto the plate, and write them all as one multi-object 3MF through a scratch document that is closed again. Infra beside `print_meta.py`: that one records the direction, this one acts on it. The rotation reaches the mesh, never the user's objects. |
+| `tools_slice.py` | `slice_model`, `read_slice_result`, `view_gcode`, plus `open_settings_page()` re-exported for the chat panel's **Slicer** button. Everything environmental — the binary, the slicer's config, the profile roots, the preset names, the viewer directory — is read here on the GUI thread and handed to `slicer_runner`/`gcode_server` as plain values. |
 | `tools_inspect.py` | `inspect_api`. |
 | `tools_sketch.py` | `get_sketch`, `view_sketch_svg` (+ the GeoId overlay). |
 | `tools_capture.py` | `capture_view`, `capture_user_view`, `crop_view`. |
@@ -344,6 +355,85 @@ annotation document verbatim. The server runs only while the chat panel's
   facts, and with no scale a dimension reads in pixels. Hence `send_to_device`
   defaults face-on where `capture_view` defaults iso.
 
+**Slice preview** (`slicer_runner.py` + `gcode_server.py` + `web_static.py` +
+`freecad_tools/{tools_slice,print_export}.py` + `gcode_ui/`, source in
+`gcode_web/`): `slice_model` writes the chosen parts as one multi-object 3MF,
+each stood up the way it prints, and hands Bambu Studio a finished command line
+on a daemon thread; `read_slice_result` collects the outcome; `view_gcode` opens
+the toolpath in the user's own desktop browser, for them and not for Claude.
+Design doc: `docs/slice-preview-design.md`.
+
+- **There are now two committed build outputs**, and this is the fact most
+  likely to trip someone: `device_ui/` from `web/`, and `gcode_ui/` from
+  `gcode_web/`. Each is rebuilt with `npm ci && npm run build` in its own source
+  folder and committed in the same commit as the source change; `RELEASE.md`
+  lists both. Both builds are deterministic (fixed asset names, no hashes, no
+  code splitting), so a rebuild that changes nothing produces no diff.
+- **`gcode_web/` is vendored, so `VENDORED.md` is the review.** Every local
+  change to the vendored source is one numbered entry there — add yours when you
+  touch `gcode_web/src`, because the built diff is unreadable.
+- **Neither stdlib module may import FreeCAD or Qt**, for the reason
+  `device_server.py` may not: `slicer_runner` drives the slicer off the GUI
+  thread and `gcode_server` answers HTTP on its own threads. So every path,
+  preference and preset name is resolved in `tools_slice._preferences` and
+  handed over as a plain value; a function there that looked one up itself would
+  put a preference read on a worker thread.
+- **The slice is async because a slice takes minutes.** `slice_model` returns a
+  job id at once. `read_slice_result` waits in a nested `QEventLoop` with a
+  polling `QTimer` (default 120 s, cap 480), never a sleep, so FreeCAD repaints
+  and the bridge keeps marshalling calls; both bounds sit under the bridge's
+  600 s `GuiBusyTimeout`, which reports rather than cancels.
+- **A binary that is not Bambu Studio gets no command line at all.**
+  `build_argv` raises `UnknownSlicer` and `start_job` propagates it before a job
+  folder exists. These are GUI applications: a flag one does not accept opens a
+  modal dialog on the user's desktop and returns no text anyone can read, so a
+  guess is worse than a refusal. OrcaSlicer is identified and refused.
+- **Preset resolution is four levels, most specific first** — an explicit tool
+  argument, `~/FreeCADClaude/slicer.json` (what the settings page stored), the
+  slicer's own live selection, then the `Slicer*` preferences — and every result
+  says which level supplied each preset. A name from the top two levels that
+  resolves to nothing is refused, never replaced. The nozzle is pinned (0.4
+  unless asked) and all three presets are re-derived together against it: a
+  Studio session left on 0.2 has a 0.2 machine *and* process *and* filament, so
+  snapping the machine alone leaves the other two incompatible. Compatibility is
+  read from each preset's own `compatible_printers`, never parsed from its name.
+- **Every slicer-owned file is read through `slicer_runner._read_json`, which
+  returns a dict or None.** Its callers say `_read_json(path) or {}` and then
+  `.get(...)`: a JSON array is truthy, so a non-object file would survive that
+  guard and raise `AttributeError` frames away from the file that caused it.
+- **The settings page is how a printer gets changed without Claude.**
+  `view_gcode` and the chat panel's **Slicer** button open the same page, and
+  the drawer renders with no G-code loaded because configuring the printer comes
+  before the first slice. `PUT /api/slicer/config` validates every name against
+  what is installed before writing; the alternative surfaces minutes later as a
+  failed slice with the argv as the only clue.
+- **"New" clears the job table** (`slicer_runner.reset_session` plus
+  `freecad_tools.reset_slice_session`, from `chat_panel._on_new`), for the reason
+  `device_server.reset_session` exists: without it `read_slice_result` with no
+  argument answers a new conversation with the previous one's job. A slice still
+  running keeps running — what is dropped is the handle, not the child, which
+  `terminate_all` still reaches on `aboutToQuit`.
+- **The slicer's reported object sizes are not dimensions** — a 16 mm cylinder
+  came back at 17.2 — so only the box CENTRE is used and the sizes are never
+  quoted as measurements. A 3MF `<object>` carries an id and no name, so
+  `oriented_export`'s report ORDER is the only mapping from parts to file
+  objects; `result.json`'s `objects` array is *not* in that order, so match on
+  the slicer's `Object_N` name, fall back to the numeric id, and cross-check the
+  pair's size before quoting a position.
+
+Preferences, all under `PARAM_PATH` and all "empty means discover" — on a
+machine with Bambu Studio set up, none needs setting:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `SlicerPath` | string | The slicer binary. |
+| `SlicerConfPath` | string | The slicer's own `BambuStudio.conf`. |
+| `SlicerProfileDirs` | string | Extra profile roots, `os.pathsep`-joined. |
+| `SlicerNozzle` | string | Nozzle to pin when the slicer's selection is used (default `0.4`). |
+| `SlicerMachine` / `SlicerProcess` / `SlicerFilament` | string | Preset names, the last resort when everything above is missing. |
+| `SlicerArrange` / `SlicerOrient` | bool | Defaults for those two arguments (both true). |
+| `GcodeUiDir` | string | Override `gcode_ui/` — the dev hook for pointing at a Vite build. |
+
 **Draw style** (`style` on both `capture_view` and `cutaway`, schema shared via
 `render._STYLE_SCHEMA_PROPS`): `shaded` (default), `xray`, `wireframe`.
 `_force_draw_style` is the single place the viewer's override mode is set — and
@@ -387,7 +477,7 @@ unphotographable:
 3D pass `view=front/top/...` → `TechDraw.projectToSVG` orthographic) is for
 reasoning about exact coordinates as text, not for looking at the shape — its
 3D-projection path data is tessellated into many small segments and isn't
-meant to be read directly either. Artifacts go to `~/FreeCADClaude/<session-id>/{captures,exports,scripts,mobile}`
+meant to be read directly either. Artifacts go to `~/FreeCADClaude/<session-id>/{captures,exports,scripts,mobile,slices}`
 (the user's home directory, **not** FreeCAD's `UserAppData`) — `<session-id>` is a
 readable id (`YYYYMMDD-HHMMSS-<6 hex>`) minted by `freecad_tools.new_session_id()`
 when a chat starts and again on "New" (`chat_panel._ensure_worker`/`_on_new`), so
@@ -398,7 +488,15 @@ every conversation gets its own folder; `session_dir()` resolves the active one
 round trip (`sent_*` out, `upload_*` back, each upload's annotation JSON beside
 its PNG); `scripts` holds a `.py` copy of every `run_python` call
 (written by `_save_run_python_script`, right before `exec`, so both successful and
-failed runs are archived); the same session folder also holds `stream.jsonl` — the
+failed runs are archived); `slices` is the exception to the flat-files rule —
+one folder per slice job (`<HHMMSS>_<label>/`, holding `model.3mf`, the
+slicer's `plate_1.gcode` and `result.json`, `slicer.log` and `job.json`),
+because `--outputdir` writes slicer-chosen names that would collide across jobs
+and the log belongs beside what it explains. `_prune_folder` filters on
+`isfile`, so it cannot prune directories; `_session_job_dir(name, keep=20)` is
+their own keep-N. `~/FreeCADClaude/slicer.json` sits outside every session,
+beside `sketches/`, because a printer choice outlives a conversation. The same
+session folder also holds `stream.jsonl` — the
 raw newline-delimited JSON `agent_worker` reads from the `claude` CLI, appended
 turn-by-turn (`AgentWorker._open_log`) — handy for diagnosing a turn after the fact.
 The folder is also the CLI's cwd, so `prepare_session_workspace` copies the
@@ -470,10 +568,18 @@ turn that would mint one).
   an **absolute** path — with a relative one it runs nothing and still exits 0.
   After touching the device feature, re-run `eval/test_device_server.py`,
   `test_device_tools.py`, `test_qr.py` and `test_capture_scale.py`; the first
-  three also run under a plain `python3`.
-- **The web app:** `cd web && npm ci` once, then `npx vitest run` and
-  `npm run build`. The build writes the committed `freecad/freecadclaude/device_ui/`
-  — rebuild and commit it alongside any `web/` change.
+  three also run under a plain `python3`. After touching the slice feature,
+  re-run `test_slicer_runner.py` and `test_gcode_server.py` (both under a plain
+  `python3`) plus `test_slice_tools.py`, `test_export_3mf.py` and
+  `test_oriented_export.py` under `freecadcmd`. **No test may execute a real
+  slicer or spawn `sys.executable` under FreeCAD** — both slicers are GUI
+  applications, so an unaccepted flag opens a modal dialog on the user's
+  desktop. `test_slicer_runner.py` drives a `shutil.which("python3")` fake;
+  everything else refuses before anything is spawned.
+- **The two web apps:** `cd web && npm ci` once, then `npx vitest run` and
+  `npm run build`; and the same in `gcode_web`. Each build writes a committed
+  folder — `freecad/freecadclaude/device_ui/` and `.../gcode_ui/` respectively —
+  so rebuild and commit the output alongside any source change in either.
 - **End-to-end eval:** `python3 eval/run.py [-p ... -e <regex>]` (cross-platform
   — one stdlib-only script, no venv needed) — launches FreeCAD, runs a prompt
   through the real agent, snapshots the doc to
@@ -493,7 +599,9 @@ turn that would mint one).
 - **Diagnosing a past conversation:** everything for it lives in
   `~/FreeCADClaude/<session-id>/` — `stream.jsonl` (the raw JSON the `claude`
   CLI streamed, turn by turn), `scripts/` (every `run_python` call,
-  success or failure), and `captures/`/`exports/` (images/exported files). See
+  success or failure), `captures/`/`exports/` (images/exported files), and
+  `slices/<job>/` (the 3MF handed over, the G-code and `result.json` that came
+  back, `slicer.log`, and `job.json` with the argv actually used). See
   the "Tools" section above for how `<session-id>` is chosen. The "Open Files"
   button in the chat panel opens `~/FreeCADClaude` itself (all sessions).
 - **Releasing:** see `RELEASE.md`. Short version — users install from the `main`

@@ -424,6 +424,64 @@ def _check_options(host, port, token):
     check("an unknown /api route -> 404", status == 404, f"got {status}")
 
 
+def _check_unreadable_presets(host, port, token, settings_path):
+    """Both slicer routes when discovery itself fails.
+
+    The presets are the slicer's own files and it owns their shape, so reading
+    them is the one thing here that can fail for a reason nobody predicted. An
+    exception out of a handler closes the connection with no body, and the
+    drawer then reports a network failure -- which sends the user looking at
+    their wifi rather than at their slicer. Both routes answer with a sentence,
+    and the PUT stores nothing: names that could not be checked must not be
+    written, since checking them is the whole point of the route.
+    """
+    print("  -- both slicer routes when the presets cannot be read")
+    with open(settings_path, encoding="utf-8") as fh:
+        before = json.load(fh)
+
+    def _explode(*_args, **_kwargs):
+        raise RuntimeError("profile root vanished mid-read")
+
+    def _tolerating_a_drop(call):
+        """The reply, or the exception the dropped connection raised here.
+
+        A handler that raises closes the connection with no reply at all, so
+        without this the check being made would come back as a crashed test
+        rather than as a failed one.
+        """
+        try:
+            return call()
+        except Exception as exc:  # noqa: BLE001
+            return None, None, repr(exc)
+
+    real = gcode_server.slicer_runner.discover_options
+    gcode_server.slicer_runner.discover_options = _explode
+    try:
+        status, resp, body = _tolerating_a_drop(
+            lambda: _request(host, port, "/api/slicer/options",
+                             {"X-FC-Token": token}))
+        check("options answers 500 rather than dropping the connection",
+              status == 500, body if status is None else f"got {status}")
+        check("...as JSON saying what could not be read",
+              status == 500
+              and (resp.getheader("Content-Type") or "").startswith("application/json")
+              and "presets could not be read" in json.loads(body).get("error", ""),
+              str(body)[:200])
+
+        status, answer, dropped = _tolerating_a_drop(
+            lambda: _put_config(host, port, token, {"machine": M04}) + (None,))
+        check("a PUT that cannot be validated answers 500", status == 500,
+              dropped or (status, answer))
+        check("...saying nothing was stored",
+              status == 500 and "nothing was stored" in str(answer.get("error", "")),
+              dropped or answer)
+    finally:
+        gcode_server.slicer_runner.discover_options = real
+
+    with open(settings_path, encoding="utf-8") as fh:
+        check("...and nothing was", json.load(fh) == before, before)
+
+
 def _check_config(host, port, token, settings_path):
     print("  -- GET/PUT /api/slicer/config")
     status, _, body = _request(host, port, "/api/slicer/config",
@@ -548,6 +606,7 @@ def main():
         _check_publish(host, port, token, tmp)
         _check_options(host, port, token)
         _check_config(host, port, token, settings_path)
+        _check_unreadable_presets(host, port, token, settings_path)
 
         check("is_running() while up", gcode_server.is_running())
         check("current_url() while up", gcode_server.current_url() == url)
@@ -565,16 +624,48 @@ def main():
     check("restart mints a fresh token", new_token != token)
 
     # There is no viewer to serve in a checkout that was never built, and that
-    # has to be a sentence rather than a listener on a directory that isn't there.
+    # has to be a sentence rather than a listener on a directory that isn't
+    # there. Which sentence depends on where the path came from: an unbuilt
+    # gcode_ui/ is a build step, while a GcodeUiDir pointing nowhere is the
+    # user's own preference and would otherwise read as a broken install.
     missing = os.path.join(tempfile.gettempdir(), "fcc-gcode-not-built")
     shutil.rmtree(missing, ignore_errors=True)
+    built = gcode_server.UI_DIR
     try:
-        gcode_server.start(ui_dir=missing)
+        gcode_server.UI_DIR = missing
+        gcode_server.start()
         check("an unbuilt viewer directory refuses to start", False, "it started")
         gcode_server.stop()
     except RuntimeError as exc:
         check("an unbuilt viewer directory refuses to start",
               missing in str(exc) and "npm" in str(exc), str(exc))
+    finally:
+        gcode_server.UI_DIR = built
+        gcode_server._config["ui_dir"] = None
+
+    try:
+        gcode_server.start(ui_dir=missing)
+        check("a GcodeUiDir pointing nowhere refuses too", False, "it started")
+        gcode_server.stop()
+    except RuntimeError as exc:
+        check("a GcodeUiDir pointing nowhere names the preference, not a build",
+              missing in str(exc) and "GcodeUiDir" in str(exc)
+              and "npm" not in str(exc), str(exc))
+
+    # The user clears that preference and tries again. view_gcode then passes
+    # ui_dir=None, which has to REPLACE the stored path rather than be read as
+    # "nothing to say" -- otherwise the refusal outlives its own cause and only
+    # a FreeCAD restart clears it.
+    try:
+        gcode_server.start(ui_dir=None, settings_path=settings_path,
+                           conf_path=None, profile_dirs=[])
+        check("clearing GcodeUiDir un-sticks the refusal", True)
+        check("...and the committed viewer is served again",
+              gcode_server._config["ui_dir"] is None, gcode_server._config)
+        gcode_server.stop()
+    except RuntimeError as exc:
+        check("clearing GcodeUiDir un-sticks the refusal", False, str(exc))
+        check("...and the committed viewer is served again", False, str(exc))
     finally:
         gcode_server._config["ui_dir"] = None
 

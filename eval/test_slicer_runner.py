@@ -486,6 +486,48 @@ def _check_degrading(install, dirs):
           empty["missing"] == ["machine", "process", "filament"], empty["missing"])
 
 
+def _check_non_object_preset(root):
+    """A file in a profile folder that parses to a JSON array, not an object.
+
+    Every caller of ``_read_json`` writes ``_read_json(path) or {}`` and then
+    ``.get(...)``. A non-empty array is truthy, so it survives that guard and
+    raises ``AttributeError`` frames away from the file that caused it -- out of
+    a settings request as a dropped connection, and out of ``slice_model`` as a
+    traceback. These are the slicer's files, so nothing here controls their
+    shape.
+    """
+    print("  -- a preset file that is not a JSON object")
+    tree = os.path.join(root, "odd-profiles", "BBL")
+    _write_json(os.path.join(tree, "machine", M04 + ".json"),
+                {"type": "machine", "name": M04, "printer_model": MODEL,
+                 "printer_variant": "0.4", "nozzle_diameter": ["0.4"],
+                 "default_print_profile": P04, "default_filament_profile": [F04]})
+    _write_json(os.path.join(tree, "process", P04 + ".json"),
+                {"type": "process", "name": P04, "compatible_printers": [M04]})
+    _write_json(os.path.join(tree, "process", "array.json"), ["not", "an", "object"])
+    _write_json(os.path.join(tree, "filament", F04 + ".json"),
+                {"type": "filament", "name": F04, "compatible_printers": [M04]})
+
+    check("it is read as nothing rather than as a mapping",
+          runner._read_json(os.path.join(tree, "process", "array.json")) is None)
+    try:
+        options = runner.discover_options(None, [tree], machine=M04)
+        check("discover_options gets through it", True)
+        check("...and still offers the real presets",
+              P04 in [entry["name"] for entry in options["processes"]],
+              options["processes"])
+    except Exception as exc:  # noqa: BLE001 - a raise here is the failure
+        check("discover_options gets through it", False, repr(exc))
+        check("...and still offers the real presets", False, repr(exc))
+    try:
+        resolved = runner.resolve_presets(profile_dirs=[tree],
+                                          overrides={"machine": M04})
+        check("resolve_presets gets through it too",
+              resolved["machine"]["name"] == M04, resolved["machine"])
+    except Exception as exc:  # noqa: BLE001
+        check("resolve_presets gets through it too", False, repr(exc))
+
+
 def _check_options(install, dirs):
     print("  -- discover_options for the settings panel")
     options = runner.discover_options(install["conf_04"], dirs, machine=M04)
@@ -781,6 +823,7 @@ def main():
         _check_kept_selection(install, dirs)
         _check_levels(install, dirs)
         _check_degrading(install, dirs)
+        _check_non_object_preset(root)
         _check_options(install, dirs)
         _check_argv(install, dirs)
         jobs_root = os.path.join(root, "session", "slices")

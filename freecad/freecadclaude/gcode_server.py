@@ -93,6 +93,14 @@ _state = {"server": None, "thread": None, "url": None, "token": None}
 _config = {"ui_dir": None, "settings_path": None, "conf_path": None,
            "profile_dirs": ()}
 
+#: A :func:`start` argument left out, as against one passed as ``None``. The
+#: two mean different things: a caller that omits it is re-checking the running
+#: server and wants what is already stored, while ``None`` from ``view_gcode``
+#: is the resolved value of an empty preference and has to replace a path that
+#: preference used to hold. Without the distinction a GcodeUiDir the user has
+#: since cleared goes on refusing to serve until FreeCAD is restarted.
+_KEEP = object()
+
 #: Published G-code, by an id we minted. A path is never taken from a client.
 _files = {}
 _files_order = []
@@ -113,32 +121,42 @@ class _Server(http.server.ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
-def start(ui_dir=None, settings_path=None, conf_path=None, profile_dirs=None):
+def start(ui_dir=_KEEP, settings_path=_KEEP, conf_path=_KEEP, profile_dirs=_KEEP):
     """Start the viewer server (idempotent). Returns ``(url, token)``.
 
     Every argument is a path the caller resolved on the GUI thread, and they are
     re-applied on a call that finds the server already up -- a second
     ``view_gcode`` in a later conversation may have a different settings path
-    or a newly-installed slicer, and the running server has no way to notice.
+    or a newly-installed slicer, and the running server has no way to notice. An
+    argument left out keeps what is stored; ``None`` replaces it (see
+    :data:`_KEEP`).
 
-    Raises ``RuntimeError`` if there is no viewer to serve, which is only
-    reachable in a source checkout that has never been built: the folder is
-    committed, so an installed addon always has it.
+    Raises ``RuntimeError`` if there is no viewer to serve: either the
+    ``GcodeUiDir`` preference points at something that is not a directory, or --
+    only in a source checkout that has never been built -- the committed
+    ``gcode_ui/`` is absent.
     """
     with _lock:
-        if ui_dir:
-            _config["ui_dir"] = ui_dir
-        if settings_path:
-            _config["settings_path"] = settings_path
-        _config["conf_path"] = conf_path or _config["conf_path"]
-        if profile_dirs is not None:
-            _config["profile_dirs"] = tuple(profile_dirs)
+        for key, value in (("ui_dir", ui_dir), ("settings_path", settings_path),
+                           ("conf_path", conf_path)):
+            if value is not _KEEP:
+                _config[key] = value or None
+        if profile_dirs is not _KEEP:
+            _config["profile_dirs"] = tuple(profile_dirs or ())
 
         if _state["server"] is not None:
             return _state["url"], _state["token"]
 
         root = _config["ui_dir"] or UI_DIR
         if not os.path.isdir(root):
+            # Which of the two it is decides what the user has to do, and a
+            # mistyped preference otherwise reads as a broken install.
+            if _config["ui_dir"]:
+                raise RuntimeError(
+                    f"the GcodeUiDir preference points at {root}, which is not "
+                    "a directory. Point it at a built viewer, or clear it to "
+                    "use the one shipped with the addon."
+                )
             raise RuntimeError(
                 f"the G-code viewer has not been built: {root} does not exist. "
                 "Run 'npm ci && npm run build' in gcode_web/."
@@ -507,8 +525,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         machine = (query.get("machine") or [""])[0].strip() or None
         try:
             self._send_json(200, _options(machine))
-        except OSError as exc:
-            self._send_json(500, {"error": "the profile folders could not be "
+        except Exception as exc:  # noqa: BLE001 - a reply, not a dropped socket
+            # These are the slicer's own files and it owns their shape. Anything
+            # unreadable among a few thousand of them has to come back as a
+            # sentence the drawer can show: an exception out of a handler closes
+            # the connection, and the page then reports a network failure.
+            self._send_json(500, {"error": "the installed presets could not be "
                                            "read: %s" % exc})
 
     def _store_settings(self):
@@ -527,7 +549,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         except (UnicodeDecodeError, ValueError) as exc:
             self._send_json(400, {"error": "that is not JSON: %s" % exc})
             return
-        settings, error = _validate(payload)
+        try:
+            settings, error = _validate(payload)
+        except Exception as exc:  # noqa: BLE001 - a reply, not a dropped socket
+            # Validation reads every installed preset. If that read fails there
+            # is nothing to check the names against, so nothing is stored --
+            # writing them unchecked is the failure the PUT exists to prevent.
+            self._send_json(500, {"error": "the installed presets could not be "
+                                           "read, so nothing was stored: %s" % exc})
+            return
         if error:
             self._send_json(400, {"error": error})
             return
