@@ -49,7 +49,7 @@ from .session import _artifact_path, _session_subdir
 #: button, because "start the device server" is not a thing anyone can act on.
 _NOT_RUNNING = (
     "The device server isn't running, so there's nowhere to send this. Ask the "
-    "user to press the **Device** button in the Claude panel (next to Files) "
+    "user to press the **Connect Mobile** button in the Claude panel "
     "and scan the code with their phone or tablet -- then call send_to_device "
     "again."
 )

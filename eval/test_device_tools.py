@@ -68,7 +68,11 @@ def main():
     # the only useful thing the message can say.
     sent = _text(tools_device._run_send_to_device({"objects": ["Box"]}))
     check("send_to_device with no server -> a message", isinstance(sent, str))
-    check("...naming the button to press", "Device" in sent and "panel" in sent, sent)
+    check(
+        "...naming the button to press",
+        "Connect Mobile" in sent and "panel" in sent,
+        sent,
+    )
     check("...and not a traceback", "Traceback" not in sent and "Error(" not in sent, sent)
 
     read = _text(tools_device._run_read_device_image({}))

@@ -36,7 +36,7 @@ chat panel (GUI thread)
 | `Init.py` / `InitGui.py` | Workbench registration (App/GUI). InitGui also has the eval hook. |
 | `freecad/freecadclaude/chat_panel.py` | The dock, Markdown transcript (streamed), buttons, worker wiring. |
 | `freecad/freecadclaude/plan_panel.py` | Second dock: Plan (subagent output) + live task checklist. |
-| `freecad/freecadclaude/flow_layout.py` | `FlowLayout` — a wrapping row layout, used for the chat panel's control strip (model + effort combos, Files/Device/New/Stop/Send). A `QHBoxLayout`'s minimum width is the *sum* of its children's, and a `QPushButton`'s own minimum is ~80px however short its label, so a single non-wrapping strip sets the dock's floor far above what the transcript and input need. Wrapping makes the layout's minimum the *widest single item* while its `sizeHint` stays the one-row width, so the dock opens wide and still drags narrow. Rows are flush right, matching where the strip sits. |
+| `freecad/freecadclaude/flow_layout.py` | `FlowLayout` — a wrapping row layout, used for the chat panel's control strip (Send/Stop/New, model + effort combos, Open Files/Connect Mobile). A `QHBoxLayout`'s minimum width is the *sum* of its children's, and a `QPushButton`'s own minimum is ~80px however short its label, so a single non-wrapping strip sets the dock's floor far above what the transcript and input need. Wrapping makes the layout's minimum the *widest single item* while its `sizeHint` stays the one-row width, so the dock opens wide and still drags narrow. Rows are flush right, matching where the strip sits. |
 | `freecad/freecadclaude/dock_panel.py` | The singleton dock shell both panels subclass (`DockPanel`): lazy creation, reuse-by-`objectName` across a workbench reload, `instance()`/`widget`. Subclasses supply the inner widget and, via `_on_created`, what happens to a fresh dock (chat raises itself; the plan dock tabs in behind it). |
 | `freecad/freecadclaude/agent_worker.py` | Drives the `claude` CLI per turn; parses stream-json → Qt signals. `_handle_tool_use` **surfaces a tool call by default** and special-cases only the exceptions, so a tool added to the allow-list appears in the transcript without a change here — the old allow-list shape let `Write`/`Glob`/`Grep` run invisibly. `_tool_label` picks the detail arg (path basename, pattern, subagent type); an unmapped name falls back to its own lowercased name. `TaskCreate`/`TaskUpdate` stay out of the transcript because the plan dock's checklist already shows them call for call. A `Plan` subagent is the one id in **both** `_plan_ids` and `_chat_tool_ids` — `_handle_tool_result` must not `elif` those two branches, or the transcript entry never gets its result. |
 | `freecad/freecadclaude/agent_config.py` | Model, system prompt (loaded from `system_prompt.md`), CLI flags (tools/mcp/cwd/skills). |
@@ -44,7 +44,7 @@ chat panel (GUI thread)
 | `freecad/freecadclaude/references/` | run_python scripting references (sketcher / partdesign / part-draft) the system prompt tells Claude to `Read` on demand — progressive disclosure without a skill gate. The prompt's execution-contract section covers the rest. |
 | `freecad/freecadclaude/gui_bridge.py` | In-FreeCAD socket server; runs tools on the GUI thread; run_python arg precheck. |
 | `freecad/freecadclaude/freecad_tools/` | The tools, as a package — see its own map below. `__init__.py` holds the `TOOLS` registry and re-exports the facade the rest of the addon imports (`TOOLS`, `list_schemas`, `feature_snapshot`, `post_tool_notes`, the session-dir helpers), so `from . import freecad_tools` still reaches everything. |
-| `freecad/freecadclaude/device_server.py` | The LAN HTTP server behind the chat panel's **Device** button: serves `device_ui/` to a phone or tablet and takes marked-up images back. Stdlib only — no Qt, no FreeCAD, not even indirectly; see "Device annotation" below for what that import list buys. |
+| `freecad/freecadclaude/device_server.py` | The LAN HTTP server behind the chat panel's **Connect Mobile** button: serves `device_ui/` to a phone or tablet and takes marked-up images back. Stdlib only — no Qt, no FreeCAD, not even indirectly; see "Device annotation" below for what that import list buys. |
 | `freecad/freecadclaude/device_ui/` | The built web app — committed build output, whose source is `web/`. See "Device annotation" before touching either. |
 | `freecad/freecadclaude/qr.py` | The pairing QR: byte mode, EC level L, versions 3–6, fixed mask 0. Imports no Qt (returns a boolean matrix; `chat_panel._qr_pixmap` paints it), so it is unit-testable headlessly. |
 | `freecad/freecadclaude/_deps.py` | Locates the `claude` CLI. |
@@ -298,7 +298,7 @@ the LAN as the editor. `send_to_device` renders a capture and publishes it; the
 paired page shows it over SSE, the user draws with a stylus and places
 **dimensions**; `read_device_image` returns the flattened PNG inline plus the
 annotation document verbatim. The server runs only while the chat panel's
-**Device** button says so. Design docs: `docs/device-annotation-{design,plan}.md`.
+**Connect Mobile** button says so. Design docs: `docs/device-annotation-{design,plan}.md`.
 
 - **The HTTP server never calls into FreeCAD, and its import list is what
   enforces that.** `device_server.py` imports no FreeCAD and no Qt, not even
@@ -494,7 +494,7 @@ turn that would mint one).
   `~/FreeCADClaude/<session-id>/` — `stream.jsonl` (the raw JSON the `claude`
   CLI streamed, turn by turn), `scripts/` (every `run_python` call,
   success or failure), and `captures/`/`exports/` (images/exported files). See
-  the "Tools" section above for how `<session-id>` is chosen. The "Files"
+  the "Tools" section above for how `<session-id>` is chosen. The "Open Files"
   button in the chat panel opens `~/FreeCADClaude` itself (all sessions).
 - **Releasing:** see `RELEASE.md`. Short version — users install from the `main`
   **branch** (the Addon Manager custom-repo entry and `package.xml` both pin

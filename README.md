@@ -22,7 +22,7 @@ subscription; intended for personal use.*
 > or overwrite files on disk (but never the live document); every other tool is
 > read-only. `Bash` and `Edit` are disabled.
 >
-> **On a phone or tablet:** press **Device** and the panel starts a small web
+> **On a phone or tablet:** press **Connect Mobile** and the panel starts a small web
 > server *on your local network* and shows a QR code. Scan it and you get a pen
 > canvas: Claude can push a view of the model to it, you circle the boss and
 > write "30mm", and it comes back with the dimensions as real numbers. Off
@@ -184,11 +184,11 @@ When set, the agent runs with that as its working dir and enables the
 ## Annotating on a phone or tablet
 
 A picture tells Claude *where*; only a dimension with a number tells it *how
-much*. The **Device** button (next to Files) serves a small pen-and-canvas web
+much*. The **Connect Mobile** button serves a small pen-and-canvas web
 app to a phone or tablet on the same wifi, so you can point at the model with a
 stylus instead of describing it.
 
-1. Press **Device**. A dialog shows a QR code and the URL under it.
+1. Press **Connect Mobile**. A dialog shows a QR code and the URL under it.
 2. Scan it (or type the URL). The page opens already authenticated.
 3. Claude calls `send_to_device` and a rendered view appears on the device;
    or pick a photo/camera shot on the device instead — a napkin sketch, a part
@@ -208,7 +208,7 @@ conversation's artifacts.
 This is the one part of the addon that listens on your **local network** rather
 than on localhost, so it's worth being exact about what that means.
 
-- **Off by default.** Nothing listens until you press Device — not on startup,
+- **Off by default.** Nothing listens until you press Connect Mobile — not on startup,
   and not because Claude asked. `send_to_device` with the server down returns a
   message telling Claude to ask *you* to press the button.
 - **A fresh token per start**, carried in the URL the QR encodes. Every request

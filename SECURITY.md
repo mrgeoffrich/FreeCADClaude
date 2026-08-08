@@ -32,7 +32,7 @@ or session data.
 
 ## The device annotation server
 
-The **Device** button starts a second, separate HTTP server that binds
+The **Connect Mobile** button starts a second, separate HTTP server that binds
 `0.0.0.0` — your local network, not just localhost — so a phone or tablet can
 load the annotation page. It is the only part of the addon that does this, and
 the threat model is *someone else on your wifi*.

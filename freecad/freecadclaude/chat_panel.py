@@ -71,17 +71,16 @@ _MAX_TOOL_RESULT_CHARS = 4000
 #: document.
 _CAPABILITY_NOTICE = """### What Claude can do here
 
-⚠️ **Claude acts on your document immediately — there is no approval prompt.**
+⚠️ **Claude acts on your document immediately — there is no approval prompt.** It
+runs Python inside FreeCAD, so it can add, edit or delete any object in the open
+file, and read or write files on this computer. It can also screenshot, section
+and export the model. Each call is one undoable transaction that rolls back if it
+fails. Save your work before a long build, and don't point it at a file you can't
+afford to lose.
 
-- **Change the document** — it writes and runs Python inside FreeCAD, so it can
-  add, edit or delete any object in whatever file you have open.
-- **Reach your files** — that code is ordinary Python in the FreeCAD process, so
-  it can read, write and delete files on this computer too, not just the model.
-- **Look at your work** — screenshots, section views and exports of the document.
-
-Each call is one undoable transaction (a failed one rolls itself back), and a copy
-of every script is kept under `~/FreeCADClaude/`. **Save your work before a long
-build**, and don't point it at a file you can't afford to lose."""
+- ℹ️ A copy of every script is kept under `~/FreeCADClaude/`.
+- ℹ️ Click **📱 Connect Mobile** to send and receive images from your phone or
+  iPad, for annotation or ideation."""
 
 
 def _format_tool_input(inp):
@@ -293,6 +292,18 @@ class ChatWidget(QtWidgets.QWidget):
         control_row = flow_layout.FlowLayout(controls, spacing=layout.spacing())
         from . import agent_config
 
+        self.send_button = QtWidgets.QPushButton("Send", controls)
+        self.send_button.setDefault(True)
+        self.send_button.clicked.connect(self.on_send)
+        control_row.addWidget(self.send_button)
+        self.stop_button = QtWidgets.QPushButton("Stop", controls)
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self._on_stop)
+        control_row.addWidget(self.stop_button)
+        self.new_button = QtWidgets.QPushButton("New", controls)
+        self.new_button.setToolTip("Start a new conversation (clears history and the agent's memory)")
+        self.new_button.clicked.connect(self._on_new)
+        control_row.addWidget(self.new_button)
         self.model_combo = QtWidgets.QComboBox(controls)
         self.model_combo.setToolTip(
             "Model for the conversation (locks once a chat starts; use New to change)"
@@ -314,28 +325,16 @@ class ChatWidget(QtWidgets.QWidget):
         self.effort_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.effort_combo.currentIndexChanged.connect(self._on_effort_changed)
         control_row.addWidget(self.effort_combo)
-        self.files_button = QtWidgets.QPushButton("Files", controls)
+        self.files_button = QtWidgets.QPushButton("📁 Open Files", controls)
         self.files_button.setToolTip("Open the FreeCADClaude captures/exports folder")
         self.files_button.clicked.connect(self._open_artifacts)
         control_row.addWidget(self.files_button)
-        self.device_button = QtWidgets.QPushButton("Device", controls)
+        self.device_button = QtWidgets.QPushButton("📱 Connect Mobile", controls)
         self.device_button.setToolTip(
             "Serve the annotation page to a phone or tablet on this network"
         )
         self.device_button.clicked.connect(self._on_device)
         control_row.addWidget(self.device_button)
-        self.new_button = QtWidgets.QPushButton("New", controls)
-        self.new_button.setToolTip("Start a new conversation (clears history and the agent's memory)")
-        self.new_button.clicked.connect(self._on_new)
-        control_row.addWidget(self.new_button)
-        self.stop_button = QtWidgets.QPushButton("Stop", controls)
-        self.stop_button.setEnabled(False)
-        self.stop_button.clicked.connect(self._on_stop)
-        control_row.addWidget(self.stop_button)
-        self.send_button = QtWidgets.QPushButton("Send", controls)
-        self.send_button.setDefault(True)
-        self.send_button.clicked.connect(self.on_send)
-        control_row.addWidget(self.send_button)
         button_row.addWidget(controls)
         layout.addLayout(button_row)
 
@@ -756,7 +755,7 @@ class ChatWidget(QtWidgets.QWidget):
         minutes = max(1, int(round(float(timeout) / 60.0)))
         self._note(
             f"*Device server stopped after {minutes} idle minute(s) with nothing "
-            "connected. Press **Device** to start it again -- it mints a new "
+            "connected. Press **Connect Mobile** to start it again -- it mints a new "
             "code, so the device has to re-scan.*"
         )
 
