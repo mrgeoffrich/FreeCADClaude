@@ -38,7 +38,7 @@ chat panel (GUI thread)
 | `freecad/freecadclaude/plan_panel.py` | Second dock: Plan (subagent output) + live task checklist. |
 | `freecad/freecadclaude/flow_layout.py` | `FlowLayout` — a wrapping row layout, used for the chat panel's control strip (model combo + Files/New/Stop/Send). A `QHBoxLayout`'s minimum width is the *sum* of its children's, and a `QPushButton`'s own minimum is ~80px however short its label, so a single non-wrapping strip sets the dock's floor far above what the transcript and input need. Wrapping makes the layout's minimum the *widest single item* while its `sizeHint` stays the one-row width, so the dock opens wide and still drags narrow. Rows are flush right, matching where the strip sits. |
 | `freecad/freecadclaude/dock_panel.py` | The singleton dock shell both panels subclass (`DockPanel`): lazy creation, reuse-by-`objectName` across a workbench reload, `instance()`/`widget`. Subclasses supply the inner widget and, via `_on_created`, what happens to a fresh dock (chat raises itself; the plan dock tabs in behind it). |
-| `freecad/freecadclaude/agent_worker.py` | Drives the `claude` CLI per turn; parses stream-json → Qt signals. |
+| `freecad/freecadclaude/agent_worker.py` | Drives the `claude` CLI per turn; parses stream-json → Qt signals. `_handle_tool_use` **surfaces a tool call by default** and special-cases only the exceptions, so a tool added to the allow-list appears in the transcript without a change here — the old allow-list shape let `Write`/`Glob`/`Grep` run invisibly. `_tool_label` picks the detail arg (path basename, pattern, subagent type); an unmapped name falls back to its own lowercased name. `TaskCreate`/`TaskUpdate` stay out of the transcript because the plan dock's checklist already shows them call for call. A `Plan` subagent is the one id in **both** `_plan_ids` and `_chat_tool_ids` — `_handle_tool_result` must not `elif` those two branches, or the transcript entry never gets its result. |
 | `freecad/freecadclaude/agent_config.py` | Model, system prompt (loaded from `system_prompt.md`), CLI flags (tools/mcp/cwd/skills). |
 | `freecad/freecadclaude/system_prompt.md` | The system prompt text itself, edited as plain Markdown. Its `{REFS_DIR}` placeholder is replaced by `agent_config` at load with the absolute path of `references/`. |
 | `freecad/freecadclaude/references/` | run_python scripting references (sketcher / partdesign / part-draft) the system prompt tells Claude to `Read` on demand — progressive disclosure without a skill gate. The prompt's execution-contract section covers the rest. |
@@ -118,12 +118,13 @@ reasons about, not something it can visually see.
 Besides this MCP registry, a few of the CLI's own built-in tools are always
 enabled (`agent_config.build_config`'s `builtin_tools`): `Read` (the SVG file
 from `view_sketch_svg`, skill reference files, and the bundled
-`references/*.md` scripting references), `Write` (author plain-text
-files, e.g. `freecad-lofi-sketch`'s SVGs), and `Glob`/`Grep` (file search — find
+`references/*.md` scripting references), `Write`/`Edit` (author plain-text
+files whole or patch them in place, e.g. `freecad-lofi-sketch`'s SVGs), and
+`Glob`/`Grep` (file search — find
 files by name/path, search their contents; so Claude can locate a STEP/STL to
 import or a previous export before Reading it). All run inside the `claude` CLI
-process itself, not the MCP bridge; all are read-only except `Write`, which
-authors files on disk but never touches the live document. `Glob`/`Grep` are
+process itself, not the MCP bridge; all are read-only except `Write`/`Edit`,
+which reach the filesystem but never the live document. `Glob`/`Grep` are
 always on, independent of `_SKILL_TOOLS` (which covers only `Skill`), since file
 search is a general capability, not a skill-only one.
 
@@ -361,14 +362,20 @@ turn that would mint one).
 project dir (so its `.claude/skills` load) else a temp dir.
 
 - `--tools ""` disables ALL built-ins (incl. `Skill`). We enable a safe set:
-  `Read` and `Write` (always — skill reference files and plain-text file
+  `Read`, `Write` and `Edit` (always — skill reference files and plain-text file
   authoring), `Glob`/`Grep` (always — file search), the `Task*` family (todo +
-  Plan subagent), and `Skill` when a skills project is configured. `Bash`/`Edit`
-  stay OFF — the only path that mutates the *live FreeCAD document* is
-  `run_python`; `Write` can create/overwrite arbitrary files on
-  disk but never touches the document.
+  Plan subagent), and `Skill` when a skills project is configured. `Bash`
+  stays OFF — the only path that mutates the *live FreeCAD document* is
+  `run_python`; `Write`/`Edit` can create, overwrite and patch arbitrary files
+  on disk but never touch the document.
+- An unrecognised name in `--tools` is **dropped silently**, with no warning and
+  no error — a renamed or misspelt tool degrades capability invisibly. The
+  `system` init event in `stream.jsonl` lists what the CLI actually resolved;
+  that is the only place a drop shows up.
 - The subagent launcher is reported as `Agent` in tool_use even though enabled via
   `Task`; `Agent` is in the allow-list so subagents (e.g. `Plan`) don't prompt.
+  The CLI treats the two names as aliases, so listing both in `--tools` is
+  redundant, not additive.
 
 ## Dev workflow
 

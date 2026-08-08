@@ -25,6 +25,42 @@ from PySide import QtCore
 # Hide the child console window on Windows; 0 (no-op) elsewhere.
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+#: The arg that identifies a built-in tool's call, tried in order; the first one
+#: present becomes the detail half of its transcript label.
+_TOOL_LABEL_ARGS = {
+    "Read": ("file_path",),
+    "Write": ("file_path",),
+    "Edit": ("file_path",),
+    "Glob": ("pattern",),
+    "Grep": ("pattern",),
+    "Skill": ("command", "name", "skill"),
+    "Agent": ("subagent_type", "description"),
+    "TaskGet": ("taskId",),
+    "TaskStop": ("taskId",),
+}
+
+#: Clip a label's detail arg to keep the transcript row one line.
+_MAX_LABEL_DETAIL = 48
+
+
+def _tool_label(name, inp):
+    """Short transcript label for a tool call outside the FreeCAD MCP set.
+
+    A name absent from _TOOL_LABEL_ARGS falls back to the bare tool name, so a
+    tool added to the allow-list later is surfaced rather than running unseen.
+    """
+    for key in _TOOL_LABEL_ARGS.get(name, ()):
+        value = inp.get(key)
+        if not value:
+            continue
+        value = str(value)
+        if key == "file_path":
+            value = value.replace("\\", "/").rsplit("/", 1)[-1]
+        elif len(value) > _MAX_LABEL_DETAIL:
+            value = value[: _MAX_LABEL_DETAIL - 1] + "…"
+        return f"{name.lower()}: {value}"
+    return name.lower()
+
 
 class AgentWorker(QtCore.QObject):
     """Runs the claude CLI per turn, streaming replies out as signals."""
@@ -80,9 +116,10 @@ class AgentWorker(QtCore.QObject):
         # Pin reasoning effort so we don't inherit the user's global effortLevel.
         if cfg.get("effort"):
             argv += ["--effort", cfg["effort"]]
-        # Built-in tools: a safe allowlist (Skill + read-only) when a skills
-        # project is configured, otherwise none. Bash/Write/Edit stay off either
-        # way -- the only mutation path is the run_python MCP tool.
+        # Built-in tools: a safe allowlist (Skill + read/search + file
+        # authoring) when a skills project is configured, otherwise none. Bash
+        # stays off either way -- the only path that mutates the live FreeCAD
+        # document is the run_python MCP tool.
         builtin = cfg.get("builtin_tools") or []
         if builtin:
             argv += ["--tools", *builtin]
@@ -246,29 +283,31 @@ class AgentWorker(QtCore.QObject):
         return False
 
     def _handle_tool_use(self, block):
+        """Route one tool call: plan-dock tools to their own signal, everything
+        else to the transcript. Surfacing is the default so no tool runs unseen
+        -- a new entry in the allow-list needs no change here."""
         name = block.get("name") or ""
         inp = block.get("input") or {}
+        # TaskCreate/TaskUpdate drive the plan dock's live checklist, which is
+        # where the user already sees them; a transcript entry per call would
+        # duplicate that list.
         if name == "TaskCreate":
             self._pending_tasks[block.get("id")] = inp.get("subject") or inp.get("description") or "Task"
-        elif name == "TaskUpdate":
+            return
+        if name == "TaskUpdate":
             self.task_event.emit(
                 {"op": "update", "num": str(inp.get("taskId")), "status": inp.get("status") or ""}
             )
-        elif name == "Agent" and inp.get("subagent_type") == "Plan":
-            if block.get("id"):
-                self._plan_ids.add(block["id"])
-        elif name == "Skill":
-            # Built-in, otherwise invisible -- show which skill is loading so a
-            # long skill+reference read doesn't look like the turn is stuck.
-            skill = inp.get("command") or inp.get("name") or inp.get("skill")
-            self._emit_tool_used(block.get("id"), f"skill: {skill}" if skill else "skill", inp)
-        elif name == "Read":
-            # Built-in reference/image reads -- show just the file name.
-            path = inp.get("file_path") or ""
-            self._emit_tool_used(block.get("id"), "read: " + path.rsplit("/", 1)[-1] if path else "read", inp)
-        elif name.startswith("mcp__freecad__"):
+            return
+        if name == "Agent" and inp.get("subagent_type") == "Plan" and block.get("id"):
+            # The result text goes to the plan dock; the call is still shown in
+            # chat below, so a long subagent doesn't look like a stalled turn.
+            self._plan_ids.add(block["id"])
+        if name.startswith("mcp__freecad__"):
             # Surface every FreeCAD action in chat, including get_objects/get_selection.
             self._emit_tool_used(block.get("id"), name.replace("mcp__freecad__", ""), inp)
+            return
+        self._emit_tool_used(block.get("id"), _tool_label(name, inp), inp)
 
     def _emit_tool_used(self, tool_id, label, inp):
         if tool_id:
@@ -279,20 +318,23 @@ class AgentWorker(QtCore.QObject):
         import re
 
         tid = block.get("tool_use_id")
-        if tid in self._plan_ids:
-            self._plan_ids.discard(tid)
-            text = self._extract_text(block.get("content"))
-            if text:
-                self.plan_received.emit(text)
-        elif tid in self._pending_tasks:
+        if tid in self._pending_tasks:
             subject = self._pending_tasks.pop(tid)
             content = self._extract_text(block.get("content"))
             match = re.search(r"#(\d+)", content or "")
             num = match.group(1) if match else str(len(self._pending_tasks) + 1)
             self.task_event.emit({"op": "create", "num": num, "subject": subject})
-        elif tid in self._chat_tool_ids:
+            return
+
+        # A Plan subagent's id is in both sets: its text fills the plan dock and
+        # its own transcript entry, so neither branch may swallow the other.
+        text = self._extract_text(block.get("content"))
+        if tid in self._plan_ids:
+            self._plan_ids.discard(tid)
+            if text:
+                self.plan_received.emit(text)
+        if tid in self._chat_tool_ids:
             self._chat_tool_ids.discard(tid)
-            text = self._extract_text(block.get("content"))
             if text:
                 self.tool_result.emit(tid, text)
 
