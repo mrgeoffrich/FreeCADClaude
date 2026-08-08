@@ -154,6 +154,20 @@ def get_skills_dir():
     return None
 
 
+def session_workspace():
+    """The CLI's cwd: this conversation's session folder, with the skills and the
+    scripting references copied into it.
+
+    The session folder rather than the addon root, so the CLI's project context
+    is the conversation's own artifacts (captures, exports, scripts) and not this
+    repo's source. Call it again after "New" -- a fresh conversation means a
+    fresh folder, and the copies are remade from the originals.
+    """
+    from . import freecad_tools
+
+    return freecad_tools.prepare_session_workspace(get_skills_dir())
+
+
 def _python_exe():
     """Path to FreeCAD's bundled Python (used to run the stdlib-only MCP server)."""
     home = FreeCAD.getHomePath()
@@ -208,7 +222,7 @@ def build_config(cli_path, bridge_port, bridge_token):
         "mcp_config": mcp_config,
         "allowed_tools": allowed_tools,
         "builtin_tools": builtin_tools,
-        "cwd": skills_dir,  # None -> worker uses a neutral temp dir
+        "cwd": session_workspace(),  # the session folder, skills copied in
         # The active chat conversation's log folder -- see freecad_tools.new_session_id.
         # Must be minted (freecad_tools.new_session_id()) before this call.
         "log_dir": freecad_tools.session_dir(),

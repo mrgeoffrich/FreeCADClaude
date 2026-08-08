@@ -93,7 +93,7 @@ infra modules import nothing from `tools_*` (that's why `_ERROR_FLAGS` and
 | `tools_device.py` | `send_to_device`, `read_device_image` — the same round trip through a phone or tablet on the LAN. Also `device_upload_dir()`, re-exported for `chat_panel`; it is the whole of the no-FreeCAD seam described under "Device annotation". No rendering code of its own — it enters `render._offscreen_shot` like the capture tools do. |
 | `tools_cutaway.py` | `cutaway` (+ clip-plane resolution). |
 | `tools_export.py` | `export`. |
-| `session.py` | Artifact folders: the per-conversation session dir, the script/step archives (`_session_subdir`/`_safe_name` build every artifact path), plus the two paths that aren't artifacts but that several modules must agree on: `PARAM_PATH` (the preferences root) and `REFS_DIR` (the bundled `references/`). Both are single-spelled here and imported by `agent_config` rather than re-declared — `agent_config` substitutes `REFS_DIR` into the prompt's `{REFS_DIR}` while the tools cite paths under it in their notes, so a second copy could drift and hand Claude a path that doesn't resolve. `active_session_id()` is how a tool remembers "already said this in this conversation" without inventing its own notion of when one starts. |
+| `session.py` | Artifact folders: the per-conversation session dir (also the CLI's cwd — `prepare_session_workspace` copies the skills and references into it), the script/step archives (`_session_subdir`/`_safe_name` build every artifact path), plus the two paths that aren't artifacts but that several modules must agree on: `PARAM_PATH` (the preferences root) and `REFS_DIR` (the bundled `references/`). Both are single-spelled here and imported by `agent_config` rather than re-declared — `agent_config` substitutes `REFS_DIR` into the prompt's `{REFS_DIR}` while the tools cite paths under it in their notes, so a second copy could drift and hand Claude a path that doesn't resolve. `active_session_id()` is how a tool remembers "already said this in this conversation" without inventing its own notion of when one starts. |
 | `namespace.py` | `scripting_namespace()` — the names `run_python` binds. `inspect_api` resolves against the *same* function, so the two cannot drift: inspect_api exists to tell Claude what run_python will have bound, and a name resolving in one but not the other is the exact guess it's there to prevent. |
 | `geometry.py` | Bounding boxes, world-space crop extents. |
 | `svg.py` | Framing/cropping an SVG projection; `_SVG_XFORM_RE` — the one pattern for importSVG's wrapper `translate()/scale()` group, shared by its writer (`_flat_crop_svg` regenerates it when cropping) and its reader (`tools_sketch._annotate_sketch_svg` positions the GeoId overlay off whatever ends up in the file). |
@@ -401,6 +401,10 @@ its PNG); `scripts` holds a `.py` copy of every `run_python` call
 failed runs are archived); the same session folder also holds `stream.jsonl` — the
 raw newline-delimited JSON `agent_worker` reads from the `claude` CLI, appended
 turn-by-turn (`AgentWorker._open_log`) — handy for diagnosing a turn after the fact.
+The folder is also the CLI's cwd, so `prepare_session_workspace` copies the
+skills into `.claude/skills/` and the bundled scripting references into
+`references/` when it is created (see "CLI invocation"); those two are copies of
+read-only assets, not artifacts, and are not pruned.
 Optionally, `steps/` holds a numbered `.FCStd` snapshot of the document after each
 successful `run_python` (via `_save_step_snapshot`, using `doc.saveCopy` so the doc's
 own FileName is untouched) — off by default; enabled by the `SaveSteps` FreeCADClaude
@@ -418,9 +422,18 @@ turn that would mint one).
 `claude -p <text> --output-format stream-json --verbose --include-partial-messages
 --model claude-opus-5 --tools <builtins...>
 --strict-mcp-config --mcp-config <json> --allowed-tools "<list>"` plus
-`--append-system-prompt` (turn 1) or `--resume <id>` (later). cwd = the skills
-project dir (so its `.claude/skills` load) else a temp dir.
+`--append-system-prompt` (turn 1) or `--resume <id>` (later).
 
+- **cwd = this conversation's session folder**, so the CLI's project context is
+  the conversation's own artifacts rather than this repo's source (which is what
+  it used to be, CLAUDE.md and all). Skills only load from `<cwd>/.claude/skills`,
+  so `session.prepare_session_workspace` copies the skills project's skills and
+  the bundled `references/` into the folder when it is created;
+  `agent_config.session_workspace()` is the one call that does both and returns
+  the path. "New" mints a fresh folder, so `chat_panel._on_new` repoints the
+  running worker with `set_cwd` alongside `set_log_dir` — without that the CLI
+  keeps running in the previous conversation's folder. A temp dir is the
+  fallback only if the session folder can't be made.
 - `--tools ""` disables ALL built-ins (incl. `Skill`). We enable a safe set:
   `Read`, `Write` and `Edit` (always — skill reference files and plain-text file
   authoring), `Glob`/`Grep` (always — file search), the `Task*` family (todo +

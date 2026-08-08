@@ -4,6 +4,9 @@
 Everything a chat writes to disk lands under ``<artifacts_dir>/<session-id>/``
 -- captures, exports, the run_python script archive, optional per-step .FCStd
 snapshots, and (written by agent_worker, not here) the CLI's raw JSON stream.
+That folder is also the CLI's working directory, so
+``prepare_session_workspace`` copies the skills and the scripting references
+into it.
 
 Also the one spelling of the two paths that aren't artifacts but that several
 modules need to agree on: ``PARAM_PATH`` (the preferences root) and ``REFS_DIR``
@@ -26,7 +29,7 @@ _DEFAULT_ARTIFACTS_DIR = os.path.join(os.path.expanduser("~"), "FreeCADClaude")
 PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/FreeCADClaude"
 
 #: The bundled run_python scripting references (read-only assets, not artifacts) --
-#: absolute, since the CLI's cwd is a temp dir when no skills project is set. One
+#: absolute, so a citation resolves wherever the CLI's cwd happens to be. One
 #: spelling again: agent_config substitutes it into the system prompt's {REFS_DIR}
 #: and the tools cite paths under it in their just-in-time notes, so a second copy
 #: could drift and hand Claude a path that doesn't resolve.
@@ -104,6 +107,39 @@ def session_dir():
     path = os.path.join(artifacts_dir(), _active_session["id"] or "unsaved")
     os.makedirs(path, exist_ok=True)
     return path
+
+
+def prepare_session_workspace(skills_project=None):
+    """Populate the active session folder with what the CLI reads from its cwd,
+    and return the folder.
+
+    The CLI runs each turn with this folder as its working directory, so the
+    assets have to be inside it: the bundled scripting references as
+    ``references/``, and the skills project's skills as ``.claude/skills/``
+    (the only path the CLI discovers them on). Copies rather than links --
+    a symlink needs privileges on Windows.
+
+    Best effort. A copy that fails still returns the folder so the turn runs;
+    the references are cited by their absolute :data:`REFS_DIR` path anyway.
+    """
+    folder = session_dir()
+    _copy_assets(REFS_DIR, os.path.join(folder, "references"))
+    if skills_project:
+        _copy_assets(
+            os.path.join(skills_project, ".claude", "skills"),
+            os.path.join(folder, ".claude", "skills"),
+        )
+    return folder
+
+
+def _copy_assets(src, dst):
+    """Copy a read-only asset tree into the session folder (best effort)."""
+    import shutil
+
+    try:
+        shutil.copytree(src, dst, dirs_exist_ok=True)
+    except OSError:
+        pass
 
 
 def _prune_session_dirs(keep=40):

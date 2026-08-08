@@ -171,8 +171,8 @@ class AgentWorker(QtCore.QObject):
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                # cwd = the skills project (so its .claude/skills load), else a
-                # neutral temp dir that loads no project context.
+                # cwd = this conversation's session folder, which holds the
+                # copied .claude/skills; a temp dir only if it couldn't be made.
                 cwd=self._config.get("cwd") or tempfile.gettempdir(),
                 creationflags=_NO_WINDOW,
             )
@@ -367,6 +367,14 @@ class AgentWorker(QtCore.QObject):
         """Point subsequent turns' raw-JSON transcript log at a new folder
         (called from the GUI thread alongside reset_session on "New")."""
         self._log_dir = path
+
+    def set_cwd(self, path):
+        """Point subsequent turns' CLI process at a new working directory.
+
+        "New" mints a fresh session folder; without this the CLI would keep
+        running in the previous conversation's one.
+        """
+        self._config["cwd"] = path
 
     def set_model(self, model):
         """Set the model for subsequent turns (called from the GUI thread at the

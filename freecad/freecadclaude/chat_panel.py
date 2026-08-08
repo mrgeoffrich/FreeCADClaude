@@ -612,10 +612,12 @@ class ChatWidget(QtWidgets.QWidget):
             if self._busy:
                 self._worker.cancel()
             self._worker.reset_session()
-            from . import freecad_tools
+            from . import agent_config, freecad_tools
 
             freecad_tools.new_session_id()
             self._worker.set_log_dir(freecad_tools.session_dir())
+            # The CLI's cwd is the session folder, so it moves with the session.
+            self._worker.set_cwd(agent_config.session_workspace())
         self.model_combo.setEnabled(True)  # a fresh conversation can pick a model again
         self.transcript_view.clear()
         self._live_entry = None

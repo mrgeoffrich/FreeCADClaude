@@ -42,6 +42,7 @@ from .session import (  # noqa: F401 - re-exported for chat_panel/agent_config/e
     artifacts_dir,
     ensure_sketches_dir,
     new_session_id,
+    prepare_session_workspace,
     session_dir,
 )
 from .tools_annotate import (
