@@ -45,7 +45,8 @@ a mouse, a large canvas and a GPU.
 - `export` accepts `.3mf`, documented as a multi-object mesh export.
 - `slice_model` / `read_slice_result` / `view_gcode`.
 - Print-direction rotation: each part exported the way up it is printed.
-- Slicer binary and preset discovery, reading Studio's own selection.
+- Slicer binary and preset discovery, reading Studio's own selection, 0.4 nozzle.
+- A slicer settings panel in the served page, backed by `~/FreeCADClaude/slicer.json`.
 - A loopback HTTP server serving the vendored viewer and the G-code.
 - The viewer's G-code half, vendored as committed build output.
 
@@ -154,8 +155,46 @@ list to offer when the selection needs confirming.
 Two smaller notes on the same file: it is Studio's live config, so it is
 read-only for us and may be mid-write while Studio is running — a parse failure
 has to degrade to the preferences rather than raise. And the selection is
-whatever the user last had open in Studio, which is a good default and not
-necessarily what they want for this slice.
+whatever the user last had open in Studio, which is why the nozzle is pinned
+rather than inherited.
+
+**The nozzle default is 0.4, and the preset JSONs make that exact.** Nozzle size
+is a field, not a name pattern, and each machine preset declares its own defaults:
+
+```
+Bambu Lab P2S 0.4 nozzle   nozzle_diameter ['0.4']   inherits fdm_bbl_3dp_001_common
+    default_print_profile     "0.20mm Standard @BBL P2S"
+    default_filament_profile  ["Bambu PLA Basic @BBL P2S"]
+Bambu Lab P2S 0.2 nozzle   nozzle_diameter ['0.2']   inherits Bambu Lab P2S 0.4 nozzle
+    default_print_profile     "0.10mm Standard @BBL P2S 0.2 nozzle"
+```
+
+Three facts follow, all verified:
+
+- **0.4 is the vendor's own canonical base**, not just our preference. The 0.2,
+  0.6 and 0.8 presets all `inherit` from the 0.4 one, and the model-level
+  `Bambu Lab P2S.json` lists `nozzle_diameter` as `0.4;0.2;0.6;0.8` — 0.4 first.
+- **Process and filament compatibility is declared, so it never has to be parsed
+  out of a name.** Every process and filament preset carries
+  `compatible_printers`, e.g. `0.20mm Standard @BBL P2S` →
+  `['Bambu Lab P2S 0.4 nozzle']`. Of the 16 P2S process presets, 7 are compatible
+  with the 0.4 machine. The unsuffixed name happening to mean 0.4 is a convention
+  that holds today; `compatible_printers` is the ground truth to key off.
+- **Changing nozzle is not a one-field change.** A Studio session left on 0.2
+  selects a 0.2 machine *and* a 0.2 process *and* a 0.2 filament. Snapping only
+  the machine to 0.4 leaves an incompatible process and filament, so all three are
+  re-derived together.
+
+So resolving Studio's selection is: take the printer model, pick its machine
+preset whose `nozzle_diameter` is 0.4, then keep Studio's process and filament
+only if their `compatible_printers` includes that machine — otherwise fall back to
+the machine's declared `default_print_profile` and `default_filament_profile`.
+Report when a fallback happened, because "I had it on 0.2 in Studio" is then the
+obvious next question.
+
+The model-level JSON also carries `default_materials`, an ordered preference list
+(`Bambu PLA Matte @BBL P2S` first here), which is the right order for a filament
+dropdown.
 
 One cosmetic gap: `result.json` reported `filament_id: ""` and `main_used_g: 0.0`
 with a bare system filament preset, so filament mass did not resolve. Reading the
@@ -305,13 +344,73 @@ A rotation invalidates the `set_print_direction` payload's `print_plate_side` on
 in the sense that it is now literally true: after rotation the plate side is world
 −Z for every part, which is what `DIRECTION_NOTE` describes.
 
+### Slicer configuration in the page
+
+Presets resolve without configuration on a machine with Studio set up, but three
+things still need a place to be chosen: which printer, when the user has more than
+one; which process, since "0.20mm Standard" is a default and not a decision; and
+whether to orient and arrange. A settings panel in the served page is the natural
+home — it is already open on a desktop, it can show the real preset lists, and it
+needs no FreeCAD dialog.
+
+**A JSON config file is the seam, not a hook.** `gcode_server.py` imports no
+FreeCAD and no Qt, so it cannot write a FreeCAD preference. The device server
+solves its equivalent problem with `set_upload_hook` firing onto the GUI thread,
+but a write-back hook is the wrong shape here: the settings are not per-session,
+FreeCAD is not necessarily mid-turn when the user changes them, and the value has
+to survive a restart. So the page reads and writes `~/FreeCADClaude/slicer.json`
+directly, and `slicer_runner` — already stdlib-only — reads the same file when
+building the argv. No FreeCAD involvement on either side, and the invariant holds
+without a new mechanism.
+
+```json
+{ "printer":  "Bambu Lab P2S",
+  "nozzle":   "0.4",
+  "machine":  "Bambu Lab P2S 0.4 nozzle",
+  "process":  "0.20mm Standard @BBL P2S",
+  "filament": "Bambu PLA Matte @BBL P2S",
+  "orient": true, "arrange": true, "deviation": 0.1 }
+```
+
+It sits outside the session folders, beside `sketches/`, because a printer choice
+outlives a conversation and must not be pruned. `machine` is stored resolved as
+well as by printer-and-nozzle so a Studio rename shows up as a stale-name warning
+rather than a silent substitution.
+
+This inserts one level into the resolution order, above Studio's ambient
+selection: **explicit tool argument → `slicer.json` → Studio's selection snapped
+to 0.4 → `Slicer*` preferences.** An explicit choice in the page should beat
+whatever Studio happens to be set to; the preferences stay as the last resort.
+
+Two HTTP routes, both token-gated like everything else on the server:
+
+| Route | Returns |
+|---|---|
+| `GET /api/slicer/options` | The user's printers from `BambuStudio.conf`'s `models`, the nozzle sizes each supports, and — filtered by `compatible_printers` for the currently chosen machine — the process and filament names, with the machine's declared defaults marked. |
+| `GET`/`PUT /api/slicer/config` | Read and replace `slicer.json`. `PUT` validates every name against the discovered lists and rejects an unknown one, so a stale page cannot write a preset that will fail at slice time. |
+
+`PUT` validating against the discovered lists is the part worth not skipping. The
+alternative is discovering the mistake as a slicer failure several minutes later,
+with the argv as the only clue.
+
+**The panel has to work with no G-code loaded**, since configuring the printer
+comes before the first slice. So the page renders the settings drawer whether or
+not `?gcode=` was supplied, and `view_gcode` may be called with no job to open it
+for configuration alone. That is also the honest answer to "how do I change this
+without asking Claude": the button in the chat panel opens the same page.
+
+Whether the panel is a drawer over the viewer or a separate route is a UI decision
+for when it is built. A drawer keeps one page and one bundle; a separate route
+loads faster when there is nothing to render. Lean drawer, since the bundle is
+loaded either way.
+
 ### Modules
 
 | New file | Role |
 |---|---|
 | `freecad/freecadclaude/freecad_tools/tools_slice.py` | `slice_model`, `read_slice_result`, `view_gcode`. GUI-thread work: object resolution, `Mesh.export`, preference reads, preset resolution, `result.json` summarising, the bounded wait. |
 | `freecad/freecadclaude/slicer_runner.py` | Stdlib only, no FreeCAD, no Qt. Job table, daemon thread, subprocess, argv builder, and discovery as pure functions over paths handed in. Sibling of `device_server.py`, testable under a bare `python3`. |
-| `freecad/freecadclaude/gcode_server.py` | Stdlib only. `127.0.0.1` static server for `gcode_ui/` plus `GET /api/gcode/<id>`. Token-gated. |
+| `freecad/freecadclaude/gcode_server.py` | Stdlib only. `127.0.0.1` static server for `gcode_ui/`, plus `GET /api/gcode/<id>` and the `/api/slicer/{options,config}` routes. Token-gated. |
 | `freecad/freecadclaude/gcode_ui/` | Committed build output — the vendored viewer. |
 | `gcode_web/` | Its Vite source: the viewer half of dimensioner, upstream layout preserved, replaced `vite.config.ts`, plus `VENDORED.md` recording the upstream commit and every local patch. Dev-only, excluded from deploy. |
 
@@ -375,7 +474,9 @@ filament usage, and the placement-offset line. On failure: `result.json`'s
 | `path` | string | A specific `.gcode`/`.gcode.3mf` to view instead |
 
 Starts `gcode_server` if it is not running, publishes, opens the browser, returns
-the URL, and states that the picture is for the user.
+the URL, and states that the picture is for the user. With no job and no successful
+slice to fall back on, it opens the page anyway for the settings panel rather than
+refusing.
 
 ### Preferences
 
@@ -388,6 +489,7 @@ none needs setting at all: the preset keys are the fallback for when
 |---|---|---|
 | `SlicerPath` | string | The slicer binary. Empty → auto-discover. |
 | `SlicerConfPath` | string | Studio's `BambuStudio.conf`. Empty → auto-discover. |
+| `SlicerNozzle` | string | Nozzle to pin when Studio's selection is used (default `0.4`). |
 | `SlicerProfileDirs` | string | Extra profile roots, `os.pathsep`-joined. Empty → auto-discover. |
 | `SlicerMachine` / `SlicerProcess` / `SlicerFilament` | string | Preset names, used when Studio's selection is unreadable. |
 | `SlicerArrange` | bool | Default for `arrange` (default true). |
@@ -554,12 +656,21 @@ on an undocumented config layout that a Studio update could rename, and a
 selection that reflects whatever the user last had open rather than what they want
 here.
 
-**Recommend (d), falling back to (b), with (c) as the escape hatch** — the
-three-level order in the schema above. That way nothing needs configuring on a
-machine with Studio set up, the preferences still work when the conf is missing or
-unparseable, and an absolute path always wins. Report which level supplied each
-preset in the tool result, because "why did it slice at 0.2mm" is otherwise
-unanswerable.
+**(e) A settings panel in the served page**, writing `~/FreeCADClaude/slicer.json`.
+Needs the server and the page, both of which are being built anyway, and it is the
+only option that lets the user change the printer without going through Claude or
+FreeCAD's preference editor. See the configuration section above.
+
+**Recommend (e) over (d) over (b), with (c) as the escape hatch** — the four-level
+order under the configuration section. Nothing needs configuring on a machine with
+Studio set up, an explicit choice in the page beats Studio's ambient one, the
+preferences still work when everything else is missing, and an absolute path always
+wins. Report which level supplied each preset in the tool result, because "why did
+it slice at 0.2mm" is otherwise unanswerable.
+
+**Whatever level supplies them, the nozzle is pinned to 0.4** unless the page says
+otherwise, and process and filament are re-derived against it. See the verified
+rule under Verified feasibility.
 
 Resolution is `slicer_runner.resolve_presets(conf_path, profile_dirs, overrides)`,
 a pure function over paths handed in — the same discipline as
@@ -639,7 +750,7 @@ Ordered by dependency, then size. Each leaves the addon working.
   M1 export 3mf ── M1b rotation ──┐
                                   ├── M3 tools ── M6 autoload ── M7 hardening
   M2 runner ──────────────────────┘        │            │
-                                           │      M5 gcode_server
+                                           │      M5 gcode_server ── M5b settings
                      M0 parser guard       │
                                       M4 vendored build
 ```
@@ -731,6 +842,19 @@ static serving from `gcode_ui/` or `GcodeUiDir`, `aboutToQuit` stop. The
 path-traversal rejection, a known asset served, unknown-id 404. Permanent, same
 shape and reasons as `eval/test_device_server.py`.
 
+### M5b — The slicer settings panel · size M · mixed
+
+`slicer_runner.discover_options(conf, profile_dirs)` returning printers, nozzles
+and the `compatible_printers`-filtered process and filament lists with the declared
+defaults marked; the `/api/slicer/{options,config}` routes; `slicer.json` read and
+validated write; the drawer in the page.
+
+**Test:** the discovery and validation halves get `eval/test_slicer_runner.py`
+cases under a bare `python3` — the 0.4 pin against a synthetic conf set to 0.2, the
+`compatible_printers` filter, and a `PUT` of an unknown preset name rejected.
+**Permanent**, because the pin and the filter are what stop a slice failing minutes
+later. The drawer itself is a throwaway manual check in the browser.
+
 ### M6 — The autoload seam · size S · throwaway rig
 
 The single patch to the vendored source: `useGcodeFile` gains
@@ -757,11 +881,11 @@ relationship.
 
 ## Open questions
 
-1. **Should Studio's selection be used silently, or confirmed on the first slice
-   of a session?** Silent is frictionless and tracks the GUI. Confirming once
-   guards against slicing at whatever the user last had open — a 0.2 nozzle
-   profile, say — and noticing only from the estimate. Proposed: silent, with the
-   source of each preset stated in the result.
+1. **Decided: silent, with the nozzle pinned to 0.4.** Studio's selection is used
+   without a confirmation prompt, but the nozzle is not inherited from it — the
+   machine preset is snapped to 0.4 and process and filament re-derived against it.
+   The settings panel is where a different nozzle gets chosen deliberately, and
+   every result states which level supplied each preset.
 2. **Is a part with `PrintDirection` unset worth refusing over?** Proposed no:
    export as modelled and name it, so a first slice needs no setup. Refusing would
    push the user to record directions before they can see anything.
@@ -789,24 +913,29 @@ relationship.
    document and timing it. If it is slow, the meshing moves into the job — which
    means the scratch document has to be built on the GUI thread and only the write
    deferred, or the mesh data handed to the thread as plain arrays.
-3. **A large model makes the export or the slice much slower than measured.** The
+3. **`slicer.json` drifts from Studio and nobody notices.** A preset chosen in the
+   page outranks Studio, so changing the printer in Studio then slicing here uses
+   the old one. Falsified by doing exactly that. Mitigated rather than solved: the
+   result states which level supplied each preset, and a stored `machine` name that
+   no longer resolves is reported as stale rather than silently replaced.
+4. **A large model makes the export or the slice much slower than measured.** The
    export is on the GUI thread; the slice is not. Falsified by exporting and
    slicing the 68-object eval document and timing the `Mesh.export` call alone. A
    slow export needs the same async treatment as the slice, which changes
    `slice_model`'s shape.
-4. **`inlineDynamicImports` and the worker pass do not coexist**, so the no-hash
+5. **`inlineDynamicImports` and the worker pass do not coexist**, so the no-hash
    contract and the workers cannot both be had. Falsified by M4's build. Fallback:
    drop `inlineDynamicImports` and pin `chunkFileNames`, accepting a handful of
    stable chunk files.
-5. **A running Bambu Studio conflicts with the CLI** over config state or a lock.
+6. **A running Bambu Studio conflicts with the CLI** over config state or a lock.
    Falsified by running a slice with Studio open. Fallback is `--datadir`, which
    then has to be shown not to break preset inheritance.
-6. **The `;` preset separator differs on Windows.** Falsified by one slice on
+7. **The `;` preset separator differs on Windows.** Falsified by one slice on
    Windows. Cheap to fix, easy not to notice until a Windows user reports a slice
    that ignored the process preset.
-7. **Module workers or WebGL misbehave in the user's default browser.** Falsified
+8. **Module workers or WebGL misbehave in the user's default browser.** Falsified
    by opening the page in each installed browser. Fallbacks are
    `worker.format: "iife"` and, at the far end, fork 1(d).
-8. **The committed 1.1 MB bundle is judged too heavy after all.** Falsified by
+9. **The committed 1.1 MB bundle is judged too heavy after all.** Falsified by
    the first diff. The reversal is fork 2(b) plus a documented build step, which
    demotes the feature rather than rewriting it.
