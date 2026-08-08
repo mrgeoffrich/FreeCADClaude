@@ -16,10 +16,10 @@ committed web-app build output vendored from the `dimensioner` project.
 The round trip, end to end:
 
 1. **`slice_model(names=[...])`** resolves the objects the same way `export`
-   already does, writes `<session>/slices/<job>/model.3mf` with `Mesh.export`,
-   builds the slicer argv from the resolved presets, starts the Bambu Studio CLI
-   on a daemon thread, and returns immediately with a job id. FreeCAD keeps
-   repainting.
+   already does, **rotates each one onto its recorded `PrintDirection`**, writes
+   `<session>/slices/<job>/model.3mf` with `Mesh.export`, builds the slicer argv
+   from **Bambu Studio's own currently-selected presets**, starts the CLI on a
+   daemon thread, and returns immediately with a job id. FreeCAD keeps repainting.
 2. **`read_slice_result(job?)`** collects the outcome — `plate_1.gcode`,
    `result.json`'s per-feature times and filament usage, the placed bounding
    boxes, and the log tail on failure.
@@ -44,7 +44,8 @@ a mouse, a large canvas and a GPU.
 
 - `export` accepts `.3mf`, documented as a multi-object mesh export.
 - `slice_model` / `read_slice_result` / `view_gcode`.
-- Slicer binary and preset discovery, with preferences for the choices.
+- Print-direction rotation: each part exported the way up it is printed.
+- Slicer binary and preset discovery, reading Studio's own selection.
 - A loopback HTTP server serving the vendored viewer and the G-code.
 - The viewer's G-code half, vendored as committed build output.
 
@@ -55,6 +56,8 @@ a mouse, a large canvas and a GPU.
 - Claude seeing the toolpath as an image.
 - Choosing among multiple plates in the viewer.
 - Removing the slicer's placement offset. See fork 6.
+- Per-part process overrides (a different layer height for one part).
+- Support-material or paint-on-support decisions.
 
 ## Verified feasibility
 
@@ -130,11 +133,42 @@ coordinate offset. That is fork 6.
 **Presets live in two places** — system at
 `<slicer resources>/profiles/BBL/{machine,process,filament}/` and the user's own
 at `~/Library/Application Support/BambuStudio/user/<id>/{machine,process,filament}/`.
-The printer here is a Bambu Lab P2S printing PLA.
+
+**Studio's current selection is readable, so the printer choice does not have to
+be configured twice.** `~/Library/Application Support/BambuStudio/BambuStudio.conf`
+is JSON, and its `presets` block holds the live GUI selection:
+
+```json
+"presets": { "machine":   "Bambu Lab P2S 0.4 nozzle",
+             "process":   "0.20mm Standard @BBL P2S",
+             "filaments": ["Bambu PLA Matte @BBL P2S", "Bambu PLA Matte @BBL P2S"] }
+```
+
+All three names resolved to real preset JSONs by globbing the user roots first
+and the system roots second, which is Studio's own precedence. `filaments` is one
+entry per extruder or AMS slot, so a single-material slice takes `filaments[0]`.
+The same file's `models` array lists the printers the user has added
+(`Bambu Lab P1S`, `Bambu Lab P2S` here, each with its nozzle sizes), which is the
+list to offer when the selection needs confirming.
+
+Two smaller notes on the same file: it is Studio's live config, so it is
+read-only for us and may be mid-write while Studio is running — a parse failure
+has to degrade to the preferences rather than raise. And the selection is
+whatever the user last had open in Studio, which is a good default and not
+necessarily what they want for this slice.
 
 One cosmetic gap: `result.json` reported `filament_id: ""` and `main_used_g: 0.0`
-with a bare system filament preset, so filament mass did not resolve. A user
-filament preset is the likely fix.
+with a bare system filament preset, so filament mass did not resolve. Reading the
+selection above uses the same system JSONs, so this is unlikely to be what fixes
+it.
+
+**`result.json`'s object bounding boxes are not trustworthy as dimensions.** For a
+16 mm cylinder whose exported 3MF vertices measure exactly 16.000 mm, the slicer
+reported 17.2 mm; the two boxes on the same plate reported exactly. Whatever
+inflates a curved object's reported footprint is unconfirmed, and it is not our
+export — the 3MF geometry was checked vertex by vertex. Placement offset is
+computed from the bbox **centre**, which a symmetric inflation leaves intact, so
+fork 6 survives this; treating the reported sizes as measurements would not.
 
 **Measured cost of vendoring the viewer** (its own `npm run build`):
 `index.js` 1,132 KB (gzip 311 KB), CSS 5.7 KB, three workers 24 KB combined —
@@ -214,6 +248,63 @@ otherwise orphan the child.
 `chat_panel` wires it to a `slice_finished` signal and writes a transcript note,
 so the user learns the slice landed even while Claude is between calls.
 
+### Print-direction rotation
+
+The addon already records which way up each part is printed.
+`print_meta.AXIS_VECTORS` maps `+Z up` / `-X up` / ... to the part-local axis that
+points up in world space once the part is on the plate, `set_print_direction`
+writes it, and `get_objects` reports it. Nothing acted on it until now: a part
+recorded as `-Z up` still exported the way it was modelled, so the slice bore no
+relation to how the part gets printed.
+
+The rotation is one call. For a recorded direction whose local up-axis is `u`,
+`FreeCAD.Rotation(Vector(*u), Vector(0, 0, 1))` maps `u` onto world +Z; bake it in,
+then translate so the part's minimum Z sits at 0.
+
+**The rotation must not touch the user's document.** Rotating the real objects
+would mutate placements the user owns, and it would recompute anything downstream.
+So the export runs through a scratch document: mesh each shape with
+`MeshPart.meshFromShape`, apply the rotation to the **mesh** with
+`mesh.transform(placement.Matrix)`, translate it down onto the plate, add it as a
+`Mesh::Feature` in a hidden scratch document, `Mesh.export` all of them to one
+3MF, and close the scratch document. This is also the fork 7(c) escape hatch
+arriving early: once the meshing is explicit, per-object deflection comes free.
+
+Verified end to end. Three parts — a wedge at `+Z up`, a 16×16×30 cylinder at
+`-Z up`, and a 60×10×10 bar at `+X up` — were rotated, stacked deliberately at the
+origin, exported as one 3MF and sliced:
+
+```
+Overhang  +Z up   modelled 10x10x10 -> printed 10x10x10
+Bore      -Z up   modelled 16x16x30 -> printed 16x16x30
+Bar       +X up   modelled 60x10x10 -> printed 10x10x60   <- stood on its end
+```
+
+The G-code has **300 layers topping out at `; Z_HEIGHT: 60`**, which is the bar's
+rotated height, so the rotation survived to the toolpath. The slicer separated all
+three from the origin onto distinct plate positions, so **rotating ourselves and
+letting the slicer arrange is a clean division**: orientation is a design decision
+the document already records, and layout is packing the slicer does better.
+
+How each enum value is treated:
+
+| `PrintDirection` | Behaviour |
+|---|---|
+| `+Z up` | Exported as modelled. No rotation. |
+| `-Z up`, `±X up`, `±Y up` | Rotated so that local axis points to world +Z. |
+| `Custom` | Rotated using `PrintDirectionCustom`, via the same `Rotation`. |
+| `Not set` | Exported as modelled, and **named in the returned text**. |
+| `Not printed` | Left off the plate entirely. |
+
+`Not set` reporting matters more than it looks: silently printing an unset part as
+modelled is right about as often as it is wrong, and the tool result is where the
+user finds out which parts nobody has decided about. `Not printed` is the other
+half of the same argument — a jig or a reference body should not consume plate.
+
+A rotation invalidates the `set_print_direction` payload's `print_plate_side` only
+in the sense that it is now literally true: after rotation the plate side is world
+−Z for every part, which is what `DIRECTION_NOTE` describes.
+
 ### Modules
 
 | New file | Role |
@@ -241,21 +332,29 @@ around the export.
 |---|---|---|
 | `names` | array[string] | Objects to export and slice (default: selection, else all solids) |
 | `path` | string | An existing `.3mf`/`.stl` to slice instead of exporting |
-| `machine` | string | Machine preset name or absolute path (default: `SlicerMachine`) |
-| `process` | string | Process preset (default: `SlicerProcess`) |
-| `filament` | string | Filament preset (default: `SlicerFilament`) |
+| `machine` | string | Machine preset name or absolute path (default: Studio's selection, else `SlicerMachine`) |
+| `process` | string | Process preset (same resolution order) |
+| `filament` | string | Filament preset (same resolution order) |
+| `orient` | boolean | Rotate each part onto its recorded `PrintDirection` (default true) |
 | `arrange` | boolean | Let the slicer arrange the plate (default true) |
+| `deviation` | number | Mesh deviation in mm for the export (default: FreeCAD's 0.1) |
 | `copies` | integer | `--repetitions` (default 1) |
 | `note` | string | Free text stored in `job.json` |
 
-Returns immediately with the job id, the job folder, the argv actually used, and
-an instruction to call `read_slice_result`. Returning the argv is what makes a
-failure diagnosable without re-running. `precheck` validates argument shape only:
-not both `names` and `path`, `copies >= 1`, `path` extension in `{3mf, stl}`.
+Returns immediately with the job id, the job folder, the presets and where they
+came from, the per-part rotation applied, any part left off the plate, and the argv
+actually used. Returning the argv is what makes a failure diagnosable without
+re-running. `precheck` validates argument shape only: not both `names` and `path`,
+`copies >= 1`, `path` extension in `{3mf, stl}`.
 
-With no preset configured and none passed, it refuses and returns the discovered
-lists — binary found, machine/process/filament preset names — plus the preference
-names to set. The note is then useful without a follow-up call.
+`orient: false` exports as modelled, which is what to reach for when comparing
+against a slice made by hand in Studio.
+
+Preset resolution order, most specific first: an explicit argument, then Studio's
+`BambuStudio.conf` selection, then the `Slicer*` preferences. If all three miss, it
+refuses and returns the discovered lists — binary found, the `models` array, and
+the available preset names — plus the preference names to set, so the note is
+useful without a follow-up call.
 
 **`read_slice_result`**
 
@@ -281,22 +380,34 @@ the URL, and states that the picture is for the user.
 ### Preferences
 
 Under `session.PARAM_PATH`, following `SaveSteps` / `AnnotateEditor` /
-`DeviceIdleMinutes`. None hardcode a machine; all are discoverable when unset.
+`DeviceIdleMinutes`. None hardcode a machine, and on a system with Studio set up
+none needs setting at all: the preset keys are the fallback for when
+`BambuStudio.conf` is missing or unreadable.
 
 | Key | Type | Meaning |
 |---|---|---|
 | `SlicerPath` | string | The slicer binary. Empty → auto-discover. |
+| `SlicerConfPath` | string | Studio's `BambuStudio.conf`. Empty → auto-discover. |
 | `SlicerProfileDirs` | string | Extra profile roots, `os.pathsep`-joined. Empty → auto-discover. |
-| `SlicerMachine` / `SlicerProcess` / `SlicerFilament` | string | Chosen preset names. |
+| `SlicerMachine` / `SlicerProcess` / `SlicerFilament` | string | Preset names, used when Studio's selection is unreadable. |
 | `SlicerArrange` | bool | Default for `arrange` (default true). |
+| `SlicerOrient` | bool | Default for `orient` (default true). |
 | `GcodeUiDir` | string | Override `gcode_ui/` — the dev hook for pointing at a Vite build. |
 
 Discovery candidates, all read-only filesystem probes handed in to
 `slicer_runner`: macOS `/Applications/{BambuStudio,OrcaSlicer}.app/Contents/MacOS/*`;
 Windows `%PROGRAMFILES%\Bambu Studio\bambu-studio.exe` and the Orca equivalent;
-Linux the binary on `PATH` plus the common AppImage locations. User presets:
-`~/Library/Application Support/BambuStudio/user/*/{machine,process,filament}/*.json`,
-`%APPDATA%\BambuStudio\user\...`, `~/.config/BambuStudio/user/...`.
+Linux the binary on `PATH` plus the common AppImage locations. Config and user
+presets, per platform:
+
+| | Config | User presets |
+|---|---|---|
+| macOS | `~/Library/Application Support/BambuStudio/BambuStudio.conf` | `.../user/*/{machine,process,filament}/**/*.json` |
+| Windows | `%APPDATA%\BambuStudio\BambuStudio.conf` | `%APPDATA%\BambuStudio\user\...` |
+| Linux | `~/.config/BambuStudio/BambuStudio.conf` | `~/.config/BambuStudio/user/...` |
+
+Only the macOS paths are verified. The user preset glob needs `recursive=True` and
+a `**`, because Studio nests them a level deeper (`user/<id>/filament/base/...`).
 
 ## The forks, priced
 
@@ -426,20 +537,35 @@ hand them to `view_gcode`. Do not delete them from the vendored copy.
 
 **(a) Hardcode the P2S/PLA paths.** Reject; works on one machine.
 
-**(b) Discover and select by name.** Scan the system and user profile roots,
-match on preset name, store the choice in a preference. A directory walk plus
-filename parsing, all pure over paths handed in.
+**(b) Discover and select by name**, storing the choice in a preference. A
+directory walk plus filename parsing, all pure over paths handed in. Works, but
+asks the user to say in FreeCAD what they have already said in Studio, and the two
+then drift — change the nozzle in Studio and the addon keeps slicing 0.4.
 
-**(c) Require full JSON paths per call.** Friction every call, but it is the
-escape hatch when discovery misses — a custom profile root, or a preset the
-naming scheme does not match.
+**(c) Require full JSON paths per call.** Friction every call, but it is the escape
+hatch when discovery misses — a custom profile root, or a preset the naming scheme
+does not match.
 
-**Recommend (b) with (c) as an escape hatch**: `machine`/`process`/`filament`
-accept either a discovered name or an absolute path. Discovery is
-`slicer_runner.discover_presets(profile_dirs)`, a pure function; `tools_slice`
-reads `SlicerProfileDirs` and hands the directories in, the same discipline as
-`device_server.start(upload_dir=...)` and for the same reason — the runner's
-thread must not read a FreeCAD preference.
+**(d) Read Studio's own current selection** from `BambuStudio.conf`'s `presets`
+block and resolve those names against the profile roots. Verified: all three
+resolved. Zero configuration for the common case, and it tracks Studio, so a
+nozzle change in the GUI is picked up on the next slice. The cost is a dependency
+on an undocumented config layout that a Studio update could rename, and a
+selection that reflects whatever the user last had open rather than what they want
+here.
+
+**Recommend (d), falling back to (b), with (c) as the escape hatch** — the
+three-level order in the schema above. That way nothing needs configuring on a
+machine with Studio set up, the preferences still work when the conf is missing or
+unparseable, and an absolute path always wins. Report which level supplied each
+preset in the tool result, because "why did it slice at 0.2mm" is otherwise
+unanswerable.
+
+Resolution is `slicer_runner.resolve_presets(conf_path, profile_dirs, overrides)`,
+a pure function over paths handed in — the same discipline as
+`device_server.start(upload_dir=...)`, and for the same reason: the runner's thread
+must not read a FreeCAD preference. A malformed or half-written `conf` degrades to
+the next level rather than raising, since Studio may be running.
 
 The argv builder keys off the binary's self-identified name so an OrcaSlicer path
 does not silently get Bambu-only flags. `--load-settings` joins machine and
@@ -454,6 +580,12 @@ Deferred: a `slicer_presets` probe tool. `slice_model`'s no-preset failure path
 carries the same lists, so a registry slot buys only the standalone question.
 
 ### 6. Auto-arrange, and the coordinate offset
+
+Rotation settles the half of this that matters. Orientation is a design decision
+the document records, so we apply it; layout is packing, which the slicer does
+better. The verified run confirms the division holds — three parts rotated by us
+and stacked at the origin came out separated across the plate with their rotations
+intact. What remains is only where the parts ended up.
 
 **(a) Accept auto-arrange** (`--arrange 1`, which is what happened implicitly).
 The viewer frames correctly off `bounds`; every toolpath coordinate is offset from
@@ -484,26 +616,32 @@ at plate centre, so toolpath X/Y are plate coordinates offset about
 
 Resolved by measurement — see the table under Verified feasibility.
 `MaxDeviationExport` is read by `Mesh.export`, so the save/set/restore shape
-`capture_user_view` uses for `SavePicture` gives a `deviation` argument for about
-ten lines. It only refines; coarsening past about 0.05 mm has no effect because
-angular deflection floors it. Default stays FreeCAD's 0.1.
+`capture_user_view` uses for `SavePicture` would give a `deviation` argument for
+about ten lines. It only refines; coarsening past about 0.05 mm has no effect
+because angular deflection floors it.
 
-`MeshPart.meshFromShape(LinearDeflection=..., AngularDeflection=...)` into a
-hidden scratch document remains the escape hatch if per-object control or
-angular control turns out to matter. It is more code and needs the scratch
-document precisely so the user's document is not mutated.
+But **print-direction rotation already forces explicit meshing**, so the
+`MeshPart.meshFromShape(LinearDeflection=..., AngularDeflection=...)` path is being
+built regardless and the preference-juggling is redundant. `deviation` maps
+straight to `LinearDeflection`, per-object control comes free, and angular control
+is available if it ever matters. Default stays 0.1 to match FreeCAD.
+
+That leaves one case the rotation path does not cover: `orient: false` with no
+`deviation`, where nothing needs a scratch document. Meshing explicitly anyway is
+the simpler code — one export path, not two — and worth the slightly slower
+as-modelled export.
 
 ## Milestones
 
 Ordered by dependency, then size. Each leaves the addon working.
 
 ```
-  M1 export 3mf ──┐
-                  ├── M3 tools ── M6 autoload ── M7 hardening
-  M2 runner ──────┘        │            │
-                           │      M5 gcode_server
-                     M0 parser guard    │
-                                   M4 vendored build
+  M1 export 3mf ── M1b rotation ──┐
+                                  ├── M3 tools ── M6 autoload ── M7 hardening
+  M2 runner ──────────────────────┘        │            │
+                                           │      M5 gcode_server
+                     M0 parser guard       │
+                                      M4 vendored build
 ```
 
 ### M0 — The parser guard · size S · permanent
@@ -522,25 +660,39 @@ magenta and otherwise gets noticed months later. Runs under a plain
 
 ### M1 — `export` handles 3MF, on the record · size S · permanent
 
-Schema description gains 3MF and the separate-objects property, plus the
-`deviation` argument.
+Schema description gains 3MF and the separate-objects property.
 
 **Test:** `eval/test_export_3mf.py` under `freecadcmd` — build a Box and a
 Cylinder, export `.3mf`, assert the zip's `3D/3dmodel.model` holds two
-`<object>` and two `<item>` elements, and assert a finer `deviation` raises the
-triangle count. Permanent: those are properties of FreeCAD's exporter, not of our
-code, so they can change under us.
+`<object>` and two `<item>` elements. Permanent: that is a property of FreeCAD's
+exporter, not of our code, so it can change under us.
+
+### M1b — Print-direction rotation · size M · permanent
+
+`tools_slice._oriented_export(objs, deviation)`: mesh, rotate onto
+`print_meta.AXIS_VECTORS`, drop to Z=0, scratch document, one 3MF, close. Handles
+`Custom` off `PrintDirectionCustom`, reports `Not set`, omits `Not printed`.
+
+**Test:** `eval/test_oriented_export.py` under `freecadcmd` — set a known direction
+on a deliberately asymmetric part (a 60×10×10 bar at `+X up`), export, and read the
+per-object vertex bbox back out of the 3MF zip, asserting 10×10×60. Assert the
+user's document is unchanged: same `Placement` on every object, and no new objects.
+Assert `Not printed` produces no 3MF object. **Permanent** — this is where a wrong
+rotation silently prints a part on the wrong face, and the bbox assertion is the
+only thing that would catch a sign error or an axis swap.
 
 ### M2 — `slicer_runner.py`, no tools yet · size M · permanent
 
-Binary and preset discovery, the argv builder, the job table, the daemon thread,
-the subprocess timeout and kill, `set_done_hook`.
+Binary discovery, preset resolution, the argv builder, the job table, the daemon
+thread, the subprocess timeout and kill, `set_done_hook`.
 
-**Test:** `eval/test_slicer_runner.py` under a bare `python3` — discovery over a
-synthetic profiles tree; the argv pinned, especially the `;`-joined
-`--load-settings`; job lifecycle against a fake binary (`python3 -c "..."`) that
-writes a `result.json`; the timeout path killing a sleeper. Permanent, mirroring
-`eval/test_device_server.py`.
+**Test:** `eval/test_slicer_runner.py` under a bare `python3` — resolution over a
+synthetic profiles tree and a synthetic `BambuStudio.conf`, including the
+three-level order, a user preset beating a system one of the same name, and a
+truncated conf degrading rather than raising; the argv pinned, especially the
+`;`-joined `--load-settings`; job lifecycle against a fake binary
+(`python3 -c "..."`) that writes a `result.json`; the timeout path killing a
+sleeper. Permanent, mirroring `eval/test_device_server.py`.
 
 ### M3 — The tools · size L · mixed
 
@@ -549,11 +701,11 @@ writes a `result.json`; the timeout path killing a sleeper. Permanent, mirroring
 `tools_export`; `session._session_job_dir`; the `aboutToQuit` terminate hook and
 the `slice_finished` transcript note in `chat_panel`.
 
-**Test:** the pure parts get a `freecadcmd` script — preset resolution, the
-`result.json` summariser and the placement-offset arithmetic, as functions over a
-recorded `result.json`. The nested-loop wait needs Qt and a live turn, so it is a
-throwaway manual check in real FreeCAD: slice a real part, watch the application
-stay responsive, confirm `read_slice_result` returns without a `GuiBusyTimeout`.
+**Test:** the pure parts get a `freecadcmd` script — the `result.json` summariser
+and the placement-offset arithmetic, as functions over a recorded `result.json`.
+The nested-loop wait needs Qt and a live turn, so it is a throwaway manual check in
+real FreeCAD: slice a real part, watch the application stay responsive, confirm
+`read_slice_result` returns without a `GuiBusyTimeout`.
 
 ### M4 — The vendored build, under the no-hash contract · size M · permanent
 
@@ -605,41 +757,56 @@ relationship.
 
 ## Open questions
 
-1. **Which presets are the default when discovery finds several?** Proposed: none
-   — refuse and report, so the first slice is an explicit choice. Guessing the
-   single P2S machine when exactly one is found is friendlier and occasionally
-   wrong.
-2. **One plate or all?** `--slice 0` writes every plate. v1 publishes plate 1 and
+1. **Should Studio's selection be used silently, or confirmed on the first slice
+   of a session?** Silent is frictionless and tracks the GUI. Confirming once
+   guards against slicing at whatever the user last had open — a 0.2 nozzle
+   profile, say — and noticing only from the estimate. Proposed: silent, with the
+   source of each preset stated in the result.
+2. **Is a part with `PrintDirection` unset worth refusing over?** Proposed no:
+   export as modelled and name it, so a first slice needs no setup. Refusing would
+   push the user to record directions before they can see anything.
+3. **One plate or all?** `--slice 0` writes every plate. v1 publishes plate 1 and
    reports the others' paths; loading a chosen one is a `?gcode=<id>` away.
-3. **Should `view_gcode` accept `.gcode.3mf`?** The viewer handles it via fflate,
+4. **Should `view_gcode` accept `.gcode.3mf`?** The viewer handles it via fflate,
    and `--export-3mf` can emit an arranged project, which doubles as an "open this
    in Bambu Studio" artifact. That flag's ordering relative to `--slice` is
    unverified.
-4. **Report the placement offset, or remove it** (fork 6c)? Depends on whether
+5. **Report the placement offset, or remove it** (fork 6c)? Depends on whether
    coordinates will be cross-referenced.
-5. **Does OrcaSlicer need to work too**, or is Bambu Studio the target? It sets
+6. **Does OrcaSlicer need to work too**, or is Bambu Studio the target? It sets
    how defensive the argv builder must be.
 
 ## Risks, with what would falsify each
 
-1. **A large model makes the export or the slice much slower than measured.** The
+1. **A Bambu Studio update renames or moves the `presets` block in
+   `BambuStudio.conf`.** Preset reading then silently falls through to the
+   preferences, and a user who never set those gets a refusal instead of a slice.
+   Falsified by the next Studio update; the test in M2 pins the layout we rely on,
+   so it fails loudly rather than degrading quietly.
+2. **`MeshPart.meshFromShape` is slow on a real multi-body document.** It runs on
+   the GUI thread, before the job is handed off, so it is the one part of the round
+   trip that can still freeze FreeCAD. Falsified by meshing the 68-object eval
+   document and timing it. If it is slow, the meshing moves into the job — which
+   means the scratch document has to be built on the GUI thread and only the write
+   deferred, or the mesh data handed to the thread as plain arrays.
+3. **A large model makes the export or the slice much slower than measured.** The
    export is on the GUI thread; the slice is not. Falsified by exporting and
    slicing the 68-object eval document and timing the `Mesh.export` call alone. A
    slow export needs the same async treatment as the slice, which changes
    `slice_model`'s shape.
-2. **`inlineDynamicImports` and the worker pass do not coexist**, so the no-hash
+4. **`inlineDynamicImports` and the worker pass do not coexist**, so the no-hash
    contract and the workers cannot both be had. Falsified by M4's build. Fallback:
    drop `inlineDynamicImports` and pin `chunkFileNames`, accepting a handful of
    stable chunk files.
-3. **A running Bambu Studio conflicts with the CLI** over config state or a lock.
+5. **A running Bambu Studio conflicts with the CLI** over config state or a lock.
    Falsified by running a slice with Studio open. Fallback is `--datadir`, which
    then has to be shown not to break preset inheritance.
-4. **The `;` preset separator differs on Windows.** Falsified by one slice on
+6. **The `;` preset separator differs on Windows.** Falsified by one slice on
    Windows. Cheap to fix, easy not to notice until a Windows user reports a slice
    that ignored the process preset.
-5. **Module workers or WebGL misbehave in the user's default browser.** Falsified
+7. **Module workers or WebGL misbehave in the user's default browser.** Falsified
    by opening the page in each installed browser. Fallbacks are
    `worker.format: "iife"` and, at the far end, fork 1(d).
-6. **The committed 1.1 MB bundle is judged too heavy after all.** Falsified by
+8. **The committed 1.1 MB bundle is judged too heavy after all.** Falsified by
    the first diff. The reversal is fork 2(b) plus a documented build step, which
    demotes the feature rather than rewriting it.
