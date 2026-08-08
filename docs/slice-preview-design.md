@@ -481,7 +481,7 @@ loaded either way.
 | `freecad/freecadclaude/slicer_runner.py` | Stdlib only, no FreeCAD, no Qt. Job table, daemon thread, subprocess, argv builder, and discovery as pure functions over paths handed in. Sibling of `device_server.py`, testable under a bare `python3`. |
 | `freecad/freecadclaude/gcode_server.py` | Stdlib only. `127.0.0.1` static server for `gcode_ui/`, plus `GET /api/gcode/<id>` and the `/api/slicer/{options,config}` routes. Token-gated. |
 | `freecad/freecadclaude/gcode_ui/` | Committed build output — the vendored viewer. |
-| `gcode_web/` | Its Vite source: the viewer half of dimensioner, upstream layout preserved, replaced `vite.config.ts`, plus `VENDORED.md` recording the upstream commit and every local patch. Dev-only, excluded from deploy. |
+| `gcode_web/` | Its Vite source, vendored at upstream `e2b9be15`: the viewer half of dimensioner, upstream layout preserved, replaced `vite.config.ts`, plus `VENDORED.md` recording the upstream commit and every local patch. Dev-only, excluded from deploy. |
 
 `tools_export.py` gains a shared `_resolve_export_objects(args, doc)` lifted out
 of `_run_export`, so `slice_model` resolves objects through the same code rather
@@ -1021,10 +1021,12 @@ relationship.
    slicing the 68-object eval document and timing the `Mesh.export` call alone. A
    slow export needs the same async treatment as the slice, which changes
    `slice_model`'s shape.
-5. **`inlineDynamicImports` and the worker pass do not coexist**, so the no-hash
-   contract and the workers cannot both be had. Falsified by M4's build. Fallback:
-   drop `inlineDynamicImports` and pin `chunkFileNames`, accepting a handful of
-   stable chunk files.
+5. ~~`inlineDynamicImports` and the worker pass do not coexist.~~ **Falsified.**
+   They coexist: `assets/app.js` plus three fixed-name worker bundles, each
+   self-contained, and three consecutive builds produced byte-identical output.
+   Vite 8 warns that `inlineDynamicImports` is deprecated in favour of
+   `codeSplitting: false`; `web/` is on Vite 7 where that option does not exist,
+   so the two configs stay spelled differently until both move.
 6. **A running Bambu Studio conflicts with the CLI** over config state or a lock.
    Falsified by running a slice with Studio open. Fallback is `--datadir`, which
    then has to be shown not to break preset inheritance.
