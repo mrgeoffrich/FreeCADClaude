@@ -372,6 +372,25 @@ def _source_capture(doc_text):
     return device_server.published_record(image_id) if image_id else None
 
 
+def uploaded_caption(doc_text):
+    """The annotation document's ``caption`` field, or ``""`` if there is
+    none.
+
+    Public (no leading underscore) and re-exported for chat_panel: a typed
+    caption is what tells it whether to act on an upload immediately or just
+    say it arrived (see ``ChatWidget._on_device_upload``). Same defensive
+    shape as :func:`_source_capture` and for the same reason -- the
+    document's schema belongs to the web app (``web/src/doc.ts``), so a
+    malformed or absent one must read as "no caption", not raise.
+    """
+    try:
+        data = json.loads(doc_text or "")
+    except ValueError:
+        return ""
+    caption = data.get("caption") if isinstance(data, dict) else None
+    return caption.strip() if isinstance(caption, str) else ""
+
+
 def _measurement_note(meta):
     """What the numbers on this image are worth, spelled out.
 

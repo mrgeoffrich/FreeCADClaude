@@ -345,6 +345,27 @@ annotation document verbatim. The server runs only while the chat panel's
   server; without the reset the next chat's `read_device_image` would answer with
   the previous chat's capture and its uploads would land in the previous
   session's folder.
+- **`GET /api/published` is the gallery's list, not just the newest.**
+  `/api/latest` alone loses track of anything sent while the device was closed
+  or backgrounded — a device that missed two captures only ever sees the last
+  of them. `_published_history()` serves the same `_KEEP_PUBLISHED`-capped
+  window everything else already keeps, oldest first; the web app's toolbar
+  gallery button (badged while something in it hasn't been loaded) is the only
+  new surface, not a new retention window.
+- **A typed caption on the way back is an instruction, acted on immediately —
+  but only when the agent is actually free to.** `chat_panel._on_device_upload`
+  reads it via `tools_device.uploaded_caption` (same defensive JSON-field
+  read as `_source_capture`, so a malformed or absent document is "no
+  caption", not a crash) and, when there both IS one and a conversation is
+  already running and idle, submits it as the next turn exactly as if typed
+  into the panel — the injected prompt names `read_device_image` explicitly
+  rather than counting on the tool's own "call it once the user says they've
+  sent it" wording to fire unprompted. "Free to act" is deliberately narrow: no
+  worker yet, or one already mid-turn, falls back to the plain heads-up note
+  rather than minting a session or interrupting one — an unattended upload
+  shouldn't get to take either of those steps on its own. An empty caption
+  isn't a degraded case either; it's "just point it out", and staying silent
+  until the desktop user says something is the correct behaviour for it.
 - **Measurement is a division, and the caveat travels with it.**
   `mm_per_px = cam.height / rendered_height_px` off the ortho camera, read in
   `render._capture_optics` inside the offscreen view and last — `_fit_render_size`

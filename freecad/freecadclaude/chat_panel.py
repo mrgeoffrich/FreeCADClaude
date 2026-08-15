@@ -887,16 +887,55 @@ class ChatWidget(QtWidgets.QWidget):
         )
 
     def _on_device_upload(self, path):
-        """An image arrived from the device -- say so in the transcript.
+        """An image arrived from the device.
 
-        Runs on the GUI thread (queued from the server thread). Deliberately
-        just a note: auto-injecting "the user sent an image" into the next
-        prompt is a separate, deferred decision, and until it's made the user
-        seeing that it landed is what stops them wondering whether Send worked.
+        Runs on the GUI thread (queued from the server thread). A typed
+        caption is treated as an instruction, exactly like a message typed
+        into this panel, so the desktop user doesn't have to relay "they've
+        sent it" themselves -- but only when the agent is actually free to
+        act on it. "Ready" means a conversation already exists (a worker is
+        running) AND it isn't mid-turn: minting a brand-new session, or
+        interrupting one already in flight, from an unattended upload would be
+        a bigger step than a note in a text field should get to take. Short of
+        that -- no caption, no worker yet, or one already busy -- this falls
+        back to the plain heads-up it always gave. An empty caption isn't a
+        failure case either: it's what "just point it out, I'll say what I
+        want" looks like, and the note-then-wait behaviour is exactly right
+        for it.
         """
+        from . import device_server, freecad_tools
+
+        uploads = device_server.uploads()
+        record = uploads[-1] if uploads and uploads[-1].get("path") == path else None
+        caption = freecad_tools.uploaded_caption(record.get("doc")) if record else ""
+
+        if caption and self._worker is not None and not self._busy:
+            self._add_entry("you", html.escape(f"📱 {caption}"))
+            self._set_busy(True)
+            self._worker.submit(
+                "The user just sent this from their device (a marked-up "
+                "image, or a fresh photo/sketch), with this note: "
+                f"\"{caption}\". Call read_device_image to see it, then act "
+                "on it."
+            )
+            return
+
+        if not caption:
+            self._note(
+                "📱 **image received** from the device.\n\n"
+                f"`{path}`\n\nAsk Claude to look at it (it reads it with "
+                "`read_device_image`)."
+            )
+            return
+
+        why_not = (
+            "no conversation has started yet" if self._worker is None
+            else "Claude is still working on the previous message"
+        )
         self._note(
-            "📱 **image received** from the device.\n\n"
-            f"`{path}`\n\nAsk Claude to look at it (it reads it with "
+            f"📱 **image received** from the device, with a note: "
+            f"*\"{caption}\"* -- but {why_not}, so it wasn't acted on "
+            "automatically. Ask Claude to look at it (it reads it with "
             "`read_device_image`)."
         )
 

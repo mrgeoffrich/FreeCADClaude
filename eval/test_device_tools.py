@@ -62,6 +62,26 @@ def main():
     print("device tool error paths")
     check("the server starts stopped", not device_server.is_running())
 
+    # -- uploaded_caption --------------------------------------------------
+    # What chat_panel reads to decide whether an upload is an instruction to
+    # act on immediately or just a picture to wait on -- so a malformed or
+    # absent document must read as "no caption", never raise into a Qt slot.
+    check(
+        "reads a well-formed caption, trimmed",
+        tools_device.uploaded_caption('{"caption":" widen the slot "}') == "widen the slot",
+    )
+    check("no doc at all -> empty", tools_device.uploaded_caption(None) == "")
+    check("not JSON -> empty", tools_device.uploaded_caption("not json") == "")
+    check("JSON but no caption field -> empty", tools_device.uploaded_caption("{}") == "")
+    check(
+        "JSON that isn't an object -> empty",
+        tools_device.uploaded_caption("[1,2]") == "",
+    )
+    check(
+        "a caption typed as whitespace only -> empty",
+        tools_device.uploaded_caption('{"caption":"   "}') == "",
+    )
+
     # -- nothing running -------------------------------------------------
     # Deliberately NOT auto-started by a tool call: this binds a LAN interface,
     # so only a button press may turn it on -- which makes "press the button"

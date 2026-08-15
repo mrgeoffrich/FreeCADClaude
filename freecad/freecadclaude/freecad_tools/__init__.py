@@ -61,12 +61,13 @@ from .tools_capture import (
     _run_crop_view,
 )
 from .tools_cutaway import _CUTAWAY_SCHEMA, _run_cutaway
-from .tools_device import (  # device_upload_dir re-exported for chat_panel
+from .tools_device import (  # device_upload_dir/uploaded_caption re-exported for chat_panel
     _READ_DEVICE_IMAGE_SCHEMA,
     _SEND_TO_DEVICE_SCHEMA,
     _run_read_device_image,
     _run_send_to_device,
     device_upload_dir,  # noqa: F401
+    uploaded_caption,  # noqa: F401
 )
 from .tools_document import (  # _REPORTED_PROPS re-exported for eval_runner
     _DESCRIBE_OBJECTS_SCHEMA,
