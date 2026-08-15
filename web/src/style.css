@@ -98,6 +98,12 @@ body {
 .tool svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .tool[aria-pressed="true"] { background: var(--panel-2); border-color: var(--accent); color: var(--accent); }
 .tool:disabled { opacity: .35; cursor: default; }
+/* A capture in the gallery hasn't been loaded yet. */
+.tool.has-new::after {
+  content: ""; position: absolute; top: 6px; right: 6px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--ink); border: 2px solid var(--panel);
+}
 .toolbar .spacer { flex: 1 0 8px; }
 .toolbar .rule { width: 32px; height: 1px; flex: none; background: var(--line); margin: 4px 0; }
 
@@ -146,6 +152,21 @@ body {
 .choice small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
 .choice:disabled { opacity: .45; cursor: default; }
 .choice:disabled svg { stroke: var(--muted); }
+/* ── gallery sheet ──────────────────────────────────────────────── */
+.gallery-list { max-height: 46vh; overflow-y: auto; }
+.gallery-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
+  color: var(--text); font: inherit; text-align: left; padding: 12px; margin-bottom: 8px; cursor: pointer;
+}
+.gallery-item .meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.gallery-item .meta strong {
+  font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.gallery-item .meta small { color: var(--muted); font-size: 12px; }
+.gallery-item .new { flex: none; font-size: 11px; font-weight: 700; color: var(--ink); }
+.gallery-empty { color: var(--muted); font-size: 13px; padding: 12px 0; text-align: center; }
+
 .row { display: flex; gap: 8px; align-items: center; }
 /* The value and calibration sheets' number fields. */
 .row input {

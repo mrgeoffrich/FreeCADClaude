@@ -150,6 +150,38 @@ const api = deviceApi(token);
  * Kept so the source sheet and the banner both act on the same thing. */
 let available: Published | null = null;
 
+/** Every capture FreeCAD has published this session that's still fetchable,
+ * oldest first -- what the gallery button lists. Capped the same as the
+ * server's own window (device_server._KEEP_PUBLISHED) so a tapped row can
+ * never point at bytes the server has already dropped. Populated up front
+ * from GET /api/published (catches whatever arrived while the page was
+ * closed or backgrounded) and appended to as SSE events arrive. */
+const HISTORY_CAP = 8;
+const captureHistory: Published[] = [];
+/** Ids the user has actually loaded -- what tells the gallery, and its
+ * toolbar badge, which captures haven't been looked at yet. */
+const seen = new Set<string>();
+
+function recordHistory(published: Published): void {
+  if (!captureHistory.some((p) => p.id === published.id)) {
+    captureHistory.push(published);
+    while (captureHistory.length > HISTORY_CAP) captureHistory.shift();
+  }
+  ui.setGalleryEnabled(captureHistory.length > 0);
+  ui.setGalleryBadge(captureHistory.some((p) => !seen.has(p.id)));
+}
+
+/** "3m ago" / "2h ago" for a capture's `publishedAt` (Unix seconds). Coarse on
+ * purpose -- the gallery is for picking the right one out of a handful, not a
+ * clock. */
+function relativeTime(publishedAt: number): string {
+  const seconds = Math.max(0, Date.now() / 1000 - publishedAt);
+  if (seconds < 60) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return `${Math.round(minutes / 60)}h ago`;
+}
+
 // ── status ─────────────────────────────────────────────────────────────────
 const SOURCE_SUBTITLE: Record<ImageSource["kind"], string> = {
   device_photo: "photo from device",
@@ -632,6 +664,7 @@ ui.onSource = (choice: SourceChoice) => {
  * which is exactly the "FreeCAD sent me a view" flow the feature is for. */
 function offer(published: Published, live: boolean): void {
   available = published;
+  recordHistory(published);
   ui.setFreecadSource(true, describeCapture(published));
   if (!canvasView.scene.image) {
     void loadPublished(published);
@@ -649,6 +682,8 @@ async function loadPublished(published: Published): Promise<void> {
       name: published.meta.document || "FreeCAD",
       published,
     });
+    seen.add(published.id);
+    ui.setGalleryBadge(captureHistory.some((p) => !seen.has(p.id)));
     ui.hideBanner();
     // Claude's "what to mark" line, if it sent one. In the message bar rather
     // than a toast: it is an instruction the user acts on while drawing, and a
@@ -667,13 +702,32 @@ ui.onLoadIncoming = () => {
   if (available) void loadPublished(available);
 };
 
-// What's already there on load (the capture may predate this page), then the
-// stream for everything after it. The server pushes over SSE rather than being
-// polled -- see device_server's `_stream_events`.
+ui.onOpenGallery = () => {
+  ui.openGallery(
+    [...captureHistory].reverse().map((p) => ({
+      id: p.id,
+      title: describeCapture(p),
+      time: relativeTime(p.publishedAt),
+      isNew: !seen.has(p.id),
+    })),
+  );
+};
+
+ui.onGallerySelect = (id) => {
+  const item = captureHistory.find((p) => p.id === id);
+  if (item) void loadPublished(item);
+};
+
+// Everything still fetchable (the capture may predate this page, and there
+// may be more than one if the device missed a beat -- see api.history's
+// docstring), then the stream for everything after it. The server pushes over
+// SSE rather than being polled -- see device_server's `_stream_events`.
 void (async () => {
   try {
-    const published = await api.latest();
-    if (published) offer(published, false);
+    const items = await api.history();
+    for (const item of items) recordHistory(item);
+    const latest = items[items.length - 1];
+    if (latest) offer(latest, false);
   } catch {
     // Unpaired, or FreeCAD stopped the server. The status bar already says so.
   }
@@ -719,13 +773,9 @@ ui.onSend = () => {
         dimensions,
       });
       await api.upload(png, doc);
-      // Clear what was sent: the marks are gone to Claude, and leaving them
-      // under the next capture is how the same note gets sent twice.
-      canvasView.scene.strokes.length = 0;
-      dimensions.length = 0;
-      undoHistory.length = 0;
-      draft = null;
-      canvasView.requestRender();
+      // The marks stay on screen -- the user can see what they sent and Clear
+      // it themselves. `adopt()` already wipes strokes/dimensions whenever a
+      // new image is loaded, so nothing carries over onto the next capture.
       ui.caption.value = "";
       ui.toast("Sent to Claude");
     } catch (err) {

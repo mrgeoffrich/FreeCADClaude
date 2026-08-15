@@ -57,6 +57,17 @@ export interface ValueSheetInfo {
   readonly note: string;
 }
 
+/** One row in the gallery sheet -- every capture FreeCAD has published this
+ * session, as main.ts has it, formatted for display. `isNew` is "not yet
+ * loaded", not "recently published": it's what tells the user which one they
+ * haven't actually looked at. */
+export interface GalleryItem {
+  readonly id: string;
+  readonly title: string;
+  readonly time: string;
+  readonly isNew: boolean;
+}
+
 /** What the status bar shows about the current image. */
 export interface StatusInfo {
   /** Document or file name. */
@@ -87,6 +98,10 @@ export interface Ui {
   onFit: () => void;
   /** What the incoming-capture banner's Load button does. */
   onLoadIncoming: () => void;
+  /** The gallery button was tapped -- main.ts responds with `openGallery`. */
+  onOpenGallery: () => void;
+  /** A row in the gallery sheet was tapped, with its capture's id. */
+  onGallerySelect: (id: string) => void;
   /** The value sheet's Done, with the target the user typed (null if they left
    * it blank -- "just point it out" is a legitimate answer) and their note. */
   onValueDone: (targetMm: number | null, note: string) => void;
@@ -120,6 +135,12 @@ export interface Ui {
   /** Enables the "Latest view from FreeCAD" source once /api/latest has
    * something to offer, with its document/view as the subtitle. */
   setFreecadSource(available: boolean, subtitle: string): void;
+  /** Enables the gallery button once there's at least one capture to list. */
+  setGalleryEnabled(enabled: boolean): void;
+  /** The gallery holds a capture that hasn't been loaded yet. */
+  setGalleryBadge(hasNew: boolean): void;
+  /** Render the gallery sheet's rows and show it. */
+  openGallery(items: readonly GalleryItem[]): void;
   openSources(): void;
   openWelcome(): void;
   closeSheets(): void;
@@ -189,6 +210,11 @@ export function mountUi(doc: Document = document): Ui {
   const libraryChoice = need<HTMLButtonElement>(doc, "src-library");
   const cancelChoice = need<HTMLButtonElement>(doc, "src-cancel");
 
+  const galleryButton = need<HTMLButtonElement>(doc, "t-gallery");
+  const gallerySheet = need(doc, "sheet-gallery");
+  const galleryList = need(doc, "gallery-list");
+  const galleryCancel = need<HTMLButtonElement>(doc, "gallery-cancel");
+
   const welcomeSheet = need(doc, "sheet-welcome");
   const welcomeDone = need<HTMLButtonElement>(doc, "welcome-done");
   const helpButton = need<HTMLButtonElement>(doc, "t-help");
@@ -211,6 +237,8 @@ export function mountUi(doc: Document = document): Ui {
     onSend: () => {},
     onFit: () => {},
     onLoadIncoming: () => {},
+    onOpenGallery: () => {},
+    onGallerySelect: () => {},
     onValueDone: () => {},
     onValueDelete: () => {},
     onCalibrate: () => {},
@@ -279,6 +307,49 @@ export function mountUi(doc: Document = document): Ui {
       freecadSub.textContent = subtitle;
     },
 
+    setGalleryEnabled(enabled) {
+      galleryButton.disabled = !enabled;
+    },
+
+    setGalleryBadge(hasNew) {
+      galleryButton.classList.toggle("has-new", hasNew);
+    },
+
+    openGallery(items) {
+      galleryList.replaceChildren();
+      if (items.length === 0) {
+        const empty = doc.createElement("p");
+        empty.className = "gallery-empty";
+        empty.textContent = "Nothing sent yet.";
+        galleryList.append(empty);
+      }
+      for (const item of items) {
+        const row = doc.createElement("button");
+        row.type = "button";
+        row.className = "gallery-item";
+        const meta = doc.createElement("span");
+        meta.className = "meta";
+        const title = doc.createElement("strong");
+        title.textContent = item.title;
+        const time = doc.createElement("small");
+        time.textContent = item.time;
+        meta.append(title, time);
+        row.append(meta);
+        if (item.isNew) {
+          const badge = doc.createElement("span");
+          badge.className = "new";
+          badge.textContent = "NEW";
+          row.append(badge);
+        }
+        row.addEventListener("click", () => {
+          ui.closeSheets();
+          ui.onGallerySelect(item.id);
+        });
+        galleryList.append(row);
+      }
+      gallerySheet.hidden = false;
+    },
+
     openSources() {
       sourcesSheet.hidden = false;
     },
@@ -292,6 +363,7 @@ export function mountUi(doc: Document = document): Ui {
       valueSheet.hidden = true;
       calibrateSheet.hidden = true;
       welcomeSheet.hidden = true;
+      gallerySheet.hidden = true;
     },
 
     showBanner(text) {
@@ -333,7 +405,7 @@ export function mountUi(doc: Document = document): Ui {
   // The value sheet is NOT in this list: dismissing it by a stray tap would
   // silently discard a typed target, and the sheet has both a Done and a
   // Delete for the two things the user might mean.
-  for (const scrim of [sourcesSheet, calibrateSheet]) {
+  for (const scrim of [sourcesSheet, calibrateSheet, gallerySheet]) {
     scrim.addEventListener("click", (e) => {
       if (e.target === scrim) ui.closeSheets();
     });
@@ -391,6 +463,9 @@ export function mountUi(doc: Document = document): Ui {
     ui.closeSheets();
     ui.onWelcomeDone();
   });
+
+  galleryButton.addEventListener("click", () => ui.onOpenGallery());
+  galleryCancel.addEventListener("click", () => ui.closeSheets());
 
   undoButton.addEventListener("click", () => ui.onUndo());
   clearButton.addEventListener("click", () => ui.onClear());

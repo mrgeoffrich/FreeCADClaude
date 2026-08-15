@@ -48,6 +48,13 @@
     <!-- left-edge toolbar: the pen hand rests on the right, so controls sit
          where they won't be covered while drawing -->
     <div class="toolbar">
+      <!-- Every view FreeCAD has sent this session, not just the newest --
+           /api/latest alone loses track of one sent while the phone was
+           closed or backgrounded. Disabled until there's at least one; the
+           dot (.has-new, toggled by main.ts) marks one not yet loaded. -->
+      <button class="tool" id="t-gallery" title="Views from FreeCAD" aria-label="Views from FreeCAD" disabled>
+        <svg viewBox="0 0 24 24"><rect x="3" y="7" width="14" height="14" rx="2"/><path d="M7 7V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-2"/></svg>
+      </button>
       <button class="tool" id="t-source" title="Image source" aria-label="Image source">
         <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M3 16.5l4.8-4.2a2 2 0 0 1 2.6 0L21 20"/></svg>
       </button>
@@ -143,6 +150,22 @@
       </button>
       <div class="row" style="justify-content:flex-end;margin-top:4px">
         <button class="btn ghost" id="src-cancel" type="button">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── gallery sheet ──
+       Every view FreeCAD has published this session, in case the device
+       missed one while it was closed or backgrounded -- /api/latest alone
+       only ever offers the newest. Rows are built by ui.ts; there's nothing
+       static to show until then. -->
+  <div class="scrim" id="sheet-gallery" hidden>
+    <div class="sheet">
+      <h2>Views from FreeCAD</h2>
+      <p>Everything sent this session. Tap one to load it.</p>
+      <div class="gallery-list" id="gallery-list"></div>
+      <div class="row" style="justify-content:flex-end;margin-top:4px">
+        <button class="btn ghost" id="gallery-cancel" type="button">Close</button>
       </div>
     </div>
   </div>

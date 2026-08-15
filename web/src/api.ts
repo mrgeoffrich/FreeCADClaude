@@ -124,6 +124,23 @@ export function parseLatest(body: unknown): Published | null {
   return parsePublished(envelope.published);
 }
 
+/** Parse a `GET /api/published` body: `{ "images": [...] }`, oldest first.
+ *
+ * Anything in the array that doesn't parse as a `Published` (a stray null, a
+ * record missing its id) is dropped rather than aborting the whole list --
+ * one bad entry shouldn't hide every capture that arrived cleanly. */
+export function parseHistory(body: unknown): Published[] {
+  const envelope = body as { images?: unknown } | null | undefined;
+  const images = envelope && typeof envelope === "object" ? envelope.images : null;
+  if (!Array.isArray(images)) return [];
+  const out: Published[] = [];
+  for (const item of images) {
+    const parsed = parsePublished(item);
+    if (parsed) out.push(parsed);
+  }
+  return out;
+}
+
 /** A one-line description of a capture, for the status bar and the banner. */
 export function describeCapture(published: Published): string {
   const { document, view } = published.meta;
@@ -138,6 +155,10 @@ export interface UploadResult {
 export interface DeviceApi {
   /** The currently published capture, or null. */
   latest(): Promise<Published | null>;
+  /** Every capture still fetchable this run, oldest first -- what the gallery
+   * lists. Unlike `latest`, this survives having missed one or more while the
+   * page was closed or backgrounded. */
+  history(): Promise<Published[]>;
   /** The bytes of a published capture. */
   image(published: Published): Promise<Blob>;
   upload(png: Blob, doc: AnnotationDoc): Promise<UploadResult>;
@@ -183,6 +204,12 @@ export function deviceApi(token: string | null): DeviceApi {
       const response = await send("/api/latest", { headers });
       if (!response.ok) throw new Error(await readError(response));
       return parseLatest(await response.json());
+    },
+
+    async history() {
+      const response = await send("/api/published", { headers });
+      if (!response.ok) throw new Error(await readError(response));
+      return parseHistory(await response.json());
     },
 
     async image(published) {

@@ -21,9 +21,10 @@ a device on the same wifi has to reach it. The threat model is therefore
 *someone else on your network*, and the mitigations are: off by default, a
 fresh token per start, an idle auto-stop (:func:`_idle_watchdog`), and a request
 surface that is a single realpath-contained directory of static files plus these
-four ``/api/*`` routes:
+five ``/api/*`` routes:
 
     GET  /api/latest      what send_to_device last published (JSON)
+    GET  /api/published   every publish still fetchable, oldest first (JSON)
     GET  /api/image/<id>  those bytes, by an id WE minted (never a path)
     POST /api/upload      an image + an opaque annotation document
     GET  /api/events      SSE; one 'published' event per send_to_device
@@ -473,6 +474,19 @@ def _public_record(record):
     }
 
 
+def _published_history():
+    """Every publish `/api/image/<id>` can still answer for, oldest first.
+
+    What ``/api/latest`` alone can't offer: a device that was closed or
+    backgrounded across more than one ``send_to_device`` only ever sees the
+    newest of them there, with no way back to the ones in between. This is
+    the same ``_KEEP_PUBLISHED``-capped window as everything else -- a list of
+    what is still fetchable, not a growing log.
+    """
+    with _feed.cond:
+        return [_public_record(_feed.images[image_id]) for image_id in _feed.order]
+
+
 # -- uploads ----------------------------------------------------------------
 
 
@@ -618,6 +632,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         route = urllib.parse.urlsplit(self.path).path
         if route == "/api/latest":
             self._send_json(200, {"published": _public_record(_feed.latest)})
+            return
+        if route == "/api/published":
+            self._send_json(200, {"images": _published_history()})
             return
         if route.startswith("/api/image/"):
             self._send_published(route[len("/api/image/"):])

@@ -14,6 +14,7 @@ import {
   buildUpload,
   describeCapture,
   eventsUrl,
+  parseHistory,
   parseLatest,
   parsePublished,
 } from "../src/api";
@@ -119,6 +120,27 @@ describe("parsePublished", () => {
     expect(parseLatest({ published: raw })?.id).toBe("AbC123");
     expect(parseLatest({ published: null })).toBeNull();
     expect(parseLatest(null)).toBeNull();
+  });
+});
+
+describe("parseHistory", () => {
+  const a = { id: "a", url: "/api/image/a", published_at: 1, meta: { document: "A" } };
+  const b = { id: "b", url: "/api/image/b", published_at: 2, meta: { document: "B" } };
+
+  it("reads the /api/published envelope in order", () => {
+    expect(parseHistory({ images: [a, b] }).map((p) => p.id)).toEqual(["a", "b"]);
+  });
+
+  it("drops entries that don't parse rather than losing the whole list", () => {
+    // A record missing its id/url alongside good ones -- the one bad entry
+    // must not hide the captures that arrived clean.
+    expect(parseHistory({ images: [a, {}, b] }).map((p) => p.id)).toEqual(["a", "b"]);
+  });
+
+  it("treats anything without an images array as an empty history", () => {
+    expect(parseHistory(null)).toEqual([]);
+    expect(parseHistory({})).toEqual([]);
+    expect(parseHistory({ images: "nope" })).toEqual([]);
   });
 });
 

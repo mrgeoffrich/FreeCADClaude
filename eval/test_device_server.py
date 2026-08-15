@@ -455,6 +455,20 @@ def main():
         finally:
             sock.close()
 
+        # -- /api/published (the gallery's list) --------------------------
+        # What GET /api/latest alone can't offer: a device that missed the
+        # first publish (closed, backgrounded) still has a way back to it.
+        status, _, body = _request(host, port, "/api/published", {"X-FC-Token": token})
+        images = json.loads(body)["images"]
+        check("/api/published lists both, oldest first", status == 200
+              and [img["id"] for img in images] == [record["id"], second["id"]],
+              body[:200])
+        check("each entry is the same shape /api/latest serves",
+              images[-1]["url"] == "/api/image/" + second["id"]
+              and images[-1]["meta"]["view"] == "top", images[-1])
+        status, _, _ = _request(host, port, "/api/published")
+        check("/api/published is token-gated -> 403", status == 403, f"got {status}")
+
         # -- uploads -----------------------------------------------------
         form_type = f"multipart/form-data; boundary={_BOUNDARY}"
         before = set(os.listdir(uploads_dir))
@@ -577,6 +591,9 @@ def main():
               and json.loads(body)["published"] is None, body[:120])
         status, _, _ = _request(host, port, published["url"], {"X-FC-Token": token})
         check("...and the old image id is gone", status == 404, f"got {status}")
+        status, _, body = _request(host, port, "/api/published", {"X-FC-Token": token})
+        check("...and the gallery is empty too", status == 200
+              and json.loads(body)["images"] == [], body[:120])
         status, _, body = _post(
             host, port, "/api/upload", _multipart([("image", "a.png", _PNG)]),
             form_type, {"X-FC-Token": token},
