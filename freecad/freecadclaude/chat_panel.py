@@ -267,6 +267,7 @@ class ChatWidget(QtWidgets.QWidget):
         self.slice_finished.connect(self._on_slice_finished)
         self._device_quit_hooked = False
         self._slicer_hooked = False
+        self._model_hooked = False
         self._build_ui()
         self._note(_CAPABILITY_NOTICE)
 
@@ -411,6 +412,7 @@ class ChatWidget(QtWidgets.QWidget):
         if app is not None:
             app.aboutToQuit.connect(self._shutdown_worker)
         self._hook_slicer()
+        self._hook_model()
         return True
 
     def _shutdown_worker(self):
@@ -461,6 +463,33 @@ class ChatWidget(QtWidgets.QWidget):
 
         try:
             gcode_server.stop()
+        except Exception:  # noqa: BLE001 - nothing useful to do while quitting
+            pass
+
+    def _hook_model(self):
+        """Make sure quitting FreeCAD stops the model server, once.
+
+        Wired when a chat starts rather than in ``__init__`` because the server
+        is only started by a tool call (a later phase's ``view_model_3d``), and
+        guarded by a flag because Qt allows duplicate connections -- a second
+        one here would stop an already-stopped server.
+        """
+        if self._model_hooked:
+            return
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._shutdown_model)
+            self._model_hooked = True
+
+    def _shutdown_model(self):
+        """Stop the loopback model server on the way out, mirroring
+        ``_shutdown_gcode_server``. It has no idle watchdog of its own -- it is
+        on 127.0.0.1 and started by a tool rather than by a button, so quitting
+        is the only thing that takes it down."""
+        from . import model_server
+
+        try:
+            model_server.stop()
         except Exception:  # noqa: BLE001 - nothing useful to do while quitting
             pass
 
