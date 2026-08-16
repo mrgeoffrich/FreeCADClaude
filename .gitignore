@@ -16,3 +16,5 @@ web/dist/
 # be ignored. See gcode_web/VENDORED.md and docs/slice-preview-design.md.
 gcode_web/node_modules/
 gcode_web/dist/
+model_web/node_modules/
+model_web/dist/

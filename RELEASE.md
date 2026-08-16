@@ -70,29 +70,33 @@ Then load it in FreeCAD once (`pwsh -File deploy.ps1` / `./deploy.sh`, restart,
 open the **Claude Chat** workbench, send a message). The eval covers the agent
 path; it does not cover the dock actually appearing.
 
-**2. Rebuild BOTH web UIs and commit the output.** There are two, each with its
-own source folder. Skip one and that feature is *missing* from the release — not
-stale, missing:
+**2. Rebuild ALL THREE web UIs and commit the output.** There are three, each
+with its own source folder. Skip one and that feature is *missing* from the
+release — not stale, missing:
 
 ```bash
 cd web && npm ci && npm run build && cd ..
 cd gcode_web && npm ci && npm run build && cd ..
-git status freecad/freecadclaude/device_ui freecad/freecadclaude/gcode_ui
+cd model_web && npm ci && npm run build && cd ..
+git status freecad/freecadclaude/device_ui freecad/freecadclaude/gcode_ui freecad/freecadclaude/model_ui
 ```
 
 `freecad/freecadclaude/device_ui/` (source `web/`, the phone/tablet annotation
-page) and `freecad/freecadclaude/gcode_ui/` (source `gcode_web/`, the G-code
-viewer) are both **build output that is committed to git**, because users
-install from the `main` branch as a plain file copy: no Node, no npm, no build
-step at their end. Whatever is in those folders on `main` *is* what they get. An
-un-rebuilt folder ships the previous release's JavaScript against the current
-release's server; one that was never built at all makes the feature fail with
-*"the device UI has not been built"* / *"the G-code viewer has not been built"*.
+page), `freecad/freecadclaude/gcode_ui/` (source `gcode_web/`, the G-code
+viewer) and `freecad/freecadclaude/model_ui/` (source `model_web/`, the
+face-markup viewer) are all **build output that is committed to git**, because
+users install from the `main` branch as a plain file copy: no Node, no npm, no
+build step at their end. Whatever is in those folders on `main` *is* what they
+get. An un-rebuilt folder ships the previous release's JavaScript against the
+current release's server; one that was never built at all makes the feature
+fail with *"the device UI has not been built"* / *"the G-code viewer has not
+been built"* / *"the model UI has not been built"*.
 
-Both builds are deterministic — fixed asset filenames, no content hashes, no
-code splitting (see `web/vite.config.ts` and `gcode_web/vite.config.ts`) — so a
-rebuild that changes nothing produces no diff. An empty `git status` here is the
-normal, expected outcome; it is not a sign the build didn't run.
+All three builds are deterministic — fixed asset filenames, no content hashes,
+no code splitting (see `web/vite.config.ts`, `gcode_web/vite.config.ts` and
+`model_web/vite.config.ts`) — so a rebuild that changes nothing produces no
+diff. An empty `git status` here is the normal, expected outcome; it is not a
+sign the build didn't run.
 
 `gcode_web/` is vendored from another project, so a source change there also
 needs its entry in `gcode_web/VENDORED.md` — that file, not the minified bundle,

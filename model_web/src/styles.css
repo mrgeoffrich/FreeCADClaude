@@ -1,0 +1,184 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+/* The face-markup model viewer. Same palette and plain-status-bar voice as
+   this addon's other two web apps (gcode_ui, device_ui): a dark canvas, a
+   single bottom-left status line, and -- since Phase 4 -- a right-hand panel
+   with the face-markup chrome: a note field, a caption field, a Send button
+   and the list of marks. Nothing beyond what the round trip needs; no
+   toolbar, no settings drawer. */
+
+:root {
+  --bg: #15171c;
+  --panel: rgba(26, 29, 36, 0.86);
+  --panel-solid: #1a1d24;
+  --panel-border: #2c313c;
+  --text: #e6e9ef;
+  --text-dim: #9aa3b2;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+.app {
+  position: relative;
+  height: 100vh;
+  width: 100vw;
+}
+
+/* The canvas ends where the panel begins: the panel never covers the model,
+   and pointer events on the panel never reach the orbit controls. */
+.canvas {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 320px;
+}
+
+.statusbar {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  max-width: calc(100% - 344px);
+  padding: 6px 10px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* -- the face-markup panel --------------------------------------------- */
+
+.panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 320px;
+  padding: 14px;
+  background: var(--panel-solid);
+  border-left: 1px solid var(--panel-border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+}
+
+.panel-title {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+}
+
+.panel-row {
+  display: flex;
+  gap: 8px;
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  background: var(--bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.input::placeholder {
+  color: var(--text-dim);
+}
+
+.input:focus {
+  outline: none;
+  border-color: #4a5568;
+}
+
+.button {
+  padding: 7px 14px;
+  background: #2a2f3a;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.button:hover:not(:disabled) {
+  background: #333946;
+}
+
+.button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.marks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mark {
+  background: var(--bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mark-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mark-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.mark-remove {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.mark-note {
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
+.panel-status {
+  font-size: 12px;
+  color: var(--text-dim);
+}

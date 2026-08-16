@@ -93,6 +93,7 @@ rsync -a \
     --exclude 'eval' \
     --exclude 'web' \
     --exclude 'gcode_web' \
+    --exclude 'model_web' \
     --exclude '*.stl' \
     "$SOURCE"/ "$DEST"/
 

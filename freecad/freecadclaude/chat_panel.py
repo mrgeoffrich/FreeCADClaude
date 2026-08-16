@@ -267,6 +267,7 @@ class ChatWidget(QtWidgets.QWidget):
         self.slice_finished.connect(self._on_slice_finished)
         self._device_quit_hooked = False
         self._slicer_hooked = False
+        self._model_hooked = False
         self._build_ui()
         self._note(_CAPABILITY_NOTICE)
 
@@ -411,6 +412,7 @@ class ChatWidget(QtWidgets.QWidget):
         if app is not None:
             app.aboutToQuit.connect(self._shutdown_worker)
         self._hook_slicer()
+        self._hook_model()
         return True
 
     def _shutdown_worker(self):
@@ -461,6 +463,33 @@ class ChatWidget(QtWidgets.QWidget):
 
         try:
             gcode_server.stop()
+        except Exception:  # noqa: BLE001 - nothing useful to do while quitting
+            pass
+
+    def _hook_model(self):
+        """Make sure quitting FreeCAD stops the model server, once.
+
+        Wired when a chat starts rather than in ``__init__`` because the server
+        is only started by a tool call (a later phase's ``view_model_3d``), and
+        guarded by a flag because Qt allows duplicate connections -- a second
+        one here would stop an already-stopped server.
+        """
+        if self._model_hooked:
+            return
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._shutdown_model)
+            self._model_hooked = True
+
+    def _shutdown_model(self):
+        """Stop the loopback model server on the way out, mirroring
+        ``_shutdown_gcode_server``. It has no idle watchdog of its own -- it is
+        on 127.0.0.1 and started by a tool rather than by a button, so quitting
+        is the only thing that takes it down."""
+        from . import model_server
+
+        try:
+            model_server.stop()
         except Exception:  # noqa: BLE001 - nothing useful to do while quitting
             pass
 
@@ -712,6 +741,7 @@ class ChatWidget(QtWidgets.QWidget):
         # note written above would be wiped by the very next line.
         self._reset_device_session()
         self._reset_slice_session()
+        self._reset_model_session()
         try:
             from . import plan_panel
 
@@ -761,6 +791,29 @@ class ChatWidget(QtWidgets.QWidget):
             freecad_tools.reset_slice_session()
         except Exception as exc:  # noqa: BLE001 - "New" must clear the panel regardless
             self._note(f"*Could not reset the slice jobs: {exc}*")
+
+    def _reset_model_session(self):
+        """Forget the previous conversation's model exports and markup.
+
+        The same failure ``_reset_device_session`` prevents: the model feed
+        deliberately outlives a ``stop()`` (``read_model_markup`` is routinely
+        called after the server is down), so without this the next chat's
+        ``read_model_markup`` would answer with the previous one's markup
+        document, and what leaked into the new conversation would be the
+        previous chat's exported ``.brp`` files and any markup document the
+        browser posted -- a document the new conversation may not even be
+        about. The upload folder is re-resolved because "New" minted a fresh
+        session id and therefore a fresh ``<session>/models/``.
+        """
+        from . import freecad_tools, model_server
+
+        try:
+            upload_dir = (
+                freecad_tools.model_upload_dir() if model_server.is_running() else None
+            )
+            model_server.reset_session(upload_dir)
+        except Exception:  # noqa: BLE001 - "New" must clear the panel regardless
+            pass
 
     def _on_model_changed(self, _index):
         """Persist the selected model (only reachable between conversations, since
