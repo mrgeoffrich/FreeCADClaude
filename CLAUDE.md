@@ -48,6 +48,8 @@ chat panel (GUI thread)
 | `freecad/freecadclaude/device_ui/` | The built web app — committed build output, whose source is `web/`. See "Device annotation" before touching either. |
 | `freecad/freecadclaude/gcode_server.py` | The **loopback** HTTP server behind `view_gcode` and the chat panel's **Slicer** button: serves `gcode_ui/` to the desktop browser, plus `GET /api/gcode/<id>` and `GET`/`PUT /api/slicer/{options,config}`. Binds `127.0.0.1`, keeps a token anyway. Stdlib only, same rule as `device_server.py`; see "Slice preview" below. |
 | `freecad/freecadclaude/gcode_ui/` | The built G-code viewer — the **second** committed build output, whose source is `gcode_web/`. See "Slice preview" before touching either. |
+| `freecad/freecadclaude/model_server.py` | The **loopback** HTTP server behind `view_model_3d`/`read_model_markup`: serves `model_ui/` to the desktop browser, plus `GET /api/mesh/<id>/<object>.brp`, `POST /api/upload` and `GET /api/events` (SSE). Binds `127.0.0.1`, keeps a token anyway. Stdlib only, same rule as `device_server.py`; see "Face markup" below. |
+| `freecad/freecadclaude/model_ui/` | The built face-markup viewer — the **third** committed build output, whose source is `model_web/`. See "Face markup" before touching either. |
 | `freecad/freecadclaude/slicer_runner.py` | Drives Bambu Studio as a subprocess on a daemon thread, and resolves the presets it needs off the slicer's own files. Job table, argv builder, discovery. Stdlib only, and testable under a bare `python3`. |
 | `freecad/freecadclaude/web_static.py` | A URL path turned into a file inside one fixed directory, and a content type for it — shared by both servers. `resolve()` is the whole of the containment (realpath on both ends, against a root the caller passes); a second copy of it is a second place for that check to be subtly weaker. |
 | `freecad/freecadclaude/qr.py` | The pairing QR: byte mode, EC level L, versions 3–6, fixed mask 0. Imports no Qt (returns a boolean matrix; `chat_panel._qr_pixmap` paints it), so it is unit-testable headlessly. |
@@ -56,6 +58,7 @@ chat panel (GUI thread)
 | `mcp_server.py` | Stdlib-only MCP stdio server the CLI spawns; relays to the bridge. |
 | `web/` | Vite + TypeScript + Vitest source of `device_ui/`. Dev-time only — excluded from `deploy.ps1`/`deploy.sh` and never shipped. |
 | `gcode_web/` | Vite + TypeScript + Vitest source of `gcode_ui/`, vendored from the `dimensioner` project. `gcode_web/VENDORED.md` records the upstream commit and every local patch, and is the reviewable artifact for a 1.1 MB minified build nobody reads. Dev-time only, same exclusions as `web/`. |
+| `model_web/` | Vite + TypeScript + Vitest source of `model_ui/`, vendoring `occt-import-js`'s WASM OpenCascade build (pinned `0.0.23`). `model_web/VENDORED.md` records what is vendored and why. Dev-time only, same exclusions as `web/`. |
 | `deploy.ps1` / `install_deps.ps1` / `eval/run.py` | Dev tooling (not deployed). |
 
 ## Tools
@@ -66,6 +69,7 @@ Registry: `freecad_tools.TOOLS` = name → `{schema, run, precheck?}`. Current s
 `view_sketch_svg`, `capture_view`,
 `capture_user_view`, `crop_view`, `cutaway`, `annotate_view`, `read_annotation`,
 `send_to_device`, `read_device_image`,
+`view_model_3d`, `read_model_markup`,
 `export`, `slice_model`, `read_slice_result`, `view_gcode`, `inspect_api`,
 `get_diagnostics`, `run_python` (the only tool that touches geometry —
 the general Sketcher/PartDesign/Part path; `document_notes` mutates the
@@ -96,12 +100,14 @@ infra modules import nothing from `tools_*` (that's why `_ERROR_FLAGS` and
 | `doc_notes.py` | Where those notes live and how staleness is judged — see "Document notes" below. |
 | `print_meta.py` | Per-part build direction — the enumeration, the plate-side derivation, `DIRECTION_NOTE`, `up_vector()`. |
 | `print_export.py` | `oriented_export` — mesh each part, stand it up on its recorded `PrintDirection`, drop it onto the plate, and write them all as one multi-object 3MF through a scratch document that is closed again. Infra beside `print_meta.py`: that one records the direction, this one acts on it. The rotation reaches the mesh, never the user's objects. |
+| `model_export.py` | `export_brep` — per requested object, `obj.Shape.exportBrep(path)` into `<session>/models/`, plus the `{"shape_hash", "faces": {i: {centroid, normal, area}}}` record the read-back hash check replays. Smaller sibling of `print_export.py`: no meshing code at all, the native BREP written out untouched. |
 | `tools_slice.py` | `slice_model`, `read_slice_result`, `view_gcode`, plus `open_settings_page()` re-exported for the chat panel's **Slicer** button. Everything environmental — the binary, the slicer's config, the profile roots, the preset names, the viewer directory — is read here on the GUI thread and handed to `slicer_runner`/`gcode_server` as plain values. |
 | `tools_inspect.py` | `inspect_api`. |
 | `tools_sketch.py` | `get_sketch`, `view_sketch_svg` (+ the GeoId overlay). |
 | `tools_capture.py` | `capture_view`, `capture_user_view`, `crop_view`. |
 | `tools_annotate.py` | `annotate_view`, `read_annotation` — the draw-on-the-screenshot round trip. |
 | `tools_device.py` | `send_to_device`, `read_device_image` — the same round trip through a phone or tablet on the LAN. Also `device_upload_dir()`, re-exported for `chat_panel`; it is the whole of the no-FreeCAD seam described under "Device annotation". No rendering code of its own — it enters `render._offscreen_shot` like the capture tools do. |
+| `tools_model.py` | `view_model_3d`, `read_model_markup` — the same round trip through the desktop browser, naming exact faces instead of pixels; see "Face markup" below. Also `model_upload_dir()`, re-exported for `chat_panel`; the same no-FreeCAD seam as `tools_device.device_upload_dir`. |
 | `tools_cutaway.py` | `cutaway` (+ clip-plane resolution). |
 | `tools_export.py` | `export`. |
 | `session.py` | Artifact folders: the per-conversation session dir (also the CLI's cwd — `prepare_session_workspace` copies the skills and references into it), the script/step archives (`_session_subdir`/`_safe_name` build every artifact path), plus the paths that aren't artifacts but that several modules must agree on: `PARAM_PATH` (the preferences root), `REFS_DIR` (the bundled `references/`, only ever the copy *source*) and `ref_path()` (how a reference is cited: `REFS_REL` + the name, relative to the CLI's cwd). All single-spelled here — `agent_config` substitutes `REFS_REL` into the prompt's `{REFS_DIR}` and the tools cite through `ref_path()` in their notes, so the prompt (built once per worker) and a note (built mid-conversation) name the same file the same way however many sessions have come and gone. `active_session_id()` is how a tool remembers "already said this in this conversation" without inventing its own notion of when one starts. |
@@ -441,6 +447,85 @@ Design doc: `docs/slice-preview-design.md`.
   objects; `result.json`'s `objects` array is *not* in that order, so match on
   the slicer's `Object_N` name, fall back to the numeric id, and cross-check the
   pair's size before quoting a position.
+
+**Face markup** (`model_server.py` + `freecad_tools/{model_export,tools_model}.py` +
+`model_ui/`, source in `model_web/`): `view_model_3d` exports the REAL native
+BREP of the named objects — no converted mesh anywhere in the path — starts the
+loopback model server on demand and publishes the export over SSE into the
+user's desktop browser, where `occt-import-js` (a WASM build of actual OCCT)
+tessellates it client-side. The user orbits the true solid, clicks the exact
+face(s) they mean, types notes and presses Send; `read_model_markup` returns
+the marks to Claude as exact `(ObjectName, "FaceN")` references — each one
+re-validated against the live document — plus a fresh server-side render of the
+marked faces, highlighted. Design doc: `docs/face-markup-plan.md` (its scope
+frozen in `docs/face-markup-plan-scope.md`).
+
+- **BREP, not a server-baked mesh, and the payload maths is why.** A mesh
+  baked server-side grows with tessellation resolution: a filleted, machined
+  part at a useful tolerance is tens of thousands of triangles however simple
+  its topology. BREP tracks topological complexity instead — a filleted box is
+  a handful of faces at any resolution — so for exactly the curved, filleted
+  geometry where a mesh blows up, the `.brp` export is usually the *smaller*
+  payload, and the browser tessellates at its own deflection rather than
+  inheriting a baked one. That is the load-bearing reason, not familiarity:
+  `exportBrep` is FreeCAD's own native format (the same writer `.FCStd`
+  stores), so nothing is converted, approximated or re-derived between the
+  document and the browser.
+- **The ~7 MB WASM kernel is the one deliberate cache exception, and the SSE
+  publish is why it is paid once per tab.** `occt-import-js` (pinned `0.0.23`;
+  `occt-import-js.wasm` = 7,604,031 bytes) is real OCCT compiled to WebAssembly
+  — the browser-side tessellation is genuine CPU work, done in a Worker. A
+  markup conversation plausibly involves several round trips, so
+  `view_model_3d` publishes over SSE into the already-open tab (the
+  `device_server.py` pattern) rather than a fresh page load per call (the
+  `gcode_server.py` pattern): re-paying a several-MB download on every tool
+  call would make the feature painful to use. For the same reason
+  `model_server.py` is the one server of the three that does NOT send
+  `Cache-Control: no-store` on its static files — that header exists because
+  the other two apps' own JS/CSS carries no content hash, so a cached copy
+  would survive a rebuild and serve stale code forever; the vendored,
+  version-pinned WASM changes only on a deliberate version bump, so caching it
+  is safe and the download happens once per tab, not once per publish.
+- **A face name is only reported with confidence when the geometry it names
+  has not moved.** The export records `shape_hash` per object (the
+  `Shape.hashCode()` cache-key idiom of `diagnostics._shape_metrics`) plus each
+  face's centroid/normal/area, and `read_model_markup` re-checks the LIVE
+  object's hash before handing Claude a `"FaceN"`: unchanged → the reference is
+  confident; changed, or the object gone → the mark degrades to the recorded
+  centroid/normal/area and an explicit re-locate warning, never a face number
+  that may point at the wrong place. That is the same "confidently naming the
+  wrong cause is worse than naming none" discipline
+  `diagnostics._pre_existing_failure_note` applies to the topological-naming
+  gotcha: a stale `FaceN` handed to `run_python` is the same class of
+  confident-wrong answer. The check is per-object, so a mark on one object is
+  not invalidated by a change to a different one.
+- **The per-face highlight rewrites the WHOLE `ShapeAppearance` tuple, not the
+  classic `DiffuseColor` list property — and that choice is measured, not
+  assumed.** Writing the colour data through `ShapeAppearance.setDiffuseColors`
+  or the classic `DiffuseColor` property updates the stored values but not
+  Coin's material binding, and an offscreen FBO grab (unlike the live
+  interactive view) then renders the shape as edges only — every face silently
+  unfilled. Found in Phase 5 by comparing a plain capture against one that
+  additionally wrote per-face colours; `_write_face_colors` therefore
+  reassigns the entire tuple as fresh `Material` instances, the pattern
+  `render._set_diffuse` already uses for the shot's single body colour.
+- **The server never calls into FreeCAD**, the same import-list invariant as
+  `device_server.py`/`gcode_server.py`: the viewer directory (the committed
+  `model_ui/`, overridable per start) and the upload folder (`<session>/models/`,
+  via `tools_model.model_upload_dir()`) are resolved on the GUI thread and
+  handed to `start()`/`publish()` as plain values — a `.brp` path plus a dict
+  of hashes and face maps is all the server knows about the machine. The round
+  trip is non-mutating: `exportBrep` is a pure read of `Shape`, and
+  `read_model_markup` never writes to the document, only reads it.
+- **"New" clears the server's state** (`model_server.reset_session`, from
+  `chat_panel._on_new`), for the reason `device_server.reset_session` exists:
+  the feed deliberately outlives a `stop()` (read_model_markup is routinely
+  called after the server is down), so without the reset the next chat's
+  `read_model_markup` would answer with the previous conversation's markup
+  document, and its `/api/latest` would offer the browser an export of a
+  document the new conversation may not even be about. The upload folder is
+  re-resolved on the GUI thread, because "New" minted a fresh
+  `<session>/models/`.
 
 Preferences, all under `PARAM_PATH` and all "empty means discover" — on a
 machine with Bambu Studio set up, none needs setting:
