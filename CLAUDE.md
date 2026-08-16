@@ -876,6 +876,10 @@ and that may be fine.
   `Body.insertObject`/`Group` reordering, which reproduces the same cycle (and can
   duplicate the `Group` entry). Worked example in
   `freecad/freecadclaude/references/partdesign-body-tip-cycle-gotcha.md`.
+- **An ortho camera's `height` is the world WIDTH on a portrait render.** Coin
+  scales the view volume by 1/aspect when the viewport is taller than wide, so
+  framing or measuring one as if `height` were the height is out by that factor.
+  `render._visible_extent` is the single place that branch lives.
 - **QR version 6 at EC level L is two error-correction blocks, not one**, and a
   single-block version 6 produces a structurally perfect symbol that decoders
   read as nothing at all. `eval/test_qr.py` pins full reference matrices from

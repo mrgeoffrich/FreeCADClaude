@@ -424,6 +424,26 @@ def _screen_half_extents(cam, box):
     return center, (hu, hv, hd)
 
 
+def _visible_extent(cam_height, aspect):
+    """The world ``(width, height)`` an orthographic camera of `cam_height`
+    actually shows in a viewport of `aspect` (= render width / height).
+
+    `SoOrthographicCamera.height` is the world height of the view volume only
+    while the viewport is wider than it is tall. Coin's viewport mapping scales
+    the volume by 1/aspect at render time once the viewport goes portrait, so
+    there `height` is the world WIDTH instead. Framing or measuring a portrait
+    render as if `height` were the height zooms out by exactly 1/aspect.
+
+    Measured, not derived from the Coin sources: `cam.getViewVolume(aspect)`
+    reports the unadjusted volume at every aspect, so the scaling is only
+    visible in a rendered image. Six renders at aspects 0.25-0.50 and three at
+    1.14-2.28 fit these two branches to within the antialiased outline.
+    """
+    if aspect >= 1.0:
+        return cam_height * aspect, cam_height
+    return cam_height, cam_height / aspect
+
+
 def _frame_camera_on_box(view, box, aspect, margin=1.06):
     """Aim `view`'s ORTHOGRAPHIC camera at world BoundBox `box` and scale it so
     the box fills a viewport of `aspect` (= render width/height), by writing the
@@ -448,8 +468,11 @@ def _frame_camera_on_box(view, box, aspect, margin=1.06):
         center, (hu, hv, hd) = _screen_half_extents(cam, box)
         if hu <= 1e-9 and hv <= 1e-9:
             return False
-        # Ortho height that contains the box both ways at the render's aspect.
-        height = 2.0 * max(hv, hu / aspect) * margin
+        # The camera height whose _visible_extent contains the box both ways.
+        if aspect >= 1.0:
+            height = 2.0 * max(hv, hu / aspect) * margin
+        else:
+            height = 2.0 * max(hv * aspect, hu) * margin
         if height <= 1e-9:
             return False
         # Ortho scale is set by `height`, not distance, so the standoff only has
@@ -527,11 +550,11 @@ def _crop_camera_frame(view, x1, y1, x2, y2, aspect):
     try:
         right, up, _fwd = _camera_basis(cam)
         height = cam.height.getValue()
-        vis_w = height * aspect
+        vis_w, vis_h = _visible_extent(height, aspect)
         cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
         # Shift the eye laterally so the sub-rect's centre becomes the new centre
         # (image y grows downward, i.e. against +up).
-        offset = right * ((cx - 0.5) * vis_w) + up * ((0.5 - cy) * height)
+        offset = right * ((cx - 0.5) * vis_w) + up * ((0.5 - cy) * vis_h)
         p = cam.position.getValue().getValue()
         eye = FreeCAD.Vector(p[0], p[1], p[2]) + offset
         cam.position.setValue(eye.x, eye.y, eye.z)
@@ -1021,29 +1044,34 @@ def _projection_plane(angles):
     )
 
 
-def _ortho_mm_per_px(cam, height_px):
+def _ortho_mm_per_px(cam, width_px, height_px):
     """Millimetres per rendered pixel for orthographic camera node `cam`, or
     None.
 
-    `height` on an SoOrthographicCamera IS the world height of the viewing
-    volume, so with the image rendered at exactly `height_px` (which
-    _save_view_png guarantees by forcing the FBO save method) this is a
-    division and not an estimate. None whenever it can't be one -- a
-    non-orthographic camera, or a degenerate size -- and that None is the
-    "no scale available" signal, not an error.
+    The image is rendered at exactly `width_px` x `height_px` (which
+    _save_view_png guarantees by forcing the FBO save method), so the world
+    height that _visible_extent reads off the camera at that aspect divides into
+    it exactly: a division, not an estimate. The aspect comes from the render
+    size rather than `cam.aspectRatio` because the two only agree when
+    _frame_camera_on_box ran, and it has several paths that decline.
+
+    None whenever this can't be a number -- a non-orthographic camera, or a
+    degenerate size -- and that None is the "no scale available" signal, not an
+    error.
     """
-    if cam is None or height_px <= 0:
+    if cam is None or width_px <= 0 or height_px <= 0:
         return None
     try:
-        world_height = float(cam.height.getValue())
+        cam_height = float(cam.height.getValue())
     except Exception:  # noqa: BLE001 - any coin/API hiccup means no scale
         return None
-    if world_height <= 0.0:
+    if cam_height <= 0.0:
         return None
+    _, world_height = _visible_extent(cam_height, float(width_px) / float(height_px))
     return world_height / float(height_px)
 
 
-def _capture_optics(view, height_px, angles):
+def _capture_optics(view, width_px, height_px, angles):
     """Everything about the camera that a MEASUREMENT on the saved image
     depends on: ``{"projection", "axis_aligned", "scale"}``.
 
@@ -1062,7 +1090,7 @@ def _capture_optics(view, height_px, angles):
     """
     cam = _ortho_camera(view)
     axis_aligned = _is_axis_aligned(angles)
-    mm_per_px = _ortho_mm_per_px(cam, height_px)
+    mm_per_px = _ortho_mm_per_px(cam, width_px, height_px)
     scale = None
     if mm_per_px is not None:
         scale = {

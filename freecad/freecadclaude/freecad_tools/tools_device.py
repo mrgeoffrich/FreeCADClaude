@@ -246,11 +246,11 @@ def _run_send_to_device(args):
             )
         blank = _looks_blank(png_path)
         measured = _orbit_angles_from_view(view)
-        # LAST, and inside the view: mm/px is the camera's ortho height over
-        # the pixel height, and both were only just settled (_fit_render_size
+        # LAST, and inside the view: mm/px is the world height the camera shows
+        # over the pixel height, and both were only just settled (_fit_render_size
         # can re-frame the camera as well as resize the image). The view dies
         # at the end of this block, so it is read here or not at all.
-        optics = _capture_optics(view, height, _measured_angles(measured, plan))
+        optics = _capture_optics(view, width, height, _measured_angles(measured, plan))
 
     angles = _measured_angles(measured, plan)
     context = _publish_context(doc, keep_set, angles)

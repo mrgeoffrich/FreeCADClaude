@@ -153,14 +153,88 @@ check(
     render._projection_plane((45.0, 35.0)),
 )
 
+# -- what the camera actually shows -----------------------------------------
+print("visible extent")
+
+# Coin's ADJUST_CAMERA viewport mapping scales the view volume by 1/aspect once
+# the render goes portrait, so `height` is the world height in the landscape
+# case and the world WIDTH in the portrait one. Reading it as the height either
+# way zooms every portrait render out by exactly 1/aspect.
+check(
+    "4:3 shows height as the height",
+    render._visible_extent(90.0, 4.0 / 3.0) == (120.0, 90.0),
+    repr(render._visible_extent(90.0, 4.0 / 3.0)),
+)
+check(
+    "square shows height both ways",
+    render._visible_extent(90.0, 1.0) == (90.0, 90.0),
+)
+check(
+    "1:4 shows height as the WIDTH",
+    render._visible_extent(90.0, 0.25) == (90.0, 360.0),
+    repr(render._visible_extent(90.0, 0.25)),
+)
+
+# -- the framing that scale is read off -------------------------------------
+print("framing")
+
+
+def _framing_fill(box_w, box_h, render_w, render_h):
+    """Fraction of the render the box fills, after _frame_camera_on_box has
+    aimed a fresh camera at it: ``(across, down)``, or None where the pieces
+    this needs aren't available.
+
+    The camera is left at its default orientation (looking down -Z, +Y up), so
+    the box's world X/Y ARE its screen width and height.
+    """
+    try:
+        from pivy import coin
+
+        import FreeCAD
+    except Exception:  # noqa: BLE001
+        return None
+    cam = coin.SoOrthographicCamera()
+    box = FreeCAD.BoundBox(
+        -box_w / 2.0, -box_h / 2.0, -1.0, box_w / 2.0, box_h / 2.0, 1.0
+    )
+    aspect = float(render_w) / float(render_h)
+    if not render._frame_camera_on_box(_View(cam), box, aspect):
+        return None
+    vis_w, vis_h = render._visible_extent(cam.height.getValue(), aspect)
+    return box_w / vis_w, box_h / vis_h
+
+
+# 1.06 of margin on the limiting axis, so the fill there is 1/1.06 = 0.943. The
+# regression this pins: a 392x1568 render of a 16x74mm part came back with the
+# part across 24% of the frame, because the framing read `height` as the world
+# height on a portrait render.
+for label, args in [
+    ("4:3 of a 4:3 box", (120.0, 90.0, 1280, 960)),
+    ("4:3 of a tall box", (30.0, 90.0, 1280, 960)),
+    ("1:4 of a 16x74 part", (16.0, 74.0, 392, 1568)),
+    ("1:2 of a 16x32 part", (16.0, 32.0, 787, 1560)),
+    ("4:1 of a long door", (122.0, 6.6, 1568, 392)),
+]:
+    fill = _framing_fill(*args)
+    if fill is None:
+        print(f"  skip {label} (no pivy/FreeCAD here)")
+        continue
+    check(
+        f"{label} fills the frame on its limiting axis",
+        abs(max(fill) - 1.0 / 1.06) < 0.01,
+        f"fills {fill[0] * 100:.0f}% across, {fill[1] * 100:.0f}% down",
+    )
+    check(f"{label} fits inside the frame", max(fill) <= 1.0, repr(fill))
+
 # -- mm per pixel -----------------------------------------------------------
 print("mm per pixel")
 
 cam, real_node = _ortho_camera_node(80.83)
 print(f"  (camera node: {'real SoOrthographicCamera' if real_node else 'stand-in'})")
 
-# The ortho camera's `height` IS the world height of the viewing volume, so
-# this is a division and not an estimate: 80.83mm over 960px.
+# With the image rendered at exactly the size asked for, mm/px is a division and
+# not an estimate: 80.83mm of world height over 960px, the camera being
+# landscape here.
 #
 # Compared with a relative tolerance rather than exactly, and that is a fact
 # about Coin rather than slack in the test: SoSFFloat is SINGLE precision, so a
@@ -168,23 +242,41 @@ print(f"  (camera node: {'real SoOrthographicCamera' if real_node else 'stand-in
 # vanishes in the 6dp rounding `_capture_optics` applies (checked below) and it
 # is six orders of magnitude below anything measurable, but an exact-equality
 # assertion here would fail on every real camera.
-value = render._ortho_mm_per_px(cam, 960)
+value = render._ortho_mm_per_px(cam, 1280, 960)
 expected = 80.83 / 960.0
 check(
     "height / pixel height, to the camera field's own precision",
     value is not None and abs(value - expected) <= expected * 1e-6,
     repr(value),
 )
-check("a doubled pixel height halves it", abs(render._ortho_mm_per_px(cam, 1920) - value / 2) < 1e-12)
-check("no camera means no scale", render._ortho_mm_per_px(None, 960) is None)
-check("a zero-pixel image means no scale", render._ortho_mm_per_px(cam, 0) is None)
+check(
+    "a doubled pixel height halves it",
+    abs(render._ortho_mm_per_px(cam, 2560, 1920) - value / 2) < 1e-12,
+)
+# The one _fit_render_size actually produces on a long thin part. A portrait
+# render sees 1/aspect more world height than `height` says, so quoting `height`
+# would understate the scale fourfold -- and it is quoted to a human who
+# measures on the image.
+portrait = render._ortho_mm_per_px(cam, 392, 1568)
+expected_portrait = (80.83 / 0.25) / 1568.0
+check(
+    "a 1:4 portrait render is 1/aspect taller in world terms",
+    portrait is not None and abs(portrait - expected_portrait) <= expected_portrait * 1e-6,
+    repr(portrait),
+)
+check("no camera means no scale", render._ortho_mm_per_px(None, 1280, 960) is None)
+check("a zero-pixel image means no scale", render._ortho_mm_per_px(cam, 1280, 0) is None)
+check("a zero-pixel width means no scale", render._ortho_mm_per_px(cam, 0, 960) is None)
 zero, _ = _ortho_camera_node(0.0)
-check("a degenerate camera height means no scale", render._ortho_mm_per_px(zero, 960) is None)
+check(
+    "a degenerate camera height means no scale",
+    render._ortho_mm_per_px(zero, 1280, 960) is None,
+)
 
 # -- the published optics ---------------------------------------------------
 print("capture optics")
 
-optics = render._capture_optics(_View(cam), 960, (0.0, 0.0))
+optics = render._capture_optics(_View(cam), 1280, 960, (0.0, 0.0))
 check("front view is orthographic", optics["projection"] == "orthographic", repr(optics))
 check("front view is axis-aligned", optics["axis_aligned"] is True)
 check(
@@ -198,7 +290,7 @@ check(
     repr(optics["scale"]),
 )
 
-oblique = render._capture_optics(_View(cam), 960, (45.0, 35.264))
+oblique = render._capture_optics(_View(cam), 1280, 960, (45.0, 35.264))
 check("iso is not axis-aligned", oblique["axis_aligned"] is False)
 # The whole point of the downgrade: Claude has to be able to tell "no
 # measurement" from "a measurement you shouldn't machine to", and dropping the
@@ -213,7 +305,7 @@ check(
 
 # A view whose camera node isn't orthographic (or isn't there at all): the
 # "no scale available" signal, which is a state and not an error.
-none = render._capture_optics(_View(object()), 960, (0.0, 0.0))
+none = render._capture_optics(_View(object()), 1280, 960, (0.0, 0.0))
 check("a non-ortho camera yields no scale", none["scale"] is None, repr(none))
 check("...and says so as the projection", none["projection"] == "perspective", repr(none))
 check("...while still reporting the angle it was at", none["axis_aligned"] is True)
@@ -235,7 +327,7 @@ def _meta(axis_aligned, scale, azimuth=0.0, elevation=0.0):
 
 
 aligned_note = tools_device._measurement_note(
-    _meta(True, render._capture_optics(_View(cam), 960, (0.0, 0.0))["scale"])
+    _meta(True, render._capture_optics(_View(cam), 1280, 960, (0.0, 0.0))["scale"])
 )
 check("an exact capture quotes mm per pixel", "mm per pixel" in aligned_note, aligned_note)
 check("...and the projection plane", "X/Z plane" in aligned_note, aligned_note)
