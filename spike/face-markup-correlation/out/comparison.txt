@@ -1,0 +1,45 @@
+==============================================================================
+shape: box_with_hole   FreeCAD faces=7   occt-import-js faces=7
+  face  0: brep_faces[0] nearest to Shape.Faces[0] (d=0.000000 mm)
+  face  1: brep_faces[1] nearest to Shape.Faces[1] (d=0.000000 mm)
+  face  2: brep_faces[2] nearest to Shape.Faces[2] (d=0.000000 mm)
+  face  3: brep_faces[3] nearest to Shape.Faces[3] (d=0.000000 mm)
+  face  4: brep_faces[4] nearest to Shape.Faces[4] (d=0.000000 mm)
+  face  5: brep_faces[5] nearest to Shape.Faces[5] (d=0.000000 mm)
+  face  6: brep_faces[6] nearest to Shape.Faces[6] (d=0.000000 mm)
+  exact_order_match: True
+  nearest-match distance on the identity assignment (max): 0.000000 mm
+==============================================================================
+shape: filleted_box   FreeCAD faces=26   occt-import-js faces=26
+  face  0: brep_faces[0] nearest to Shape.Faces[0] (d=0.000000 mm)
+  face  1: brep_faces[1] nearest to Shape.Faces[1] (d=0.011112 mm)
+  face  2: brep_faces[2] nearest to Shape.Faces[2] (d=0.011112 mm)
+  face  3: brep_faces[3] nearest to Shape.Faces[3] (d=0.011112 mm)
+  face  4: brep_faces[4] nearest to Shape.Faces[4] (d=0.011112 mm)
+  face  5: brep_faces[5] nearest to Shape.Faces[5] (d=1.006253 mm)
+  face  6: brep_faces[6] nearest to Shape.Faces[6] (d=1.006253 mm)
+  face  7: brep_faces[7] nearest to Shape.Faces[7] (d=0.000000 mm)
+  face  8: brep_faces[8] nearest to Shape.Faces[8] (d=0.000000 mm)
+  face  9: brep_faces[9] nearest to Shape.Faces[9] (d=1.006253 mm)
+  face 10: brep_faces[10] nearest to Shape.Faces[10] (d=0.000000 mm)
+  face 11: brep_faces[11] nearest to Shape.Faces[11] (d=1.006253 mm)
+  face 12: brep_faces[12] nearest to Shape.Faces[12] (d=0.000000 mm)
+  face 13: brep_faces[13] nearest to Shape.Faces[13] (d=0.011112 mm)
+  face 14: brep_faces[14] nearest to Shape.Faces[14] (d=0.011112 mm)
+  face 15: brep_faces[15] nearest to Shape.Faces[15] (d=0.011112 mm)
+  face 16: brep_faces[16] nearest to Shape.Faces[16] (d=0.011112 mm)
+  face 17: brep_faces[17] nearest to Shape.Faces[17] (d=0.011112 mm)
+  face 18: brep_faces[18] nearest to Shape.Faces[18] (d=0.011112 mm)
+  face 19: brep_faces[19] nearest to Shape.Faces[19] (d=0.011112 mm)
+  face 20: brep_faces[20] nearest to Shape.Faces[20] (d=0.011112 mm)
+  face 21: brep_faces[21] nearest to Shape.Faces[21] (d=1.006253 mm)
+  face 22: brep_faces[22] nearest to Shape.Faces[22] (d=1.006253 mm)
+  face 23: brep_faces[23] nearest to Shape.Faces[23] (d=0.000000 mm)
+  face 24: brep_faces[24] nearest to Shape.Faces[24] (d=1.006253 mm)
+  face 25: brep_faces[25] nearest to Shape.Faces[25] (d=1.006253 mm)
+  exact_order_match: True
+  nearest-match distance on the identity assignment (max): 1.006253 mm
+==============================================================================
+  box_with_hole: exact_order_match=True
+  filleted_box: exact_order_match=True
+  overall_correlation_holds: True
