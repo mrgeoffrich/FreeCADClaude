@@ -39,6 +39,11 @@ TYPES = {
     ".ico": "image/x-icon",
     ".webmanifest": "application/manifest+json",
     ".wasm": "application/wasm",
+    # OpenCascade BREP exports (model_server serves them to the face-markup
+    # viewer). No registered MIME type exists for them; octet-stream is the
+    # honest default.
+    ".brp": "application/octet-stream",
+    ".brep": "application/octet-stream",
 }
 
 
