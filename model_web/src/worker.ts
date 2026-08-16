@@ -12,11 +12,10 @@
 // Protocol, deliberately plain: the main thread sends one {kind: "parse"}
 // message per object with the .brp bytes as an ArrayBuffer (transferred
 // zero-copy), and gets back either a {kind: "parsed"} message carrying fresh
-// position/normal/index typed arrays (transferred zero-copy) or a
-// {kind: "error"} message. Enough to build one THREE.BufferGeometry per
-// object; the brep_faces triangle-index ranges are deliberately NOT shipped
-// back -- face picking is a later phase and the payload has no use for them
-// here.
+// position/normal/index typed arrays (transferred zero-copy) plus the
+// per-face triangle ranges, or a {kind: "error"} message. Enough to build one
+// THREE.BufferGeometry per object and to resolve a raycast triangle back to
+// the BRep face ordinal it tessellated from (Phase 4's picking).
 import createOCCT from 'occt-import-js';
 import wasmUrl from 'occt-import-js/dist/occt-import-js.wasm?url';
 import type { OcctInstance } from 'occt-import-js';
@@ -30,6 +29,18 @@ export interface ParseRequest {
   buffer: ArrayBuffer;
 }
 
+/** One source BRep face's share of the mesh, exactly as occt-import-js
+ * reports it: an INCLUSIVE range of triangle indices into the index buffer.
+ * ``{first: 0, last: 1}`` covers triangles 0 and 1 -- index-buffer entries
+ * 0..5. The array's own order is the faces' order (the library walks
+ * TopExp_Explorer(TopAbs_FACE), the same traversal FreeCAD's Shape.Faces
+ * uses), and that order is what makes a picked triangle resolvable to a
+ * "FaceN" ordinal by construction. */
+export interface FaceRange {
+  first: number;
+  last: number;
+}
+
 export interface ParsedPayload {
   kind: 'parsed';
   id: number;
@@ -40,6 +51,13 @@ export interface ParsedPayload {
   normals: Float32Array | null;
   /** Flattened triangle indices. */
   indices: Uint32Array;
+  /** One entry per source BRep face, in the order ReadBrepFile returned
+   * them. Ranges index into THIS payload's merged ``indices`` buffer, so
+   * ranges from every mesh after the first are offset by the triangles
+   * merged before them. Every entry survives the merge -- even a range
+   * covering no triangles -- because dropping one would shift every ordinal
+   * after it. */
+  brepFaces: FaceRange[];
 }
 
 export interface ParseErrorPayload {
@@ -80,11 +98,13 @@ function copyMeshArrays(
  * ReadBrepFile can return several meshes -- a BREP export of a multi-solid
  * object, or an object made of more than one shape -- and this phase wants
  * one mesh per FreeCAD OBJECT, not one per source face or solid. Merging is
- * a plain concat with an index offset; the faces' triangle ranges would
- * survive it (later phase's picking), but are not carried back yet. */
+ * a plain concat with an index offset; the faces' triangle ranges survive it
+ * because picking (Phase 4) resolves a raycast triangle against exactly this
+ * merged buffer. Each mesh's ranges are offset by the triangles merged
+ * before it, in order, one entry per source face -- see FaceRange. */
 function mergeMeshes(
   meshes: ReturnType<OcctInstance['ReadBrepFile']>['meshes'],
-): { positions: Float32Array; normals: Float32Array | null; indices: Uint32Array } | null {
+): { positions: Float32Array; normals: Float32Array | null; indices: Uint32Array; brepFaces: FaceRange[] } | null {
   if (meshes.length === 0) return null;
   let vertexCount = 0;
   let indexCount = 0;
@@ -97,6 +117,7 @@ function mergeMeshes(
   const positions = new Float32Array(vertexCount * 3);
   const indices = new Uint32Array(indexCount);
   const normals = allHaveNormals ? new Float32Array(vertexCount * 3) : null;
+  const brepFaces: FaceRange[] = [];
 
   let vertexOffset = 0;
   let indexOffset = 0;
@@ -108,10 +129,14 @@ function mergeMeshes(
     for (let i = 0; i < srcIndices.length; i++) {
       indices[indexOffset + i] = srcIndices[i] + vertexOffset;
     }
+    const triangleOffset = indexOffset / 3;
+    for (const range of mesh.brep_faces ?? []) {
+      brepFaces.push({ first: range.first + triangleOffset, last: range.last + triangleOffset });
+    }
     vertexOffset += srcPositions.length / 3;
     indexOffset += srcIndices.length;
   }
-  return { positions, normals, indices };
+  return { positions, normals, indices, brepFaces };
 }
 
 self.onmessage = async (event: MessageEvent<ParseRequest>) => {
@@ -136,6 +161,7 @@ self.onmessage = async (event: MessageEvent<ParseRequest>) => {
       positions: merged.positions,
       normals: merged.normals,
       indices: merged.indices,
+      brepFaces: merged.brepFaces,
     };
     const transfer: Transferable[] = [merged.positions.buffer, merged.indices.buffer];
     if (merged.normals) transfer.push(merged.normals.buffer);
