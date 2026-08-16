@@ -30,6 +30,11 @@ a way past that token, or to bind it more widely, is a real finding), prompt
 injection from file content that Claude reads, or the addon leaking credentials
 or session data.
 
+- With the opt-in `BridgeAutoStart` preference (default off), so an external MCP
+  client can discover it, the bridge token also lives on disk at
+  `~/FreeCADClaude/bridge.json`, mode `0600`. Anyone who can read that file gets
+  the same reach as the token itself — `run_python` inside the FreeCAD process.
+
 ## The device annotation server
 
 The **Connect Mobile** button starts a second, separate HTTP server that binds

@@ -84,7 +84,66 @@ def start():
 
     threading.Thread(target=_serve, args=(srv, token), daemon=True).start()
     _state["port"], _state["token"] = port, token
+
+    # Publish the connection details for an external MCP client (mcp_server.py
+    # falls back to this file when it has no FREECAD_BRIDGE_PORT/TOKEN env).
+    # A failed write must not stop the bridge -- the chat panel's own path
+    # never reads this file, it passes port/token by env.
+    try:
+        freecad_tools.write_bridge_file(port, token)
+    except Exception as exc:  # noqa: BLE001
+        _warn(f"FreeCADClaude: could not write the bridge discovery file: {exc!r}")
+
+    app = QtCore.QCoreApplication.instance()
+    if app is not None:
+        # start() returns early on an already-started bridge, so this connects
+        # exactly once.
+        app.aboutToQuit.connect(_remove_bridge_file_quietly)
     return port, token
+
+
+def _remove_bridge_file_quietly():
+    try:
+        freecad_tools.remove_bridge_file()
+    except Exception:  # noqa: BLE001 - nothing useful to do while quitting
+        pass
+
+
+def autostart_if_enabled():
+    """Start the bridge on workbench activation, if the user has opted in.
+
+    Off by default (the ``BridgeAutoStart`` preference): every other
+    outward-facing surface in this addon is opt-in behind an explicit user
+    action, and this one publishes a credential to disk on every FreeCAD
+    launch. ``start()`` itself always writes the discovery file regardless of
+    who called it -- this function only controls WHEN the bridge starts.
+
+    Mints a session id BEFORE starting the bridge, but only if none is active
+    yet: start() publishes bridge.json, so minting first makes "the discovery
+    file exists" imply "a session id exists" -- an external client can never
+    land its first artifacts in the fallback 'unsaved' folder. The same
+    active-session-id guard is what makes this safe to call on every
+    workbench switch: without it, switching away and back mid-conversation
+    would mint a fresh session folder underneath a running CLI whose cwd is
+    still the old one.
+
+    Never raises -- a bridge problem here must not stop the docks appearing.
+    """
+    try:
+        import FreeCAD
+
+        from . import freecad_tools
+
+        enabled = FreeCAD.ParamGet(freecad_tools.PARAM_PATH).GetBool(
+            "BridgeAutoStart", False
+        )
+        if not enabled:
+            return
+        if freecad_tools.active_session_id() is None:
+            freecad_tools.new_session_id()
+        start()
+    except Exception as exc:  # noqa: BLE001
+        _warn(f"FreeCADClaude: bridge autostart failed: {exc!r}")
 
 
 def _run_on_gui(fn, label="call", timeout=_GUI_CALL_TIMEOUT):

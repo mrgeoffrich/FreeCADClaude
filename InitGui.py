@@ -56,7 +56,17 @@ class FreeCADClaudeWorkbench(FreeCADGui.Workbench):
 
     def Activated(self):
         """Run every time the user switches to this workbench."""
-        from freecad.freecadclaude import chat_panel, plan_panel
+        from freecad.freecadclaude import chat_panel, gui_bridge, plan_panel
+
+        # Opt-in only (BridgeAutoStart preference, default off) -- see
+        # gui_bridge.autostart_if_enabled. A bridge problem must not stop the
+        # docks appearing, so it gets its own try/except here too.
+        try:
+            gui_bridge.autostart_if_enabled()
+        except Exception as exc:
+            FreeCAD.Console.PrintWarning(
+                f"FreeCADClaude: bridge autostart failed ({exc})\n"
+            )
 
         # Chat first so the Plan dock can tab itself alongside it.
         chat_panel.get_panel()

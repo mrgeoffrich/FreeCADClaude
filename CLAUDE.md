@@ -55,7 +55,7 @@ chat panel (GUI thread)
 | `freecad/freecadclaude/qr.py` | The pairing QR: byte mode, EC level L, versions 3–6, fixed mask 0. Imports no Qt (returns a boolean matrix; `chat_panel._qr_pixmap` paints it), so it is unit-testable headlessly. |
 | `freecad/freecadclaude/_deps.py` | Locates the `claude` CLI. |
 | `freecad/freecadclaude/eval_runner.py` | Unattended end-to-end eval (triggered by env var). |
-| `mcp_server.py` | Stdlib-only MCP stdio server the CLI spawns; relays to the bridge. |
+| `mcp_server.py` | Stdlib-only MCP stdio server the CLI spawns; relays to the bridge. Resolves the bridge endpoint from env first, then the `bridge.json` discovery file (see "External MCP client"). |
 | `web/` | Vite + TypeScript + Vitest source of `device_ui/`. Dev-time only — excluded from `deploy.ps1`/`deploy.sh` and never shipped. |
 | `gcode_web/` | Vite + TypeScript + Vitest source of `gcode_ui/`, vendored from the `dimensioner` project. `gcode_web/VENDORED.md` records the upstream commit and every local patch, and is the reviewable artifact for a 1.1 MB minified build nobody reads. Dev-time only, same exclusions as `web/`. |
 | `model_web/` | Vite + TypeScript + Vitest source of `model_ui/`, vendoring `occt-import-js`'s WASM OpenCascade build (pinned `0.0.23`). `model_web/VENDORED.md` records what is vendored and why. Dev-time only, same exclusions as `web/`. |
@@ -527,6 +527,27 @@ frozen in `docs/face-markup-plan-scope.md`).
   re-resolved on the GUI thread, because "New" minted a fresh
   `<session>/models/`.
 
+**External MCP client** (`freecad_tools/session.{bridge_file,write_bridge_file,
+remove_bridge_file}` + `gui_bridge.py` + `mcp_server.py`): a client started with
+`claude mcp add` has no `FREECAD_BRIDGE_PORT`/`TOKEN` env, so `gui_bridge.start()`
+also publishes the endpoint to a fixed file, `~/FreeCADClaude/bridge.json` —
+always that default location, never a user's `ArtifactsDir`, because the reader
+is stdlib-only `mcp_server.py` in a foreign process with no FreeCAD to ask.
+Written `mkstemp` (mode 0600) + `os.replace` (atomic), since the token is a
+credential — `run_python` is arbitrary Python in the FreeCAD process, so anyone
+who can read the file owns the session. Staleness is detected by connecting, not
+by `os.kill(pid, 0)`: on Windows that call can `TerminateProcess` whatever now
+owns a reused pid, so a dead FreeCAD is instead recognised by the loopback
+connect refusing. `BridgeAutoStart` (bool, default **off**) is the only thing
+that decides whether the bridge starts on workbench activation; every other
+outward surface here is opt-in behind an explicit user action. One FreeCAD run
+is one session folder — autostart mints one only if none is active yet, and
+only "New" forces a fresh one — so a client attached before the first chat
+message shares that conversation's artifact folder rather than losing them to
+one nobody points at. `tools/list` reports a broken bridge as a JSON-RPC error,
+never `{"tools": []}`, since an empty list reads as "no tools" and the client
+caches it for the session.
+
 Preferences, all under `PARAM_PATH` and all "empty means discover" — on a
 machine with Bambu Studio set up, none needs setting:
 
@@ -539,6 +560,7 @@ machine with Bambu Studio set up, none needs setting:
 | `SlicerMachine` / `SlicerProcess` / `SlicerFilament` | string | Preset names, the last resort when everything above is missing. |
 | `SlicerArrange` / `SlicerOrient` | bool | Defaults for those two arguments (both true). |
 | `GcodeUiDir` | string | Override `gcode_ui/` — the dev hook for pointing at a Vite build. |
+| `BridgeAutoStart` | bool | Start the bridge (and publish `bridge.json`) on workbench activation, for an external MCP client. Default **false**. |
 
 **Draw style** (`style` on both `capture_view` and `cutaway`, schema shared via
 `render._STYLE_SCHEMA_PROPS`): `shaded` (default), `xray`, `wireframe`.
@@ -601,7 +623,10 @@ because `--outputdir` writes slicer-chosen names that would collide across jobs
 and the log belongs beside what it explains. `_prune_folder` filters on
 `isfile`, so it cannot prune directories; `_session_job_dir(name, keep=20)` is
 their own keep-N. `~/FreeCADClaude/slicer.json` sits outside every session,
-beside `sketches/`, because a printer choice outlives a conversation. The same
+beside `sketches/`, because a printer choice outlives a conversation. So does
+`~/FreeCADClaude/bridge.json` — the bridge discovery file for an external MCP
+client (see "External MCP client"), for the same reason: it names whichever
+session is active, so it cannot live inside one. The same
 session folder also holds `stream.jsonl` — the
 raw newline-delimited JSON `agent_worker` reads from the `claude` CLI, appended
 turn-by-turn (`AgentWorker._open_log`) — handy for diagnosing a turn after the fact.

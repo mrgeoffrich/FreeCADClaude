@@ -374,15 +374,25 @@ class ChatWidget(QtWidgets.QWidget):
 
         from . import agent_config, freecad_tools, gui_bridge
 
+        # Mint this conversation's log folder BEFORE build_config, which reads
+        # it (see freecad_tools.new_session_id / session_dir) -- and BEFORE
+        # gui_bridge.start(), which publishes the discovery file a bridge
+        # autostart may already have minted a session for. Adopt an id that's
+        # already active (autostart, or a previous call into this method that
+        # raised after minting) instead of re-minting: one FreeCAD run is one
+        # session folder unless the user presses "New" (see _on_new), so an
+        # external MCP client attached before the first chat message shares
+        # this conversation's artifacts rather than losing them to a second
+        # folder nobody points at.
+        if freecad_tools.active_session_id() is None:
+            freecad_tools.new_session_id()
+
         try:
             port, token = gui_bridge.start()  # runs on the GUI thread
         except Exception as exc:  # noqa: BLE001
             self._note(f"*Could not start the FreeCAD tool bridge: {exc!r}*")
             return False
 
-        # Mint this conversation's log folder BEFORE build_config, which reads
-        # it (see freecad_tools.new_session_id / session_dir).
-        freecad_tools.new_session_id()
         self._thread = QtCore.QThread(self)
         self._worker = AgentWorker(agent_config.build_config(detail, port, token))
         self._worker.moveToThread(self._thread)
@@ -720,13 +730,20 @@ class ChatWidget(QtWidgets.QWidget):
 
     def _on_new(self):
         """Start a fresh conversation: reset the agent's session and clear panels."""
+        # Unconditional -- unlike _ensure_worker's adopt-if-none-active guard,
+        # "New" always mints, even if the only thing that has ever driven this
+        # FreeCAD process is an external MCP client (gui_bridge autostart) and
+        # no worker has started. Without this, that user could press New and
+        # get no reset at all: _reset_device_session/_reset_slice_session/
+        # _reset_model_session below are already unconditional and would keep
+        # pointing at the old session's folder.
+        from . import agent_config, freecad_tools
+
+        freecad_tools.new_session_id()
         if self._worker is not None:
             if self._busy:
                 self._worker.cancel()
             self._worker.reset_session()
-            from . import agent_config, freecad_tools
-
-            freecad_tools.new_session_id()
             self._worker.set_log_dir(freecad_tools.session_dir())
             # The CLI's cwd is the session folder, so it moves with the session.
             self._worker.set_cwd(agent_config.session_workspace())

@@ -40,11 +40,15 @@ from .session import (  # noqa: F401 - re-exported for chat_panel/agent_config/e
     REFS_REL,
     _safe_name,
     _save_steps,
+    active_session_id,
     artifacts_dir,
+    bridge_file,
     ensure_sketches_dir,
     new_session_id,
     prepare_session_workspace,
+    remove_bridge_file,
     session_dir,
+    write_bridge_file,
 )
 from .tools_annotate import (
     _ANNOTATE_VIEW_SCHEMA,

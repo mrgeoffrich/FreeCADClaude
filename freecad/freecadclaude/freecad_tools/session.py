@@ -13,6 +13,7 @@ modules need to agree on: ``PARAM_PATH`` (the preferences root), ``REFS_DIR``
 (the bundled scripting references) and ``ref_path`` (how they are cited).
 """
 
+import json
 import os
 import tempfile
 
@@ -65,6 +66,89 @@ def artifacts_dir():
     path = os.path.expanduser(configured) if configured else _DEFAULT_ARTIFACTS_DIR
     os.makedirs(path, exist_ok=True)
     return path
+
+
+#: Filename of the bridge discovery file (see bridge_file() for why the path
+#: is fixed rather than following ArtifactsDir).
+BRIDGE_FILE_NAME = "bridge.json"
+
+
+def bridge_file():
+    """Absolute path to the bridge discovery file, always under the DEFAULT
+    artifacts folder -- ``~/FreeCADClaude/bridge.json`` -- never under a
+    user-configured ``ArtifactsDir``.
+
+    The reader is mcp_server.py, a stdlib-only script running in a separate
+    process spawned by an external MCP client (e.g. `claude mcp add`). It has
+    no FreeCAD to ask for the ArtifactsDir preference, so a preference-relative
+    location would be undiscoverable -- there would be nothing to tell it where
+    to look. This path is spelled once here (the writer) and once, knowingly,
+    in mcp_server.py (the reader); each spelling names the other in a comment.
+    If you have moved ArtifactsDir, the discovery file still lands in
+    ~/FreeCADClaude, not at your configured location.
+
+    Pure: no directory creation, no preference read.
+    """
+    return os.path.join(_DEFAULT_ARTIFACTS_DIR, BRIDGE_FILE_NAME)
+
+
+def write_bridge_file(port, token):
+    """Publish the bridge's connection details for an external MCP client.
+
+    The token is a credential -- run_python is arbitrary Python inside the
+    FreeCAD process, so anyone who can read this file owns the user's session.
+    ``tempfile.mkstemp`` creates the file mode 0600 before any secret is
+    written to it (umask-independent), and ``os.replace`` is an atomic rename,
+    so a reader never observes a partially-written file. Mirrors
+    ``gcode_server._write_settings``. Returns the path written.
+    """
+    path = bridge_file()
+    folder = os.path.dirname(path)
+    os.makedirs(folder, exist_ok=True)
+    import time as _time
+
+    body = json.dumps({
+        "version": 1,
+        "host": "127.0.0.1",
+        "port": int(port),
+        "token": str(token),
+        "pid": os.getpid(),
+        "started": _time.time(),
+    })
+    fd, tmp = tempfile.mkstemp(prefix=".bridge-", suffix=".json", dir=folder)
+    try:
+        os.chmod(tmp, 0o600)  # belt-and-braces: mkstemp already creates 0600
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    return path
+
+
+def remove_bridge_file():
+    """Best-effort removal of the bridge discovery file -- but only if it is
+    ours (``pid`` matches this process).
+
+    With two FreeCAD instances running, the second overwrites the first's
+    file; without the pid check, whichever quits first would delete the
+    survivor's file out from under it. The instance that lost the race stays
+    running but undiscoverable until it restarts -- accepted, not fixed.
+    Swallows every failure: this runs from ``aboutToQuit``, where there is
+    nothing useful left to do about an error.
+    """
+    path = bridge_file()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if data.get("pid") == os.getpid():
+            os.remove(path)
+    except (OSError, ValueError):
+        pass
 
 
 def ensure_sketches_dir():

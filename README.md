@@ -190,6 +190,27 @@ project whose `.claude/skills` holds them, via the preference
 When set, the agent runs with that as its working dir and enables the
 `Skill`/`Read`/`Glob`/`Grep` tools. Leave it unset to keep things locked down.
 
+### 6. Optional — connect an external MCP client
+
+The FreeCAD tools are also reachable from any other MCP client (e.g. a `claude`
+CLI session running outside this addon), not just the built-in chat panel:
+
+```bash
+claude mcp add freecad -- python3 <Mod dir>/FreeCADClaude/mcp_server.py
+```
+
+Any `python3` works — the script is stdlib-only. Two things have to be true
+first: set the integer/bool preference `BridgeAutoStart` under
+`User parameter:BaseApp/Preferences/Mod/FreeCADClaude` to `true` (it's off by
+default — publishing a credential to disk on every launch is opt-in), and start
+FreeCAD *before* the external client, so the bridge has already written
+`~/FreeCADClaude/bridge.json` for it to discover.
+
+**Known gap:** an external client gets the raw FreeCAD tools, but not this
+addon's system prompt — the execution contract and scripting references that
+the chat panel's own turns carry are not (yet) exposed over MCP `initialize`.
+Expect to guide it the way you'd guide any MCP client new to a tool set.
+
 ## Annotating on a phone or tablet
 
 A picture tells Claude *where*; only a dimension with a number tells it *how
