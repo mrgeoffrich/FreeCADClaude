@@ -107,6 +107,12 @@ from .tools_sketch import (
     _run_get_sketch,
     _run_view_sketch_svg,
 )
+from .tools_model import (
+    _READ_MODEL_MARKUP_SCHEMA,
+    _VIEW_MODEL_3D_SCHEMA,
+    _run_read_model_markup,
+    _run_view_model_3d,
+)
 
 #: Registry: tool name -> {schema, run, precheck?}.
 #: ``precheck`` is a pure-Python validation of the args the bridge runs before
@@ -160,6 +166,11 @@ TOOLS = {
         "precheck": _precheck_python,
     },
     "get_diagnostics": {"schema": _GET_DIAGNOSTICS_SCHEMA, "run": _run_get_diagnostics},
+    "view_model_3d": {"schema": _VIEW_MODEL_3D_SCHEMA, "run": _run_view_model_3d},
+    "read_model_markup": {
+        "schema": _READ_MODEL_MARKUP_SCHEMA,
+        "run": _run_read_model_markup,
+    },
 }
 
 
