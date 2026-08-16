@@ -57,6 +57,22 @@ _HIGHLIGHT_RGBA = (1.0, 0.55, 0.12, 0.0)
 _CONFIRM_VIEW = "iso"
 
 
+def model_upload_dir():
+    """``<session>/models/``, created and pruned -- both directions of the round
+    trip live here (the exported ``.brp`` files going out, the markup documents
+    the browser sends back coming in).
+
+    The exact same "models" name ``view_model_3d`` already uses inline; this
+    just gives it a name callable from outside the module, mirroring
+    ``tools_device.device_upload_dir``. Resolved HERE on the GUI thread and
+    handed to the server as a plain string, never resolved by the server
+    itself: this goes through ``session_dir`` -> ``artifacts_dir``, which reads
+    a FreeCAD preference, and an HTTP worker thread touching FreeCAD is
+    precisely the thing the design refuses.
+    """
+    return _session_subdir("models")
+
+
 def _open_in_browser(url):
     """Launch the user's default browser on `url`, without blocking.
 
