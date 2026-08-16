@@ -60,7 +60,7 @@ New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 # 'web' and 'gcode_web' are the two web apps' Vite SOURCES (and their
 # node_modules); their build output lives inside
 # freecad/freecadclaude/{device_ui,gcode_ui} and copies with the package.
-$exclude = @('__pycache__', '.git', '.gitignore', '.gitattributes', 'deploy.ps1', 'install_deps.ps1', 'vendor', 'eval', 'web', 'gcode_web')
+$exclude = @('__pycache__', '.git', '.gitignore', '.gitattributes', 'deploy.ps1', 'install_deps.ps1', 'vendor', 'eval', 'web', 'gcode_web', 'model_web')
 Get-ChildItem -Path $Source -Force | Where-Object { $exclude -notcontains $_.Name } | ForEach-Object {
     Copy-Item -Path $_.FullName -Destination $Dest -Recurse -Force
 }

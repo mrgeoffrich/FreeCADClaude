@@ -741,6 +741,7 @@ class ChatWidget(QtWidgets.QWidget):
         # note written above would be wiped by the very next line.
         self._reset_device_session()
         self._reset_slice_session()
+        self._reset_model_session()
         try:
             from . import plan_panel
 
@@ -790,6 +791,29 @@ class ChatWidget(QtWidgets.QWidget):
             freecad_tools.reset_slice_session()
         except Exception as exc:  # noqa: BLE001 - "New" must clear the panel regardless
             self._note(f"*Could not reset the slice jobs: {exc}*")
+
+    def _reset_model_session(self):
+        """Forget the previous conversation's model exports and markup.
+
+        The same failure ``_reset_device_session`` prevents: the model feed
+        deliberately outlives a ``stop()`` (``read_model_markup`` is routinely
+        called after the server is down), so without this the next chat's
+        ``read_model_markup`` would answer with the previous one's markup
+        document, and what leaked into the new conversation would be the
+        previous chat's exported ``.brp`` files and any markup document the
+        browser posted -- a document the new conversation may not even be
+        about. The upload folder is re-resolved because "New" minted a fresh
+        session id and therefore a fresh ``<session>/models/``.
+        """
+        from . import freecad_tools, model_server
+
+        try:
+            upload_dir = (
+                freecad_tools.model_upload_dir() if model_server.is_running() else None
+            )
+            model_server.reset_session(upload_dir)
+        except Exception:  # noqa: BLE001 - "New" must clear the panel regardless
+            pass
 
     def _on_model_changed(self, _index):
         """Persist the selected model (only reachable between conversations, since

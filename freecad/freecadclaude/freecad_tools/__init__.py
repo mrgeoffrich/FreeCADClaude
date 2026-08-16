@@ -107,11 +107,12 @@ from .tools_sketch import (
     _run_get_sketch,
     _run_view_sketch_svg,
 )
-from .tools_model import (
+from .tools_model import (  # model_upload_dir re-exported for chat_panel
     _READ_MODEL_MARKUP_SCHEMA,
     _VIEW_MODEL_3D_SCHEMA,
     _run_read_model_markup,
     _run_view_model_3d,
+    model_upload_dir,  # noqa: F401
 )
 
 #: Registry: tool name -> {schema, run, precheck?}.
