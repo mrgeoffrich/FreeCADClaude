@@ -18,6 +18,7 @@ The tools themselves live in the ``tools_*`` submodules, one per concern, over
 a base of shared infrastructure:
 
     session      artifact folders, the per-conversation session dir
+    library      the reusable run_python modules, and their sys.path roots
     doc_notes    the document's standing context notes, and their staleness
     print_meta   per-part build direction: storage, plate side, the legend
     print_export parts meshed and stood up the way they print, via a scratch doc
@@ -85,6 +86,11 @@ from .tools_document import (  # _REPORTED_PROPS re-exported for eval_runner
 )
 from .tools_export import _EXPORT_SCHEMA, _run_export
 from .tools_inspect import _INSPECT_API_SCHEMA, _run_inspect_api
+from .tools_library import (
+    _SCRIPT_LIBRARY_SCHEMA,
+    _precheck_script_library,
+    _run_script_library,
+)
 from .tools_notes import (
     _DOCUMENT_NOTES_SCHEMA,
     _SET_PRINT_DIRECTION_SCHEMA,
@@ -169,6 +175,11 @@ TOOLS = {
         "schema": _RUN_PYTHON_SCHEMA,
         "run": _run_python,
         "precheck": _precheck_python,
+    },
+    "script_library": {
+        "schema": _SCRIPT_LIBRARY_SCHEMA,
+        "run": _run_script_library,
+        "precheck": _precheck_script_library,
     },
     "get_diagnostics": {"schema": _GET_DIAGNOSTICS_SCHEMA, "run": _run_get_diagnostics},
     "view_model_3d": {"schema": _VIEW_MODEL_3D_SCHEMA, "run": _run_view_model_3d},

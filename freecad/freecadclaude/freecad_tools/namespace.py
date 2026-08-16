@@ -22,6 +22,13 @@ def scripting_namespace(doc=None):
     """
     import FreeCAD
 
+    from .library import ensure_on_path
+
+    # The script library is reached by IMPORT, not by binding its modules here:
+    # a module is only parsed when something asks for it, and inspect_api then
+    # resolves against exactly what run_python can import.
+    ensure_on_path()
+
     ns = {"FreeCAD": FreeCAD, "App": FreeCAD}
     if doc is None:
         doc = FreeCAD.ActiveDocument

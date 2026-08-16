@@ -167,7 +167,7 @@ _active_session = {"id": None}
 
 #: Top-level folders under artifacts_dir() that are NOT per-session and must
 #: be skipped by session-folder pruning.
-_NON_SESSION_DIRS = {"sketches"}
+_NON_SESSION_DIRS = {"sketches", "library"}
 
 
 def new_session_id():

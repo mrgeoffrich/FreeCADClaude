@@ -41,6 +41,7 @@ chat panel (GUI thread)
 | `freecad/freecadclaude/agent_worker.py` | Drives the `claude` CLI per turn; parses stream-json → Qt signals. `_handle_tool_use` **surfaces a tool call by default** and special-cases only the exceptions, so a tool added to the allow-list appears in the transcript without a change here — the old allow-list shape let `Write`/`Glob`/`Grep` run invisibly. `_tool_label` picks the detail arg (path basename, pattern, subagent type); an unmapped name falls back to its own lowercased name. `TaskCreate`/`TaskUpdate` stay out of the transcript because the plan dock's checklist already shows them call for call. A `Plan` subagent is the one id in **both** `_plan_ids` and `_chat_tool_ids` — `_handle_tool_result` must not `elif` those two branches, or the transcript entry never gets its result. |
 | `freecad/freecadclaude/agent_config.py` | Model, system prompt (loaded from `system_prompt.md`), CLI flags (tools/mcp/cwd/skills). |
 | `freecad/freecadclaude/system_prompt.md` | The system prompt text itself, edited as plain Markdown. Its `{REFS_DIR}` placeholder is replaced by `agent_config` at load with `REFS_REL` — the references folder relative to the CLI's cwd. |
+| `freecad/freecadclaude/library/` | The **bundled** half of the script library — reusable run_python modules, shipped with the addon and importable by name. See "Script library" below. Not a reference folder: these are imported, not read. |
 | `freecad/freecadclaude/references/` | run_python scripting references (sketcher / partdesign / part-draft) the system prompt tells Claude to `Read` on demand — progressive disclosure without a skill gate. The prompt's execution-contract section covers the rest. |
 | `freecad/freecadclaude/gui_bridge.py` | In-FreeCAD socket server; runs tools on the GUI thread; run_python arg precheck. |
 | `freecad/freecadclaude/freecad_tools/` | The tools, as a package — see its own map below. `__init__.py` holds the `TOOLS` registry and re-exports the facade the rest of the addon imports (`TOOLS`, `list_schemas`, `feature_snapshot`, `post_tool_notes`, the session-dir helpers), so `from . import freecad_tools` still reaches everything. |
@@ -71,6 +72,7 @@ Registry: `freecad_tools.TOOLS` = name → `{schema, run, precheck?}`. Current s
 `send_to_device`, `read_device_image`,
 `view_model_3d`, `read_model_markup`,
 `export`, `slice_model`, `read_slice_result`, `view_gcode`, `inspect_api`,
+`script_library`,
 `get_diagnostics`, `run_python` (the only tool that touches geometry —
 the general Sketcher/PartDesign/Part path; `document_notes` mutates the
 document too, but only its own notes object).
@@ -103,6 +105,8 @@ infra modules import nothing from `tools_*` (that's why `_ERROR_FLAGS` and
 | `model_export.py` | `export_brep` — per requested object, `obj.Shape.exportBrep(path)` into `<session>/models/`, plus the `{"shape_hash", "faces": {i: {centroid, normal, area}}}` record the read-back hash check replays. Smaller sibling of `print_export.py`: no meshing code at all, the native BREP written out untouched. |
 | `tools_slice.py` | `slice_model`, `read_slice_result`, `view_gcode`, plus `open_settings_page()` re-exported for the chat panel's **Slicer** button. Everything environmental — the binary, the slicer's config, the profile roots, the preset names, the viewer directory — is read here on the GUI thread and handed to `slicer_runner`/`gcode_server` as plain values. |
 | `tools_inspect.py` | `inspect_api`. |
+| `tools_library.py` | `script_library` — list the reusable modules, or save one. |
+| `library.py` | Infra beside it: the two library roots, the `ast`-parsed index, the save bar. |
 | `tools_sketch.py` | `get_sketch`, `view_sketch_svg` (+ the GeoId overlay). |
 | `tools_capture.py` | `capture_view`, `capture_user_view`, `crop_view`. |
 | `tools_annotate.py` | `annotate_view`, `read_annotation` — the draw-on-the-screenshot round trip. |
@@ -527,6 +531,55 @@ frozen in `docs/face-markup-plan-scope.md`).
   re-resolved on the GUI thread, because "New" minted a fresh
   `<session>/models/`.
 
+**Script library** (`freecad_tools/{library,tools_library}.py` + `library/`):
+reusable `run_python` modules that outlive the conversation that produced them.
+Two roots, both on `sys.path` and both listed by `script_library`:
+`<addon>/library/` (bundled, ships with the addon) and `~/FreeCADClaude/library/`
+(personal, grown mid-conversation). Personal comes first, so it shadows a
+bundled module of the same name.
+
+- **It is a tool and not a line in the system prompt, and that is the whole
+  design decision.** A reference the prompt tells Claude to read goes
+  essentially unread (see "Just-in-time reference pointers"); a tool schema is
+  in context every turn and takes no self-aware judgement call to notice. A
+  library exists to stop work being re-derived, so a library nobody looks in is
+  strictly worse than none — same maintenance, no payoff. The measured case for
+  this is `export_plate_3mf.py` from session `20260816-160916`: ~120 lines
+  hand-rolling rotate-onto-`PrintDirection` + scratch-doc meshing + multi-object
+  3MF, all of which `print_export.oriented_export` already did behind the
+  `export` tool. Discovery is the feature; the folder is the easy part.
+- **The index is parsed with `ast`, never imported.** A library module is
+  FreeCAD-flavoured (`import Part` at the top), so importing one to read its
+  docstring would fail anywhere but inside FreeCAD, and would run its top-level
+  code as a side effect of *listing* it. Parsing costs neither, and is why
+  `library.py` and its whole test suite run under a bare `python3`.
+- **`__all__` orders a module's entry**, membership and sequence both. Without
+  it `split_for_print` led with `halfspace_box`/`spread` and buried the two
+  entry points — but underscore-prefixing those to tidy the index would stop
+  them being importable, and they are genuinely reusable. `__all__` is the
+  existing idiom for "this is my surface, in this order", so the index honours
+  it rather than inventing a marker.
+- **The save bar is what separates a library from an archive**: an importable
+  module name, code that parses, a module docstring, and public top-level
+  functions that all have docstrings. `scripts/` already keeps every
+  `run_python` call ever made — this holds the few worth calling *again*, so a
+  module that hardcodes a document name and an output path is rejected with the
+  instruction to lift them into arguments. Validation is a `precheck`, so a
+  rejected save never occupies the GUI thread.
+- **The bundled modules are held to that same bar by a test**
+  (`BundledLibraryTests`), which is what stops the shipped half drifting below
+  what a saved one must clear.
+- **The personal root degrades to None rather than raising.** It resolves
+  through `artifacts_dir()`, which reads a FreeCAD preference; losing the whole
+  library — including the bundled half, which needs neither — to that read would
+  be the wrong trade. A *save* still refuses outright, since its only fallback
+  would be writing into the addon's own folder.
+- **The docstring is the deliverable, not paperwork.** It is what the index
+  shows and the only place the reasoning survives: `split_for_print.CLEAR = 0.25`
+  is a diametral clearance won off a printed 3.90/3.80/3.70/3.60 ladder, and
+  without the comment saying so the next conversation "corrects" it to the
+  project's usual 0.15 and the halves stop going together.
+
 **External MCP client** (`freecad_tools/session.{bridge_file,write_bridge_file,
 remove_bridge_file}` + `gui_bridge.py` + `mcp_server.py`): a client started with
 `claude mcp add` has no `FREECAD_BRIDGE_PORT`/`TOKEN` env, so `gui_bridge.start()`
@@ -641,6 +694,10 @@ preference, the `FREECADCLAUDE_SAVE_STEPS=1` env var, or `freecad_tools._save_st
 (the eval sets this). Lets you open the model at each build step; parallels `scripts/`
 (one `.FCStd` per successful call ↔ one `.py` per call). The end-to-end eval also drops
 a final `<DocLabel>.FCStd` in the session root (`eval_runner._save_final_documents`).
+`~/FreeCADClaude/library` sits outside any session too, for the same reason: a
+script worth keeping outlives the conversation that produced it, and session
+folders are pruned. Both it and `sketches` are in `session._NON_SESSION_DIRS`,
+which is what keeps the session pruner off them.
 `~/FreeCADClaude/sketches` sits outside any session: it holds `freecad-lofi-sketch`'s
 concept SVGs, written directly by Claude via `Write` (not auto-pruned, since they
 bypass `_artifact_path`, and not session-scoped since a sketch can precede any chat
@@ -699,7 +756,9 @@ turn that would mint one).
   an **absolute** path — with a relative one it runs nothing and still exits 0.
   After touching the device feature, re-run `eval/test_device_server.py`,
   `test_device_tools.py`, `test_qr.py` and `test_capture_scale.py`; the first
-  three also run under a plain `python3`. After touching the slice feature,
+  three also run under a plain `python3`. After touching the script library,
+  re-run `test_script_library.py` (plain `python3` — it monkeypatches both roots
+  onto temp folders, so it never writes to the real library). After touching the slice feature,
   re-run `test_slicer_runner.py` and `test_gcode_server.py` (both under a plain
   `python3`) plus `test_slice_tools.py`, `test_export_3mf.py` and
   `test_oriented_export.py` under `freecadcmd`. **No test may execute a real
