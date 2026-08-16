@@ -1,0 +1,100 @@
+{
+  "shape": "box_with_hole",
+  "source": "occt-import-js",
+  "occt_import_js_version": "0.0.23",
+  "root": {
+    "name": "",
+    "meshes": [
+      0
+    ],
+    "children": []
+  },
+  "mesh_count": 1,
+  "face_count": 7,
+  "faces": [
+    {
+      "index": 0,
+      "first": 0,
+      "last": 1,
+      "triangles": 2,
+      "centroid": [
+        0,
+        25,
+        15
+      ],
+      "approx_area": 1500
+    },
+    {
+      "index": 1,
+      "first": 2,
+      "last": 3,
+      "triangles": 2,
+      "centroid": [
+        40,
+        0,
+        15
+      ],
+      "approx_area": 2400
+    },
+    {
+      "index": 2,
+      "first": 4,
+      "last": 51,
+      "triangles": 48,
+      "centroid": [
+        40,
+        25.000000000000004,
+        30
+      ],
+      "approx_area": 3686.9073557987736
+    },
+    {
+      "index": 3,
+      "first": 52,
+      "last": 53,
+      "triangles": 2,
+      "centroid": [
+        40,
+        50,
+        15
+      ],
+      "approx_area": 2400
+    },
+    {
+      "index": 4,
+      "first": 54,
+      "last": 101,
+      "triangles": 48,
+      "centroid": [
+        40,
+        25,
+        0
+      ],
+      "approx_area": 3686.9073557987726
+    },
+    {
+      "index": 5,
+      "first": 102,
+      "last": 103,
+      "triangles": 2,
+      "centroid": [
+        80,
+        25,
+        15
+      ],
+      "approx_area": 1500
+    },
+    {
+      "index": 6,
+      "first": 104,
+      "last": 191,
+      "triangles": 88,
+      "centroid": [
+        39.999999999999986,
+        24.99999999999999,
+        15
+      ],
+      "approx_area": 1883.354436459735
+    }
+  ]
+}
