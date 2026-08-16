@@ -672,20 +672,52 @@ def _read_face_colors(view_object):
 def _write_face_colors(view_object, colors):
     """Set the per-face diffuse colors of `view_object`. Returns True on success.
 
-    ``setDiffuseColors`` is the 1.1 live API; ``DiffuseColor`` is the classic
-    property that both it and the older builds sit on. The 1.1 API is tried
-    first and the property is the fallback, so the addon ships for 1.1 and
-    still works on a build that never grew ShapeAppearance's color accessors.
+    Reassigns the WHOLE ``ShapeAppearance`` tuple as fresh ``Material``
+    instances, one per entry in `colors` -- NOT the classic per-face
+    ``DiffuseColor`` list property, and not ``ShapeAppearance.
+    setDiffuseColors`` either. Measured directly, not assumed: on a real
+    FreeCAD 1.1 build, writing the colour data through either of those
+    updates the stored values but not Coin's material BINDING, and an
+    offscreen FBO grab (unlike the live interactive view, which never
+    exposed the problem) then renders the shape as edges only -- every face
+    silently unfilled. Comparing a plain ``render._offscreen_shot`` capture
+    against one that additionally wrote per-face colours this way was what
+    surfaced it: identical shape, identical camera, wireframe only once a
+    colour list had been assigned via the property.
+
+    ``render._set_diffuse`` already reassigns ``ShapeAppearance`` wholesale
+    for exactly this reason, one material at a time (for the shot's single
+    pale body colour); this is that same pattern fanned out to every entry
+    in `colors`, preserving each material's other fields (ambient, emissive,
+    specular, shininess, transparency) from whatever was there before --
+    only ``DiffuseColor`` changes.
+
+    Falls back to the classic property only where ``ShapeAppearance`` is
+    absent entirely (pre-1.0 builds); that path is untested for offscreen
+    rendering and may carry the same limitation, since it's the same
+    property whose write behaviour is what turned out to be the problem.
     """
+    import FreeCAD
+
     shape_appearance = getattr(view_object, "ShapeAppearance", None)
-    if shape_appearance is not None:
-        setter = getattr(shape_appearance, "setDiffuseColors", None)
-        if callable(setter):
-            try:
-                setter(list(colors))
-                return True
-            except Exception:  # noqa: BLE001 - fall through to the property
-                pass
+    if shape_appearance:
+        base = shape_appearance[0]
+        materials = []
+        for index, rgba in enumerate(colors):
+            source = shape_appearance[index] if index < len(shape_appearance) else base
+            material = FreeCAD.Material()
+            material.AmbientColor = source.AmbientColor
+            material.DiffuseColor = rgba
+            material.EmissiveColor = source.EmissiveColor
+            material.SpecularColor = source.SpecularColor
+            material.Shininess = source.Shininess
+            material.Transparency = source.Transparency
+            materials.append(material)
+        try:
+            view_object.ShapeAppearance = tuple(materials)
+            return True
+        except Exception:  # noqa: BLE001 - fall through to the classic property
+            pass
     try:
         view_object.DiffuseColor = list(colors)
         return True
